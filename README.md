@@ -1,54 +1,67 @@
-# LongBridge Enhance Skill
+# LongBridge Enhance Skill (longbridge-pro)
 
 **[English](README.md)** | [中文](README.zh-CN.md)
 
-> Community-developed options analytics enhancement for the [Longbridge OpenAPI](https://open.longbridge.com).
-> Provides Black-Scholes Greeks, historical volatility, IV Rank/Percentile, volatility smile, put-call ratio, strategy P&L, and more — computed locally from Longbridge CLI data.
+> Community-developed multi-dimensional analytics enhancement for the [Longbridge OpenAPI](https://open.longbridge.com).
+> Five modules: ① Options analytics (BS Greeks, IV/HV, vol smile, P/C ratio, P&L, Put/Call Wall, GEX, IV Crush)
+> ② Anomaly tracking ③ Capital flow / main force ④ Event calendar ⑤ Market sentiment — all computed locally from Longbridge CLI data.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ## What this is
 
-The official `longbridge-derivatives` skill gives you **raw option chain data** (strikes, IV, prices) via the Longbridge CLI. This enhancement skill adds the **compute layer on top** — Black-Scholes pricing, Greeks, volatility analysis, and strategy P&L that the raw CLI doesn't provide natively.
-
-It was built to replicate the option analytics capabilities of similar brokers (e.g. Futu's OpenAPI option suite), adapted to what Longbridge's API exposes.
+The official `longbridge` skill series gives you **raw data** (option chains, quotes, fundamentals) via the Longbridge CLI. This enhancement skill adds the **compute and fusion layer on top** — Black-Scholes pricing, Greeks, volatility analysis, strategy P&L, anomaly scoring, capital-flow analytics, and a one-click daily market briefing that the raw CLI doesn't provide.
 
 ## Features
 
-### 🟢 Native data (wrapped from Longbridge CLI)
-- **Option expiration dates** — list all tradable expiries
-- **Option chain** — strikes with IV / last price / volume per expiry
-- **Put/Call ratio** — real-time snapshot + daily time series (with open interest)
-- **OCC symbol resolver** — construct & validate OCC option codes
-
-### 🟡 Computed analytics (the core value)
+### 🟢 Module ①: Options analytics (US OPRA)
+- **Option chain / expirations / P-C ratio / OCC resolver** — native data wrapped
 - **Single-contract Greeks** — Delta / Gamma / Theta / Vega / Rho via Black-Scholes
-- **IV vs HV** — implied vol (from chain) vs historical vol (from K-line), with rich/cheap judgment
-- **Volatility smile & skew** — per-strike IV curve + put skew (downside fear indicator)
-- **IV Rank & IV Percentile** — via local accumulation (see Limitations below)
-- **Exercise probability** — BS closed-form N(d2) + |delta| approximation
-- **Portfolio Greeks** — multi-leg weighted Greeks with BUY/SELL sign handling
-- **Expiration P&L analysis** — break-even points (linear interpolation), max profit/loss
-- **Strategy leg generator** — 8 standard strategies (Straddle, Strangle, Spreads, Butterfly, Collar, Covered Call, CSP)
+- **IV vs HV** — implied vol (from chain) vs historical vol (from K-line)
+- **Volatility smile & skew** — per-strike IV curve + put skew
+- **IV Rank & IV Percentile** — via local accumulation
+- **Exercise probability / Portfolio Greeks / Expiration P&L / 8 strategy legs**
+- **Put/Call Wall** — largest-volume strikes as support/resistance
+- **Gamma Exposure (GEX)** — dealer hedging pressure + zero-gamma flip point
+- **Earnings IV Crush** — pre/post-earnings IV change with earnings calendar
+
+### 🔵 Module ②: Anomaly tracking
+- **Anomaly signals** — block trades, limit-up/down, with bull/bear emotion tags
+- **Top movers** — stocks beating 20-day volatility bands, with correlated news
+- **Anomaly composite score** — single-symbol 0-100 score fusing signals + capital flow + change + movers
+
+### 💰 Module ③: Capital flow / main force
+- **Capital distribution** — large/medium/small order inflow/outflow + net + minute-level flow series
+- **HK broker holdings** — top-10 buy/sell brokers, full detail, single-broker history (HK only)
+- **Short selling** — daily short-volume ratio + open interest (US days-to-cover / HK cost)
+
+### 📅 Module ④: Event calendar
+- **Earnings calendar** — estimated/actual EPS, published vs TBD
+- **Dividend calendar** — amount, type (regular/special), payment date
+
+### 🌡️ Module ⑤: Market sentiment
+- **Market temperature** — 0-100 index + valuation/sentiment sub-scores + history
+- **Heat rankings** — total heat / rising / trading / discussion / watchlist across markets
+- **Daily briefing** — one-click aggregate (temp + heat top5 + movers top5 + anomaly stats + SPY P/C)
 
 ## Requirements
 
 - **Longbridge CLI** installed and authenticated (`longbridge auth login`)
 - **Python 3.8+** (no third-party packages — pure standard library)
-- Longbridge account with **OPRA options market data** permission
+- Options module needs **OPRA options market data** permission (modules ②–⑤ do not)
 
 ## Installation
 
 ### Option A: As a ZCode / Claude Code skill
 
-Copy this folder to your skills directory:
+Copy or symlink this folder to your skills directory:
 
 ```bash
-# ZCode
-cp -r longbridge-derivatives-pro ~/.zcode/skills/
+# ZCode (symlink recommended — picks up edits live)
+mklink /D %USERPROFILE%\.zcode\skills\longbridge-pro F:\path\to\LongBridge_Enhance_Skill
 
 # Claude Code
-cp -r longbridge-derivatives-pro ~/.claude/skills/
+cp -r LongBridge_Enhance_Skill ~/.claude/skills/longbridge-pro
 ```
 
 Verify the environment:
@@ -59,8 +72,6 @@ python scripts/check_env.py
 
 ### Option B: Standalone scripts
 
-Clone and run directly — the scripts work anywhere with Python + Longbridge CLI:
-
 ```bash
 git clone https://github.com/Hunter-Han-SF/LongBridge_Enhance_Skill.git
 cd LongBridge_Enhance_Skill
@@ -70,19 +81,21 @@ python scripts/check_env.py
 ## Quick start
 
 ```bash
-# Option chain for AAPL
-python scripts/quote/get_option_chain.py AAPL.US --date 2026-09-18
+# === Options ===
+python scripts/quote/get_option_volatility.py AAPL.US        # IV vs HV
+python scripts/quote/get_put_call_wall.py AAPL.US --date 2026-09-18  # support/resistance
 
-# Is AAPL's IV cheap or expensive? (IV vs HV)
-python scripts/quote/get_option_volatility.py AAPL.US
+# === Anomaly & capital flow ===
+python scripts/market/get_top_movers.py --market US          # movers + news
+python scripts/flow/get_capital_flow.py AAPL.US --flow       # minute capital flow
+python scripts/flow/get_broker_holding.py 700.HK --detail    # HK broker holdings
 
-# Greeks for a specific contract (Black-Scholes computed)
-python scripts/quote/get_option_quote.py AAPL.US 2026-08-14 315 CALL
+# === Calendar & sentiment ===
+python scripts/calendar/get_earnings_calendar.py --market US
+python scripts/sentiment/get_market_temp.py US
 
-# Analyze a Bull Call Spread P&L
-python scripts/quote/get_option_strategy.py AAPL.US 2026-08-14 BULL_CALL_SPREAD
-# ...then pipe the legs JSON into:
-python scripts/quote/calc_option_pnl.py '<legs-json>'
+# === One-click daily briefing ===
+python scripts/sentiment/daily_briefing.py --market US
 ```
 
 See [`SKILL.md`](SKILL.md) for the full command reference.
@@ -91,31 +104,21 @@ See [`SKILL.md`](SKILL.md) for the full command reference.
 
 These are **data-source limitations** of the Longbridge API, not bugs:
 
-1. **Single-contract `option quote` returns empty** — The CLI's `option quote <OCC>` currently returns `[]` for all contracts (reason unclear despite OPRA permission). Greeks are therefore computed via Black-Scholes using IV from the chain, not fetched natively.
+1. **Single-contract `option quote` returns empty** — Greeks computed via Black-Scholes using chain IV.
+2. **No historical IV** — IV Rank/Percentile use **local accumulation** (`get_iv_history.py` daily).
+3. **US options only (OPRA)** — HK / A-share options return empty.
+4. **No per-strike open interest** — Put/Call Wall and GEX use volume as proxy (labeled in output).
+5. **broker-holding is HK-only** — US symbols return empty.
+6. **Short data US/HK fields differ** — auto-detected by field presence.
 
-2. **No historical IV** — `option chain` only returns real-time data; you cannot query a past date. IV Rank / IV Percentile use a **local accumulation** model: run `get_iv_history.py` daily to build a series in `~/.lbr_iv_history/`.
-
-3. **US options only (OPRA)** — HK / A-share option data returns empty per Longbridge's coverage.
-
-4. **Put/Call ratio is US-only** — `option volume daily` does not support HK.
-
-For the full Futu ↔ Longbridge capability mapping (including what's **not** implementable — unusual options activity, 0DTE screeners, etc.), see [`references/capability-map.md`](references/capability-map.md).
-
-## Not included (and why)
-
-Some capabilities of similar brokers' option APIs are **fundamentally impossible** with Longbridge's data:
-
-- ❌ Unusual options activity / sweep / block detection (requires per-trade OPRA tick stream with exchange flags)
-- ❌ 0DTE screeners (depends on the above)
-- ❌ Earnings IV Crush forecasts (requires historical IV + earnings date correlation server-side)
-- ❌ Seller strategy screeners with annualized return (requires full-market scan)
-
-These are proprietary server-side data products, not generic API outputs.
+For the full mapping (Futu↔Longbridge options, plus new modules CLI field map), see
+[`references/capability-map.md`](references/capability-map.md) and
+[`references/new-modules-map.md`](references/new-modules-map.md).
 
 ## Verification
 
 All calculations have been cross-validated against theoretical constraints:
-- Black-Scholes: Put-Call Parity holds (error < 3e-14), Gamma/Vega Call=Put symmetry exact, Delta(Call) - Delta(Put) = 1
+- Black-Scholes: Put-Call Parity holds (error < 3e-14), Gamma/Vega Call=Put symmetry exact
 - Historical Volatility: matches `statistics.stdev` to floating-point precision
 - P&L break-even: linear interpolation, verified against closed-form formulas
 

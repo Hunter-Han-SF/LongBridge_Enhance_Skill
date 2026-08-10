@@ -7,3 +7,8 @@ __pycache__/
 # 本地 IV 历史数据(每个用户自己积累,不入库)
 # 注:此文件存在 ~/.lbr_iv_history/ 不在 skill 目录,这里仅作记录
 .env
+
+# ZCode / 编辑器临时文件
+.zcode/
+.vscode/
+.idea/

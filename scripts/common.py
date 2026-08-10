@@ -177,11 +177,30 @@ def run_cli(
 
 
 def _looks_like_auth_error(text: str) -> bool:
+    """检测 CLI 输出是否像 token 失效。
+
+    ⚠️ 不能用纯子串匹配:数据值里可能含 "401"(如 balance="30617440165")、
+       "auth"(如 author 字段)等。改用带边界的短语匹配 + 仅在 CLI 报错(非 JSON 数据)时触发。
+    """
     lower = text.lower()
-    return any(
-        kw in lower
-        for kw in ("not logged in", "unauthorized", "token", "auth", "401", "access denied")
-    ) and "valid" not in lower  # "Token Status: valid" 不是错误
+    # 这些短语在真实错误信息里作为独立词出现,不会误命中数值/字段名
+    strong_signals = (
+        "not logged in", "unauthorized", "access denied",
+        "login required", "please login", "please log in",
+        "authentication failed", "authenticat",  # authenticate/authentication
+        "invalid token", "token expired", "token is invalid", "no token",
+    )
+    for sig in strong_signals:
+        if sig in lower:
+            return True
+    # "401"/"token" 单独出现不可靠,必须伴随明确的 HTTP 错误上下文。
+    # ⚠️ "status" 不能作为上下文 —— quote 返回里有合法的 "status":"Normal" 字段。
+    if "401" in lower and any(w in lower for w in ("unauthorized", "forbidden", "http error")):
+        return True
+    # "Token Status: valid" 之类的合法状态明确排除
+    if "token status" in lower and "valid" in lower:
+        return False
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +629,352 @@ def days_to_years(expiry: str, today: str | None = None) -> float:
     t = _dt.strptime(today or _dt.now().strftime("%Y-%m-%d"), "%Y-%m-%d")
     e = _dt.strptime(expiry, "%Y-%m-%d")
     return max((e - t).days, 0) / 365.0
+
+
+# ===========================================================================
+# 多维度增强模块公共封装(异动 / 资金流 / 日历 / 情绪)
+# ===========================================================================
+# 以下函数对应 Longbridge CLI 的扁平命令(非文档的 REST 路径)。
+# 已实测返回结构,字段名以真实输出为准(详见 references/new-modules-map.md)。
+
+
+# ---- 工具:counter_id → 标准 symbol ----
+
+# Longbridge 的异动/排行用 counter_id 标的,如 "ST/US/DASH"、"ETF/US/SPCH"。
+# 各市场后缀不同,这里统一转成 "CODE.MARKET" 形式。
+_COUNTER_MARKET_MAP = {
+    "US": "US", "HK": "HK", "SH": "SH", "SZ": "SZ",
+    "SG": "SG", "CN": "CN", "JP": "JP", "UK": "UK",
+    "DE": "DE", "AU": "AU",
+}
+
+
+def counter_id_to_symbol(counter_id: str) -> str | None:
+    """'ST/US/DASH' → 'DASH.US'。无法识别返回 None。
+
+    支持格式: <类型>/<市场>/<代码>,如 ST/US/AAPL、ETF/HK/02800、WARRANT/HK/12345。
+    """
+    if not counter_id or not isinstance(counter_id, str):
+        return None
+    parts = counter_id.split("/")
+    if len(parts) < 3:
+        return None
+    market = parts[-2].upper()
+    code = parts[-1]
+    suffix = _COUNTER_MARKET_MAP.get(market)
+    if not suffix:
+        return None
+    return f"{code}.{suffix}"
+
+
+# ---- 模块①异动追踪 ----
+
+def get_anomaly(market: str = "HK", symbol: str | None = None, count: int = 50) -> dict:
+    """获取异动信号(大单买卖/封板/放量等)。
+
+    Args:
+        market: HK | US | CN | SG
+        symbol: 过滤特定标的(可选,需完整 symbol 如 AAPL.US)
+        count: 返回条数(≤100)
+
+    Returns:
+        {all_off: bool, changes: [{alert_name, alert_type, emotion, counter_id,
+                                   name, change_values, alert_time, ...}]}
+        emotion: 1=利多, 2=利空
+    """
+    args = ["anomaly", "--market", market, "--count", str(count)]
+    if symbol:
+        args += ["--symbol", symbol]
+    data = run_cli(*args)
+    if is_empty(data) or not isinstance(data, dict):
+        return {"all_off": True, "changes": []}
+    return {
+        "all_off": bool(data.get("all_off", False)),
+        "changes": normalize_records(data.get("changes", [])),
+    }
+
+
+def get_top_movers(market: str | None = None, sort: str = "hot", count: int = 20) -> dict:
+    """获取涨跌异动榜(含关联新闻)。
+
+    Args:
+        market: HK | US | CN | SG(传 None 表示全部市场)
+        sort: hot | time | change
+        count: 返回条数
+
+    Returns:
+        {events: [{alert_reason, alert_type, counter_id, post:{新闻对象}, ...}],
+         next_params: dict/None, updated_at: str}
+    """
+    args = ["top-movers", "--sort", sort, "--count", str(count)]
+    if market:
+        args += ["--market", market]
+    data = run_cli(*args)
+    if is_empty(data) or not isinstance(data, dict):
+        return {"events": [], "next_params": None, "updated_at": None}
+    return {
+        "events": normalize_records(data.get("events", [])),
+        "next_params": data.get("next_params"),
+        "updated_at": data.get("updated_at"),
+    }
+
+
+# ---- 模块③主力资金流 ----
+
+def get_capital_flow_snapshot(symbol: str) -> dict:
+    """获取日内大/中/小单资金分布快照。
+
+    Returns:
+        {symbol, timestamp, capital_in:{large,medium,small},
+         capital_out:{large,medium,small},
+         net:{large,medium,small,total}}(净额=流入-流出)
+    """
+    data = run_cli("capital", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return {}
+    cap_in = data.get("capital_in", {}) or {}
+    cap_out = data.get("capital_out", {}) or {}
+    # 算净流入
+    net = {}
+    for k in ("large", "medium", "small"):
+        i = to_float((cap_in or {}).get(k), 0) or 0
+        o = to_float((cap_out or {}).get(k), 0) or 0
+        net[k] = round(i - o, 2)
+    net["total"] = round(sum(net.values()), 2)
+    return {
+        "symbol": data.get("symbol", symbol),
+        "timestamp": data.get("timestamp"),
+        "capital_in": _coerce(cap_in) if isinstance(cap_in, dict) else cap_in,
+        "capital_out": _coerce(cap_out) if isinstance(cap_out, dict) else cap_out,
+        "net": net,
+    }
+
+
+def get_capital_flow_series(symbol: str) -> list[dict]:
+    """获取日内分钟级资金净流入时序。"""
+    data = run_cli("capital", symbol, "--flow")
+    if is_empty(data) or not isinstance(data, list):
+        return []
+    return normalize_records(data)
+
+
+def get_broker_holding_top(symbol: str, period: str = "rct_1") -> dict:
+    """港股经纪商 top10 买/卖(⚠️仅港股)。
+
+    Args:
+        symbol: 如 700.HK
+        period: rct_1 | rct_5 | rct_20 | rct_60(近1/5/20/60日)
+
+    Returns:
+        {buy:[{name, parti_number, chg, strong}], sell:[...], updated_at}
+    """
+    data = run_cli("broker-holding", symbol, "--period", period)
+    if is_empty(data) or not isinstance(data, dict):
+        return {"buy": [], "sell": [], "updated_at": None}
+    return {
+        "buy": normalize_records(data.get("buy", [])),
+        "sell": normalize_records(data.get("sell", [])),
+        "updated_at": data.get("updated_at"),
+    }
+
+
+def get_broker_holding_detail(symbol: str) -> dict:
+    """港股经纪商全量持仓明细(含 1/5/20/60 日变动)。
+
+    Returns:
+        {list:[{name, parti_number, strong, ratio:{value,chg_1,...}, shares:{...}}],
+         updated_at}
+    """
+    data = run_cli("broker-holding", "detail", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return {"list": [], "updated_at": None}
+    return {
+        "list": normalize_records(data.get("list", [])),
+        "updated_at": data.get("updated_at"),
+    }
+
+
+def get_short_trades(symbol: str, count: int = 20) -> dict:
+    """每日沽空成交量比率时序。
+
+    美股字段: nus_amount/ny_amount/total_amount/rate/close
+    港股字段: amount/balance/total_amount/rate/close
+
+    Returns:
+        {symbol, sources, data:[{...}], market: 'US'|'HK'(自动推断)}
+    """
+    data = run_cli("short-trades", symbol, "--count", str(count))
+    if is_empty(data) or not isinstance(data, dict):
+        return {"symbol": symbol, "data": [], "sources": None, "market": None}
+    rows = normalize_records(data.get("data", []))
+    market = "US" if rows and "nus_amount" in rows[0] else ("HK" if rows else None)
+    return {"symbol": data.get("symbol", symbol), "sources": data.get("sources"),
+            "data": rows, "market": market}
+
+
+def get_short_positions(symbol: str, count: int = 20) -> dict:
+    """沽空持仓(未平仓量)时序。
+
+    美股字段(双周FINRA): current_shares_short/rate/days_to_cover/close
+        ⚠️文档说 short_interest,实际字段名是 current_shares_short
+    港股字段(日频HKEX): amount/balance/cost/rate/close
+
+    Returns:
+        {symbol, sources, data:[{...}], market, update_timestamp}
+    """
+    data = run_cli("short-positions", symbol, "--count", str(count))
+    if is_empty(data) or not isinstance(data, dict):
+        return {"symbol": symbol, "data": [], "sources": None,
+                "market": None, "update_timestamp": None}
+    rows = normalize_records(data.get("data", []))
+    market = "US" if rows and "current_shares_short" in rows[0] else ("HK" if rows else None)
+    return {"symbol": data.get("symbol", symbol), "sources": data.get("sources"),
+            "data": rows, "market": market,
+            "update_timestamp": data.get("update_timestamp")}
+
+
+# ---- 模块④事件日历 ----
+
+def get_finance_calendar(
+    category: str = "report",
+    market: str | None = None,
+    symbol: str | list[str] | None = None,
+    filter: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    count: int = 100,
+) -> list[dict]:
+    """获取事件日历(财报/分红/分拆/IPO/宏观)。
+
+    Args:
+        category: report | dividend | split | ipo | macrodata | closed
+        market: HK|US|CN|SG|JP|UK|DE|AU(传 None 表示全部)
+        symbol: 单个或列表(最多 10 个,传 symbol 会过滤到这些标的)
+        filter: 'watchlist' 或 'positions'(与 symbol 互斥,过滤到自选/持仓)
+        start/end: YYYY-MM-DD
+        count: 返回条数
+
+    Returns:
+        [{date, count, infos:[{counter_id, counter_name, date, date_type,
+           content, data_kv:[{type,value,value_raw}], ext:{...}}]}]
+    """
+    args = ["finance-calendar", category]
+    if market:
+        args += ["--market", market]
+    if isinstance(symbol, str):
+        args += ["--symbol", symbol]
+    elif isinstance(symbol, list):
+        for s in symbol[:10]:
+            args += ["--symbol", s]
+    if filter:
+        args += ["--filter", filter]
+    if start:
+        args += ["--start", start]
+    if end:
+        args += ["--end", end]
+    args += ["--count", str(count)]
+    data = run_cli(*args)
+    if is_empty(data) or not isinstance(data, dict):
+        return []
+    buckets = data.get("list", []) or []
+    out = []
+    for b in buckets:
+        if not isinstance(b, dict):
+            continue
+        out.append({
+            "date": b.get("date"),
+            "count": b.get("count", 0),
+            "infos": normalize_records(b.get("infos", [])),
+        })
+    return out
+
+
+# ---- 模块⑤市场情绪 ----
+
+def get_market_temp(market: str = "HK", history: bool = False,
+                    start: str | None = None, end: str | None = None) -> dict | list[dict]:
+    """市场温度指数(0-100,越高越乐观)。
+
+    Args:
+        market: HK | US | CN | SG
+        history: True 返回时序(需配合 start/end),False 返回当前快照
+        start/end: YYYY-MM-DD(仅 history 模式)
+
+    Returns:
+        快照模式: {market, temperature, description, valuation, sentiment}
+        时序模式: [{date, temperature, valuation, sentiment, description}, ...]
+    """
+    args = ["market-temp", market]
+    if history:
+        args += ["--history"]
+        if start:
+            args += ["--start", start]
+        if end:
+            args += ["--end", end]
+    data = run_cli(*args)
+    if is_empty(data):
+        return {} if not history else []
+
+    # CLI 返回 [{field, value}, ...] 键值对形式,展平成 dict
+    def _flatten(rows):
+        out = {}
+        for r in rows:
+            if isinstance(r, dict) and "field" in r:
+                out[str(r["field"]).lower()] = r.get("value")
+        return out
+
+    if history and isinstance(data, list):
+        # 时序:每条记录是一组 field/value,带 date
+        result = []
+        for row in data:
+            flat = _flatten(row) if isinstance(row, list) else (
+                row if isinstance(row, dict) else {})
+            result.append(flat)
+        return result
+    # 快照
+    if isinstance(data, list):
+        flat = _flatten(data)
+        return {
+            "market": flat.get("market", market),
+            "temperature": to_float(flat.get("temperature")),
+            "description": flat.get("description"),
+            "valuation": to_float(flat.get("valuation")),
+            "sentiment": to_float(flat.get("sentiment")),
+        }
+    return data
+
+
+def get_heat_rank_keys(market: str = "US") -> list[dict]:
+    """列出所有可用的热度榜 tab(先列 key 再拉具体榜)。
+
+    Returns:
+        [{key, market, name}, ...] 如 {key:'hot_all-us', market:'US', name:'总热度'}
+    """
+    data = run_cli("rank", "--market", market)
+    if is_empty(data) or not isinstance(data, list):
+        return []
+    return normalize_records(data)
+
+
+def get_heat_rank(key: str, count: int = 20) -> dict:
+    """拉具体热度榜。
+
+    Args:
+        key: 来自 get_heat_rank_keys 的 key,如 'hot_all-us'
+        count: 返回条数
+
+    Returns:
+        {bmp, updated_at, lists:[{symbol, name, last_done, chg, inflow, balance,
+           volume_rate, five_day_chg, ...}]}(lists 是完整 quote+heat 对象)
+    """
+    data = run_cli("rank", "--key", key, "--count", str(count))
+    if is_empty(data) or not isinstance(data, dict):
+        return {"bmp": None, "updated_at": None, "lists": []}
+    return {
+        "bmp": data.get("bmp"),
+        "updated_at": data.get("updated_at"),
+        "lists": normalize_records(data.get("lists", [])),
+    }
 
 
 # ---------------------------------------------------------------------------
