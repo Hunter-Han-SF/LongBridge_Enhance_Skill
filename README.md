@@ -1,5 +1,7 @@
 # LongBridge Enhance Skill
 
+**[English](README.md)** | [中文](README.zh-CN.md)
+
 > Community-developed options analytics enhancement for the [Longbridge OpenAPI](https://open.longbridge.com).
 > Provides Black-Scholes Greeks, historical volatility, IV Rank/Percentile, volatility smile, put-call ratio, strategy P&L, and more — computed locally from Longbridge CLI data.
 
