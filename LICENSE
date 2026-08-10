@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 HunterH
+Copyright (c) 2026 longbridge-derivatives-pro contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +19,14 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+## Trademark Notice
+
+- **Longbridge** is a trademark of Longbridge Securities. This skill is an
+  independent, community-developed tool that calls the publicly documented
+  Longbridge OpenAPI/CLI. It is not affiliated with or endorsed by Longbridge.
+- **Futu** is a trademark of Futu Holdings. References to Futu in the
+  documentation are for capability comparison only.
+- All product names, logos, and brands are property of their respective owners.
