@@ -87,7 +87,9 @@ def _score_dimension(symbol: str, market: str) -> dict:
         net = cap.get("net", {}) if cap else {}
         net_large = to_float(net.get("large"), 0) or 0
         net_total = to_float(net.get("total"), 0) or 0
-        # 净流入越大分越高(绝对值归一化到 30)
+        # 净流入越大分越高(绝对值归一化到 30)。
+        # 单位为当地货币完整元(common 已把 CLI 的"万"×1e4 换算),
+        # 大单净流入约 300 万(美元/港元)计满 30 分
         cap_score = min(abs(net_large) / 1e5, 30) if net_large != 0 else 0
         dims["capital"] = {
             "score": round(cap_score, 1),

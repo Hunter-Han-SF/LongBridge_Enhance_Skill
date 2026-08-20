@@ -132,27 +132,24 @@ def _flow_mode(symbol: str, output_json: bool) -> dict:
     if is_empty(series):
         raise ValueError(f"无分钟资金流数据。确认 {symbol} 当日有交易。")
 
-    # 加工:累计净流入 + 可读时间
-    cumulative = 0.0
+    # series 的 inflow 已是"当日累计净流入"(common 层换算,勿重复累加),
+    # minute_delta 是相邻分钟增量
     for row in series:
-        inflow = to_float(row.get("inflow"), 0) or 0
-        cumulative += inflow
-        row["cumulative"] = round(cumulative, 2)
         row["time_str"] = _ts_to_hm(row.get("time"))
-        row["inflow_fmt"] = _fmt_money(inflow)
-        row["cumulative_fmt"] = _fmt_money(cumulative)
+        row["delta_fmt"] = _fmt_money(row.get("minute_delta"))
+        row["cum_fmt"] = _fmt_money(row.get("inflow"))
 
-    # 找峰值(最大单分钟流入/流出)
-    peak = max(series, key=lambda r: to_float(r.get("inflow"), 0) or 0)
-    trough = min(series, key=lambda r: to_float(r.get("inflow"), 0) or 0)
+    # 找峰值(最大单分钟净流入/净流出,基于分钟增量)
+    peak = max(series, key=lambda r: to_float(r.get("minute_delta"), 0) or 0)
+    trough = min(series, key=lambda r: to_float(r.get("minute_delta"), 0) or 0)
 
     result = {
         "symbol": symbol,
         "mode": "flow",
         "points": len(series),
-        "final_cumulative": series[-1]["cumulative"],
-        "peak_inflow": {"time": peak["time_str"], "value": peak["inflow"]},
-        "max_outflow": {"time": trough["time_str"], "value": trough["inflow"]},
+        "final_cumulative": series[-1]["inflow"],
+        "peak_inflow": {"time": peak["time_str"], "minute_delta": peak["minute_delta"]},
+        "max_outflow": {"time": trough["time_str"], "minute_delta": trough["minute_delta"]},
         "series": series,
     }
 
@@ -161,13 +158,13 @@ def _flow_mode(symbol: str, output_json: bool) -> dict:
         return result
 
     print(f"{symbol} 当日分钟资金净流入({len(series)} 个点)")
-    print(f"  累计净流入: {_fmt_money(series[-1]['cumulative'])}")
-    print(f"  最大单分钟流入: {peak['time_str']} {_fmt_money(peak['inflow'])}")
-    print(f"  最大单分钟流出: {trough['time_str']} {_fmt_money(trough['inflow'])}")
+    print(f"  累计净流入: {_fmt_money(series[-1]['inflow'])}")
+    print(f"  最大单分钟流入: {peak['time_str']} {_fmt_money(peak['minute_delta'])}")
+    print(f"  最大单分钟流出: {trough['time_str']} {_fmt_money(trough['minute_delta'])}")
     print()
     # 只显示关键节点(每 30 分钟采样 + 首5分钟)
     sampled = _sample_series(series)
-    print_display_table(sampled, columns=["time_str", "inflow_fmt", "cumulative_fmt"])
+    print_display_table(sampled, columns=["time_str", "delta_fmt", "cum_fmt"])
     return result
 
 

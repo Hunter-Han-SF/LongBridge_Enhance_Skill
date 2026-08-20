@@ -40,13 +40,18 @@ def calc_iv_percentile(symbol: str, min_points: int = 20, output_json: bool = Fa
     total = len(ivs) - 1
     percentile = (below / total * 100) if total > 0 else 50.0
 
+    # 中位数(偶数长度取中间两值平均)
+    sv = sorted(ivs)
+    n = len(sv)
+    median = sv[n // 2] if n % 2 == 1 else (sv[n // 2 - 1] + sv[n // 2]) / 2
+
     result = {
         "symbol": symbol,
         "current_iv_pct": current,
         "iv_percentile": round(percentile, 1),
         "data_points": len(series),
         "date_range": hist["date_range"],
-        "median_iv_pct": round(sorted(ivs)[len(ivs) // 2], 2),
+        "median_iv_pct": round(median, 2),
         "interpretation": (
             "高位(>70): IV 偏贵"
             if percentile > 70 else

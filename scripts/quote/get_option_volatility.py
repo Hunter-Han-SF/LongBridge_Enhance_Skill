@@ -77,6 +77,7 @@ def analyze(
         "hv_pct": round(hv * 100, 2) if hv else None,
         "hv_days": hv_days,
         "iv_hv_ratio": round(iv_hv_ratio, 3) if iv_hv_ratio else None,
+        "valuation": None,                  # HV 算不出时保持 None(下方判断跳过)
         "note": "HV 为本地计算值(对数收益年化),非服务端返回",
     }
 
@@ -96,9 +97,9 @@ def analyze(
     print(f"{symbol} 期权波动率分析(到期 {expiry},HV 窗口 {hv_days} 日)")
     print(f"  正股现价:     {price}")
     print(f"  ATM IV({option_type}):  {result['iv_pct']}%")
-    print(f"  HV({hv_days}日年化):    {result['hv_pct']}%")
+    print(f"  HV({hv_days}日年化):    {result['hv_pct'] if result['hv_pct'] is not None else 'N/A'}%")
     print(f"  IV/HV 比率:   {result['iv_hv_ratio']}")
-    print(f"  判断:         {result['valuation']}")
+    print(f"  判断:         {result['valuation'] or '无法判断(HV 数据不足)'}")
     print(f"  注: HV 为本地计算值,与 Futu 服务端 HV 可能有细微差异")
     return result
 

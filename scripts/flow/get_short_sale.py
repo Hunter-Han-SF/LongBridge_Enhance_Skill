@@ -45,6 +45,7 @@ from common import (  # noqa: E402
 
 
 def _ts_to_date(ts) -> str:
+    """Unix 时间戳 → YYYY-MM-DD(键名标注 UTC,避免与市场当地时间混淆)。"""
     n = to_int(ts)
     if n is None:
         return str(ts)
@@ -83,9 +84,9 @@ def _trade_mode(symbol: str, count: int, output_json: bool) -> dict:
     if is_empty(rows):
         raise ValueError(f"无沽空成交量数据。确认 {symbol} 支持沽空查询。")
 
-    # 加工可读列
+    # 加工可读列(日期键名带 _utc 后缀,明确时区)
     for r in rows:
-        r["date"] = _ts_to_date(r.get("timestamp"))
+        r["date_utc"] = _ts_to_date(r.get("timestamp"))
         r["rate_label"] = _rate_label(to_float(r.get("rate")))
 
     # 趋势判断: 最近 vs 前1/3 平均
@@ -119,9 +120,9 @@ def _trade_mode(symbol: str, count: int, output_json: bool) -> dict:
     print()
     # 列因市场而异
     if market == "US":
-        cols = ["date", "rate_label", "nus_amount", "ny_amount", "total_amount", "close"]
+        cols = ["date_utc", "rate_label", "nus_amount", "ny_amount", "total_amount", "close"]
     else:  # HK
-        cols = ["date", "rate_label", "amount", "total_amount", "close"]
+        cols = ["date_utc", "rate_label", "amount", "total_amount", "close"]
     print_display_table(rows, columns=cols)
     return result
 
@@ -134,7 +135,7 @@ def _position_mode(symbol: str, count: int, output_json: bool) -> dict:
         raise ValueError(f"无沽空持仓数据。确认 {symbol} 支持沽空查询。")
 
     for r in rows:
-        r["date"] = _ts_to_date(r.get("timestamp"))
+        r["date_utc"] = _ts_to_date(r.get("timestamp"))
 
     result = {
         "symbol": symbol,
@@ -160,9 +161,9 @@ def _position_mode(symbol: str, count: int, output_json: bool) -> dict:
                 print(f"  ⚠️ days_to_cover={latest_dtc} ≥5,逼空风险偏高")
             else:
                 print(f"  days_to_cover={latest_dtc},回补压力正常")
-        cols = ["date", "current_shares_short", "rate", "days_to_cover", "close"]
+        cols = ["date_utc", "current_shares_short", "rate", "days_to_cover", "close"]
     else:  # HK
-        cols = ["date", "amount", "balance", "rate", "cost", "close"]
+        cols = ["date_utc", "amount", "balance", "rate", "cost", "close"]
     print()
     print_display_table(rows, columns=cols)
     return result

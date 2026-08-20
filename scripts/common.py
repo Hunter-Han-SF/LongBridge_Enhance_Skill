@@ -139,14 +139,14 @@ def run_cli(
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
 
-        # token 失效检测
-        if check_auth and _looks_like_auth_error(stdout + stderr):
-            raise LongbridgeCliError(
-                "Longbridge token 失效或未登录。请运行:\n"
-                "  longbridge auth login"
-            )
-
         if proc.returncode != 0:
+            # token 失效检测(仅在 CLI 报错时触发,避免成功返回的数据内容里
+            # 出现 "access denied" 等字面量被误判为 token 失效)
+            if check_auth and _looks_like_auth_error(stdout + stderr):
+                raise LongbridgeCliError(
+                    "Longbridge token 失效或未登录。请运行:\n"
+                    "  longbridge auth login"
+                )
             last_err = f"CLI 退出码 {proc.returncode}: {stderr.strip() or stdout.strip()}"
             # 限频类错误退避重试
             if "rate" in (stdout + stderr).lower() or "429" in (stdout + stderr):
@@ -171,6 +171,12 @@ def run_cli(
                         return json.loads(stripped[i:])
                     except json.JSONDecodeError:
                         break
+            # 整体不是 JSON:可能 token 失效时 CLI 以退出码 0 输出错误文本
+            if check_auth and _looks_like_auth_error(stripped):
+                raise LongbridgeCliError(
+                    "Longbridge token 失效或未登录。请运行:\n"
+                    "  longbridge auth login"
+                )
             raise LongbridgeCliError(f"JSON 解析失败。stdout 前 200 字: {stripped[:200]!r}")
 
     raise LongbridgeCliError(f"重试 {retries} 次后仍失败: {last_err}")
@@ -197,9 +203,9 @@ def _looks_like_auth_error(text: str) -> bool:
     # ⚠️ "status" 不能作为上下文 —— quote 返回里有合法的 "status":"Normal" 字段。
     if "401" in lower and any(w in lower for w in ("unauthorized", "forbidden", "http error")):
         return True
-    # "Token Status: valid" 之类的合法状态明确排除
-    if "token status" in lower and "valid" in lower:
-        return False
+    # "Token Status: ..." 行:注意 "invalid" 含子串 "valid",必须先判 invalid
+    if "token status" in lower:
+        return "invalid" in lower
     return False
 
 
@@ -238,7 +244,14 @@ def check_env(force: bool = False) -> dict[str, Any]:
 
     try:
         auth_out = run_cli("auth", "status", fmt="raw", check_auth=False, retries=0)
-        result["auth"] = "valid" if "valid" in auth_out.lower() else "invalid"
+        lower = auth_out.lower()
+        # ⚠️ "invalid" 包含子串 "valid",必须先判失效信号,否则失效 token 会被误判为有效
+        if any(sig in lower for sig in ("invalid", "expired", "not logged in", "unauthorized")):
+            result["auth"] = "invalid"
+        elif "valid" in lower:
+            result["auth"] = "valid"
+        else:
+            result["auth"] = "invalid"
         result["auth_detail"] = auth_out.strip()
     except LongbridgeCliError:
         result["auth"] = "unknown"
@@ -260,13 +273,10 @@ def check_env(force: bool = False) -> dict[str, Any]:
 
 def to_float(v: Any, default: float | None = None) -> float | None:
     """安全转 float。空值/无效值返回 default。"""
-    if v is None or v == "" or v == "0" and default is not None:
-        pass
     if v is None or v == "":
         return default
     try:
-        f = float(v)
-        return f
+        return float(v)
     except (ValueError, TypeError):
         return default
 
@@ -293,18 +303,6 @@ def normalize_records(data: Any) -> list[dict]:
             new_row[k] = _coerce(v)
         out.append(new_row)
     return out
-
-
-_NUM_KEYS_HINT = {
-    "strike", "last", "close", "open", "high", "low",
-    "call_iv", "put_iv", "call_last", "put_last", "call_vol", "put_vol",
-    "delta", "gamma", "theta", "vega", "rho",
-    "implied_volatility", "open_interest", "volume",
-    "c", "p", "call_vol", "put_vol",
-    "total_call_volume", "total_put_volume", "total_volume",
-    "total_call_open_interest", "total_put_open_interest", "total_open_interest",
-    "put_call_volume_ratio", "put_call_open_interest_ratio",
-}
 
 
 def _coerce(v: Any) -> Any:
@@ -396,11 +394,19 @@ def get_kline(symbol: str, count: int = 60, period: str = "day") -> list[dict]:
 
 
 def get_option_expirations(underlying: str) -> list[str]:
-    """返回可用到期日列表 ['YYYY-MM-DD', ...]。"""
+    """返回可用到期日列表 ['YYYY-MM-DD', ...](已过滤今天之前的过期日期)。
+
+    实测 chain 返回的列表头部会带最近已到期的合约(如今天 08-20 仍返回 08-14/17/19),
+    默认取 expirations[0] 的脚本会因此用过期数据,必须过滤。
+    """
     data = run_cli("option", "chain", underlying)
     if is_empty(data):
         return []
-    return [row["expiry_date"] for row in data if isinstance(row, dict) and "expiry_date" in row]
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y-%m-%d")
+    return [row["expiry_date"] for row in data
+            if isinstance(row, dict) and row.get("expiry_date")
+            and row["expiry_date"] >= today]
 
 
 def get_option_chain(underlying: str, expiry: str) -> list[dict]:
@@ -724,38 +730,61 @@ def get_top_movers(market: str | None = None, sort: str = "hot", count: int = 20
 def get_capital_flow_snapshot(symbol: str) -> dict:
     """获取日内大/中/小单资金分布快照。
 
+    ⚠️ CLI 原始单位是"万"(实测:AAPL 原始值合计×1e4 ≈ 当日成交额的 20%;
+       若按"元"解释则仅 0.002%,不合常理)。本函数统一 ×1e4 换算成
+       当地货币完整单位(美股=美元,港股=港元)。
+
     Returns:
         {symbol, timestamp, capital_in:{large,medium,small},
          capital_out:{large,medium,small},
-         net:{large,medium,small,total}}(净额=流入-流出)
+         net:{large,medium,small,total}, unit_note}(净额=流入-流出)
     """
     data = run_cli("capital", symbol)
     if is_empty(data) or not isinstance(data, dict):
         return {}
     cap_in = data.get("capital_in", {}) or {}
     cap_out = data.get("capital_out", {}) or {}
-    # 算净流入
-    net = {}
-    for k in ("large", "medium", "small"):
-        i = to_float((cap_in or {}).get(k), 0) or 0
-        o = to_float((cap_out or {}).get(k), 0) or 0
-        net[k] = round(i - o, 2)
+    # 换算单位("万" → 完整货币单位)并算净流入
+    def _conv(d: dict) -> dict:
+        return {k: (to_float(d.get(k), 0) or 0) * 1e4
+                for k in ("large", "medium", "small")}
+    cap_in_c, cap_out_c = _conv(cap_in), _conv(cap_out)
+    net = {k: round(cap_in_c[k] - cap_out_c[k], 2) for k in ("large", "medium", "small")}
     net["total"] = round(sum(net.values()), 2)
     return {
         "symbol": data.get("symbol", symbol),
         "timestamp": data.get("timestamp"),
-        "capital_in": _coerce(cap_in) if isinstance(cap_in, dict) else cap_in,
-        "capital_out": _coerce(cap_out) if isinstance(cap_out, dict) else cap_out,
+        "capital_in": cap_in_c,
+        "capital_out": cap_out_c,
         "net": net,
+        "unit_note": "CLI 原始单位为万,已 ×1e4 换算为当地货币完整单位(US=USD / HK=HKD)",
     }
 
 
 def get_capital_flow_series(symbol: str) -> list[dict]:
-    """获取日内分钟级资金净流入时序。"""
+    """获取日内分钟级资金净流入时序。
+
+    ⚠️ CLI 的 inflow 字段是"当日累计净流入"而非每分钟增量
+       (实测:391 个点的末值与快照 net.total 完全一致)。
+       本函数 ×1e4 换算为当地货币完整单位(CLI 原始单位为万),
+       并附 minute_delta 字段(相邻分钟的增量)。
+
+    Returns:
+        [{inflow: 当日累计净流入(完整货币单位), minute_delta: 该分钟增量, time, ...}]
+    """
     data = run_cli("capital", symbol, "--flow")
     if is_empty(data) or not isinstance(data, list):
         return []
-    return normalize_records(data)
+    rows = normalize_records(data)
+    prev = 0.0
+    for r in rows:
+        v = to_float(r.get("inflow"))
+        cur = v * 1e4 if v is not None else None
+        r["inflow"] = cur
+        r["minute_delta"] = round(cur - prev, 2) if cur is not None else None
+        if cur is not None:
+            prev = cur
+    return rows
 
 
 def get_broker_holding_top(symbol: str, period: str = "rct_1") -> dict:

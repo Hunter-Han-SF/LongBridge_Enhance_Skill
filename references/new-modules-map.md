@@ -73,9 +73,14 @@ longbridge capital <SYMBOL> --flow    # 分钟级时序
 ```
 {capital_in: {large, medium, small}, capital_out: {large, medium, small}, symbol, timestamp}
 ```
-本 skill 加工出 `net = capital_in - capital_out`(各档 + 合计)。
+⚠️ **单位实测结论:原始值单位是"万"**(AAPL 实测:原始合计 324,217,当日成交额 $159.5 亿;
+按"元"解释仅占 0.002%,不合常理;按"万"解释 ≈ $32.4 亿,占成交额 20%,合理)。
+`get_capital_flow_snapshot()` / `get_capital_flow_series()` 已统一 ×1e4 换算为当地货币完整单位
+(美股=USD,港股=HKD),调用方无需再处理。
 
-**分钟流**返回 `[{inflow, time}, ...]`(当日每分钟净流入,UTC ISO 时间)。
+**分钟流**返回 `[{inflow, time}, ...]`。⚠️ 实测 `inflow` 是**当日累计净流入**(391 个点的
+末值与快照 `net.total` 完全一致),不是每分钟增量。`get_capital_flow_series()` 已 ×1e4 换算
+为当地货币完整单位,并计算 `minute_delta`(相邻分钟增量)供峰值分析使用。
 
 ### `broker-holding` — 港股经纪商持仓 ⚠️仅HK
 
@@ -215,7 +220,10 @@ net_gex(K) = call_gex + put_gex
 6. **market-temp 是键值对数组**:返回 `[{field, value}, ...]`,不是普通对象,`get_market_temp()` 已展平
 7. **rank 两步式**:先列 key 再拉榜,不能直接拉
 8. **quote 的涨跌幅字段名**:实测是 `change_percentage`(百分比形式,"0.29"=0.29%),**不是** `change_pct`/`chg`/`change1m`
-9. **auth 误判规避**:`_looks_like_auth_error()` 用带上下文的短语匹配,避免数据值里的 "401"(如 `turnover:"30617440165"`)、合法字段 `"status":"Normal"` 等被误判为 token 失效
+9. **auth 误判规避**:`_looks_like_auth_error()` 用带上下文的短语匹配,避免数据值里的 "401"(如 `turnover:"30617440165"`)、合法字段 `"status":"Normal"` 等被误判为 token 失效;且**仅在 CLI 报错(非零退出码)或输出整体不是 JSON 时才检测**,成功返回的数据内容(如新闻标题含 "access denied")不会触发
+10. **"invalid" 包含子串 "valid"**:所有基于子串的 valid/invalid 判断(auth status、Token Status)必须**先判失效信号**再判 valid,否则失效 token 会被误判为有效
+11. **期权到期日列表含过期日期**:chain 返回的到期日列表头部会带最近已到期的合约,`get_option_expirations()` 已过滤今天之前的日期(默认取 `expirations[0]` 的脚本依赖此行为)
+12. **时间戳按 UTC 解析**:anomaly/short-trades/option volume daily 的 Unix 时间戳均按 UTC 转换,输出已标注(UTC 后缀或 `date_utc`/`alert_time UTC`),与市场当地时间可能不同
 
 ## 计算正确性验证
 

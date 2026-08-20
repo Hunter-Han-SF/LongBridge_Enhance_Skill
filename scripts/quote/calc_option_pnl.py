@@ -9,6 +9,8 @@
 
 注:本脚本计算"到期损益"(到期时的内在价值),不含时间价值。
     组合摆盘价(bid/ask)Longbridge 不提供,需用各腿 last price 估算净成本。
+    支持正股腿(type=STOCK,成本与到期价值直接用正股价),
+    可直接分析 get_option_strategy.py 生成的 COLLAR / COVERED_CALL。
 
 用法:
     # Bull call spread: 买 315 Call + 卖 325 Call
@@ -50,6 +52,12 @@ def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
 
     underlying = legs[0]["underlying"]
     expiry = legs[0]["expiry"]
+    for leg in legs[1:]:
+        if leg.get("underlying") != underlying or leg.get("expiry") != expiry:
+            raise ValueError(
+                "仅支持同标的、同到期日的组合(日历价差/跨标的组合暂不支持)。"
+                f"腿 {leg.get('underlying')} {leg.get('expiry')} 与首腿 {underlying} {expiry} 不一致"
+            )
     price = get_underlying_price(underlying)
     if not price:
         raise ValueError(f"无法获取 {underlying} 现价")
@@ -62,9 +70,22 @@ def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
     total_cost = 0.0
     for leg in legs:
         strike = float(leg["strike"])
-        cp = "C" if leg["type"].upper() in ("CALL", "C") else "P"
+        ot = str(leg["type"]).upper()
+        is_stock = ot in ("STOCK", "SHARE", "UNDERLYING")
+        cp = "C" if ot in ("CALL", "C") else "P"
         action = leg.get("action", "BUY").upper()
         qty = float(leg.get("quantity", 1))
+        sign = sign_map[action]
+
+        if is_stock:
+            # 正股腿:成本与到期价值都直接用正股价(每手 100 股)
+            last = price
+            cost = last * sign * qty * 100
+            total_cost += cost
+            leg_costs.append({"leg": f"{action} {qty}× 正股 @{last:.2f}",
+                              "last": last, "cost": round(cost, 2)})
+            continue
+
         last_key = "call_last" if cp == "C" else "put_last"
         last = None
         for r in chain:
@@ -74,7 +95,6 @@ def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
                 break
         if last is None:
             raise ValueError(f"chain 中无 {strike} 行权价的 {last_key}")
-        sign = sign_map[action]
         cost = last * sign * qty * 100  # 美股期权每张 100 股
         total_cost += cost
         leg_costs.append({"leg": f"{action} {qty}× {strike} {leg['type']}", "last": last, "cost": round(cost, 2)})
@@ -95,11 +115,15 @@ def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
         value = 0.0
         for leg in legs:
             strike = float(leg["strike"])
-            cp = "C" if leg["type"].upper() in ("CALL", "C") else "P"
+            ot = str(leg["type"]).upper()
             action = leg.get("action", "BUY").upper()
             qty = float(leg.get("quantity", 1))
             sign = sign_map[action]
-            value += _intrinsic(S, strike, cp) * sign * qty * 100
+            if ot in ("STOCK", "SHARE", "UNDERLYING"):
+                value += S * sign * qty * 100
+            else:
+                cp = "C" if ot in ("CALL", "C") else "P"
+                value += _intrinsic(S, strike, cp) * sign * qty * 100
         pnl = value - total_cost
         curve.append({"price": round(S, 2), "pnl": round(pnl, 2)})
         # 检测过零点 + 线性插值精确定位

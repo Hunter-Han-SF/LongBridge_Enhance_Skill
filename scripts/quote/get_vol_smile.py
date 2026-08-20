@@ -92,8 +92,9 @@ def smile(
         "atm_strike": atm_strike,
         "atm_iv_pct": atm_call_iv,
         "put_skew_pp": skew,  # OTM put IV - ATM IV,单位百分点(pp)
-        "skew_shape": "positive (downside fear)" if skew and skew > 1 else
-                      ("flat" if skew is not None else "unknown"),
+        "skew_shape": ("positive (downside fear)" if skew is not None and skew > 1 else
+                       "negative (upside demand)" if skew is not None and skew < -1 else
+                       ("flat" if skew is not None else "unknown")),
         "smile": rows,
     }
 

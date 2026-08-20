@@ -237,7 +237,7 @@ python scripts/market/get_top_movers.py [--market US] [--sort hot|time|change] [
 ```bash
 python scripts/flow/get_capital_flow.py AAPL.US [--flow] [--json]
 ```
-- 默认:大/中/小单流入流出 + 净额 + 主力方向
+- 默认:大/中/小单流入流出 + 净额 + 主力方向(单位为当地货币完整元,CLI 原始"万"已换算)
 - `--flow`:当日分钟级资金净流入时序
 
 #### 港股经纪商持仓(⚠️仅港股)

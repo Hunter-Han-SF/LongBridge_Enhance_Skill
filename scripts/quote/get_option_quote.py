@@ -87,6 +87,7 @@ def get_quote(
         greeks = bs_greeks(price, strike, T, rate, iv, cp)
         bs_price_val = bs_price(price, strike, T, rate, iv, cp)
 
+    expired = T <= 0
     result = {
         "occ_symbol": occ,
         "underlying": underlying,
@@ -104,6 +105,9 @@ def get_quote(
         "native_quote": native is not None,  # 是否拿到了原生 option quote 数据
         "greeks_source": "native" if (native and native.get("delta")) else "black_scholes",
     }
+    if expired:
+        result["warning"] = ("到期日已过期或为今天,Greeks 为退化值"
+                             "(delta 仅方向 0/±1,其余为 0),无分析意义")
 
     if output_json:
         print_json(result)
@@ -114,6 +118,8 @@ def get_quote(
 
     print(f"期权报价: {occ}")
     print(f"  类型: {'CALL' if cp == 'C' else 'PUT'}  行权价 {strike}  到期 {expiry}({result['days_to_expiry']:.0f}天)")
+    if expired:
+        print(f"  ⚠️ {result['warning']}")
     print(f"  正股现价:    {price}")
     print(f"  隐含波动率:  {result['iv_pct']}%")
     print(f"  最新成交价:  {last}")

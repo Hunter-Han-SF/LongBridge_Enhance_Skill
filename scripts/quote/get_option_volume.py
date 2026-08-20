@@ -53,16 +53,16 @@ def get_volume(
 ) -> dict | list:
     if daily:
         rows = get_option_volume_daily(symbol, count=count)
-        # 加可读日期列
+        # 加可读日期列(键名带 _utc,明确时区)
         for r in rows:
-            r["date"] = _ts_to_date(r.get("timestamp"))
+            r["date_utc"] = _ts_to_date(r.get("timestamp"))
         if output_json:
             print_json({"symbol": symbol, "daily": True, "data": rows})
             return rows
         if is_empty(rows):
             print(f"无每日成交量数据。仅美股支持,请确认 {symbol} 是美股标的。")
             return rows
-        cols = ["date", "total_call_volume", "total_put_volume", "put_call_volume_ratio",
+        cols = ["date_utc", "total_call_volume", "total_put_volume", "put_call_volume_ratio",
                 "put_call_open_interest_ratio", "total_open_interest"]
         print(f"{symbol} 每日期权 P/C 比率(近 {count} 个交易日):")
         print_display_table(rows, columns=cols)

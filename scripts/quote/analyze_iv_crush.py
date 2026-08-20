@@ -50,6 +50,12 @@ def _load_iv_history(symbol: str) -> list[dict]:
         return []
 
 
+def _counter_code(counter_id: str) -> str:
+    """取 counter_id 末段代码:'ST/US/AAPL' → 'AAPL'。"""
+    parts = str(counter_id).split("/")
+    return parts[-1].upper() if parts else ""
+
+
 def find_next_earnings(symbol: str, lookforward_days: int = 120) -> dict | None:
     """从财报日历找最近一次财报(已公布或未来)。
 
@@ -66,8 +72,8 @@ def find_next_earnings(symbol: str, lookforward_days: int = 120) -> dict | None:
     for b in buckets:
         for info in b.get("infos", []):
             cid = info.get("counter_id", "")
-            # 匹配标的(CounterID 末段或 counter_name)
-            if ticker.upper() not in cid.upper():
+            # 精确匹配标的代码(不能用子串:单字母 ticker 如 "A" 会误匹配 AAPL)
+            if _counter_code(cid) != ticker.upper():
                 continue
             ext = info.get("ext") or {}
             kv_list = info.get("data_kv", []) if isinstance(info.get("data_kv"), list) else []
@@ -103,26 +109,30 @@ def analyze_iv_crush(symbol: str, output_json: bool = False) -> dict:
     history = _load_iv_history(symbol)
 
     # 分析历史 IV 的财报效应:找历史中 IV 峰值后的回落幅度
+    # ⚠️ (iv, 历史记录) 必须成对遍历,不能先过滤出 IV 列表再按下标回查 history
+    #    (否则存在无效记录时日期会错位)
     crush_examples = []
     if len(history) >= 10:
-        ivs = [to_float(h.get("atm_iv_pct")) for h in history if to_float(h.get("atm_iv_pct"))]
-        if ivs:
-            # 找 IV 突然下降的日子(可能是财报后)
-            for i in range(5, len(ivs)):
-                if ivs[i - 1] > 0 and ivs[i] < ivs[i - 1] * 0.8:  # 跌超 20%
-                    drop_pct = (1 - ivs[i] / ivs[i - 1]) * 100
-                    crush_examples.append({
-                        "date": history[i].get("date"),
-                        "before_iv": ivs[i - 1],
-                        "after_iv": ivs[i],
-                        "drop_pct": round(drop_pct, 1),
-                    })
+        pairs = [(h, to_float(h.get("atm_iv_pct"))) for h in history]
+        pairs = [(h, v) for h, v in pairs if v and v > 0]
+        # 找 IV 突然下降的日子(可能是财报后)
+        for i in range(5, len(pairs)):
+            h_prev, iv_prev = pairs[i - 1]
+            h_cur, iv_cur = pairs[i]
+            if iv_prev > 0 and iv_cur < iv_prev * 0.8:  # 跌超 20%
+                crush_examples.append({
+                    "date": h_cur.get("date"),
+                    "before_iv": iv_prev,
+                    "after_iv": iv_cur,
+                    "drop_pct": round((1 - iv_cur / iv_prev) * 100, 1),
+                })
 
     # 当前 IV 分位
     iv_percentile = None
     iv_rank_label = ""
     if history and current_iv:
-        ivs = [to_float(h.get("atm_iv_pct")) for h in history if to_float(h.get("atm_iv_pct"))]
+        ivs = [to_float(h.get("atm_iv_pct")) for h in history]
+        ivs = [v for v in ivs if v and v > 0]
         if ivs:
             below = sum(1 for v in ivs if v < current_iv * 100)
             iv_percentile = round(below / len(ivs) * 100, 1)

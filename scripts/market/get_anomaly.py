@@ -50,10 +50,11 @@ ALERT_TYPE_MAP = {
 
 
 def _ts_to_time(ts) -> str:
+    """Unix 时间戳 → HH:MM:SS(标注 UTC,避免与当地时间混淆)。"""
     n = to_int(ts)
     if n is None:
         return str(ts)
-    return datetime.fromtimestamp(n, tz=timezone.utc).strftime("%H:%M:%S")
+    return datetime.fromtimestamp(n, tz=timezone.utc).strftime("%H:%M:%S") + " UTC"
 
 
 def _emotion_label(emotion) -> str:

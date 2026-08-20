@@ -5,6 +5,8 @@
 输入: 多条期权腿 [{underlying, expiry, strike, type, action, quantity}, ...]
 组合 Greeks = Σ (单腿 Greeks × 方向符号 × 数量)
   - BUY 的腿用 +1,SELL 的腿用 -1
+  - 支持正股腿(type=STOCK,delta=100 股/手,其余 Greeks 为 0),
+    可直接分析 get_option_strategy.py 生成的 COLLAR / COVERED_CALL
 
 ⚠️ Greeks 为 BS 计算值(IV 来自 chain)。仅支持同标的、同到期日的多腿组合。
 
@@ -48,17 +50,33 @@ def calc_portfolio_greeks(legs: list[dict], rate: float = 0.045) -> dict:
         ul = leg["underlying"]
         expiry = leg["expiry"]
         strike = float(leg["strike"])
-        ot = leg["type"]
+        ot = str(leg["type"]).upper()
         action = leg.get("action", "BUY").upper()
         qty = float(leg.get("quantity", 1))
+        sign = sign_map.get(action, 1)
+
+        # 正股腿(COLLAR/COVERED_CALL 策略生成):delta = 100 股/手,其余 Greeks 恒为 0
+        if ot in ("STOCK", "SHARE", "UNDERLYING"):
+            weighted = {"delta": 100.0 * sign * qty, "gamma": 0.0,
+                        "theta": 0.0, "vega": 0.0, "rho": 0.0}
+            for k in totals:
+                totals[k] += weighted[k]
+            detail.append({
+                "leg": f"{action} {qty}× {ul} 正股",
+                "iv_pct": None,
+                "delta": round(weighted["delta"], 4),
+                "gamma": 0.0,
+                "theta": 0.0,
+                "vega": 0.0,
+            })
+            continue
 
         q = get_quote(ul, expiry, strike, ot, rate=rate, output_json=False, quiet=True)
         # get_quote 会打印;我们只取 greeks。为避免重复输出,这里静默重算
         greeks = q["greeks"]
         if not greeks:
-            raise ValueError(f"无法计算 {ul} {expiry} {strike} {ot} 的 Greeks(可能缺 IV)")
+            raise ValueError(f"无法计算 {ul} {expiry} {strike} {ot} 的 Greeks(可能缺 IV 或到期日已过期)")
 
-        sign = sign_map.get(action, 1)
         weighted = {k: greeks[k] * sign * qty for k in totals}
         for k in totals:
             totals[k] += weighted[k]
@@ -115,7 +133,8 @@ def main():
             print(f"组合 Greeks({result['legs']} 腿)")
             print("  各腿明细:")
             for d in result["detail"]:
-                print(f"    {d['leg']}  IV={d['iv_pct']}%  delta={d['delta']} theta={d['theta']} vega={d['vega']}")
+                iv_str = f"IV={d['iv_pct']}%" if d.get("iv_pct") is not None else "正股"
+                print(f"    {d['leg']}  {iv_str}  delta={d['delta']} theta={d['theta']} vega={d['vega']}")
             pg = result["portfolio_greeks"]
             print(f"  组合计:")
             print(f"    delta = {pg['delta']}")
