@@ -3,8 +3,8 @@
 [English](README.md) | **[中文](README.zh-CN.md)**
 
 > 基于 [Longbridge OpenAPI](https://open.longbridge.com) 的社区多维度分析增强工具。
-> 九大模块:① 期权分析(BS 希腊值、IV/HV、波动率微笑、P/C 比率、损益、Put/Call Wall、GEX、IV Crush、
-> Expected Move、风险逆转、IV 期限结构、Max Pain)
+> 九大模块:① 期权分析(原生 Greeks、IV/HV、波动率微笑、P/C 比率、损益、Put/Call Wall、GEX、IV Crush、
+> Expected Move、风险逆转、IV 期限结构、Max Pain、OI 分布、Gamma Profile)
 > ② 异动追踪 ③ 主力资金流 ④ 事件日历 ⑤ 市场情绪
 > ⑥ 技术面(MA/MACD/RSI/KDJ/BOLL/ATR/OBV + 综合评分 + 相对强度/Beta)
 > ⑦ 基本面(估值历史分位/分析师共识/财务健康/股息质量)
@@ -21,13 +21,15 @@
 
 ### 🟢 模块①:期权分析(美股 OPRA)
 - **期权链 / 到期日 / P-C 比率 / OCC 代码** — 原生数据封装
-- **单合约希腊值** — Delta / Gamma / Theta / Vega / Rho(Black-Scholes 计算)
+- **单合约报价** — 服务端原生 Greeks 优先(calc-index,含 OI),Black-Scholes 回退
 - **IV vs HV** — 隐含波动率(期权链)对比历史波动率(K 线自算)
 - **波动率微笑与偏度** — 各行权价 IV 曲线 + Put 偏度
 - **IV Rank 与 IV Percentile** — 基于本地累积
 - **行权概率 / 组合希腊值 / 到期损益 / 8 种标准策略腿**
-- **Put/Call Wall** — 成交量最大的行权价,判断支撑/阻力
-- **Gamma Exposure (GEX)** — 做市商对冲压力 + 翻转点
+- **Put/Call Wall** — 真实 OI 墙(calc-index,成交量回退),判断支撑/阻力
+- **Gamma Exposure (GEX)** — 真实 OI 加权(原生 gamma 优先)+ 剖面插值翻转点
+- **Gamma Profile(旗舰)** — 跨到期日(默认60天)聚合 GEX 剖面 + 插值 Gamma Flip + OI 核密度细粒度支撑/阻力
+- **期权 OI 分布** — 按行权价真实 OI + P/C OI 比率(存量口径)+ OI 墙
 - **财报 IV Crush** — 结合财报日历 + 本地 IV 历史分析
 
 ### 🔵 模块②:异动追踪

@@ -3,8 +3,8 @@
 **[English](README.md)** | [中文](README.zh-CN.md)
 
 > Community-developed multi-dimensional analytics enhancement for the [Longbridge OpenAPI](https://open.longbridge.com).
-> Nine modules: ① Options analytics (BS Greeks, IV/HV, vol smile, P/C ratio, P&L, Put/Call Wall, GEX, IV Crush,
-> Expected Move, risk reversal, IV term structure, Max Pain)
+> Nine modules: ① Options analytics (native Greeks, IV/HV, vol smile, P/C ratio, P&L, Put/Call Wall, GEX, IV Crush,
+> Expected Move, risk reversal, IV term structure, Max Pain, OI distribution, Gamma Profile)
 > ② Anomaly tracking ③ Capital flow / main force ④ Event calendar ⑤ Market sentiment
 > ⑥ Technicals (MA/MACD/RSI/KDJ/BOLL/ATR/OBV + composite score + relative strength/Beta)
 > ⑦ Fundamentals (valuation percentile / analyst consensus / financial health / dividend quality)
@@ -21,18 +21,20 @@ The official `longbridge` skill series gives you **raw data** (option chains, qu
 
 ### 🟢 Module ①: Options analytics (US OPRA)
 - **Option chain / expirations / P-C ratio / OCC resolver** — native data wrapped
-- **Single-contract Greeks** — Delta / Gamma / Theta / Vega / Rho via Black-Scholes
+- **Single-contract quote** — native server Greeks first (calc-index, incl. OI), Black-Scholes fallback
 - **IV vs HV** — implied vol (from chain) vs historical vol (from K-line)
 - **Volatility smile & skew** — per-strike IV curve + put skew
 - **IV Rank & IV Percentile** — via local accumulation
 - **Exercise probability / Portfolio Greeks / Expiration P&L / 8 strategy legs** (incl. STOCK legs for collar/covered-call)
-- **Put/Call Wall** — largest-volume strikes as support/resistance
-- **Gamma Exposure (GEX)** — dealer hedging pressure + zero-gamma flip point
+- **Put/Call Wall** — real-OI walls (calc-index, volume fallback) as support/resistance
+- **Gamma Exposure (GEX)** — real-OI weighted (native gamma first) + interpolated flip point
+- **Gamma Profile (flagship)** — multi-expiry (60-day) aggregate GEX surface + interpolated gamma flip + OI-kernel-density fine-grained S/R
+- **Options OI distribution** — per-strike real OI + P/C OI ratio (positioning) + OI walls
 - **Earnings IV Crush** — pre/post-earnings IV change with earnings calendar
 - **Expected Move** — ATM-straddle implied move (1σ range) per expiry
 - **IV term structure** — contango/backwardation + event-premium expiry detection
 - **25Δ Risk Reversal** — standardized skew: IV(25Δ call) − IV(25Δ put)
-- **Max Pain** — expiry "gravity" strike (volume-proxy, labeled)
+- **Max Pain** — expiry "gravity" strike (real OI, volume fallback)
 
 ### 🔵 Module ②: Anomaly tracking
 - **Anomaly signals** — block trades, limit-up/down, with bull/bear emotion tags
