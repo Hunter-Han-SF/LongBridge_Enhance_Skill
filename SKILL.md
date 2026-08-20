@@ -45,7 +45,7 @@ metadata:
   详见 [references/new-modules-map.md](references/new-modules-map.md)。
 
 ### 已知限制(实测)
-1. **`option quote` 单合约查询返回空** → Greeks 改用 Black-Scholes 公式(chain IV 作输入)计算
+1. **`option quote` 单合约查询返回空** → 原生 Greeks/OI 改经 calc-index 按合约获取,Black-Scholes 作回退
 2. **`option chain` 无法查历史** → IV Rank/Percentile 靠 `get_iv_history.py` 本地累积,需多日运行
 3. **仅支持美股 OPRA** → 港股/A 股期权数据可能为空
 4. **P/C 比率仅美股** → `option volume daily` 不支持港股
@@ -130,11 +130,11 @@ python scripts/quote/resolve_option_code.py --underlying AAPL.US --expiry 2026-0
 
 ### 🟡 B 档:计算
 
-#### 单合约报价 + Greeks(BS 计算)
+#### 单合约报价 + Greeks(原生优先,BS 回退)
 ```bash
 python scripts/quote/get_option_quote.py AAPL.US 2026-08-14 315 CALL [--rate 0.045] [--json]
 ```
-- IV 来自 chain,Greeks 用 Black-Scholes 计算
+- Greeks 优先取 calc-index 服务端原生值(含该合约 OI),取不到时 Black-Scholes 计算
 - theta=/日, vega=/1%IV, rho=/1%rate
 
 #### IV vs HV 波动率分析

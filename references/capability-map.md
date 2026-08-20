@@ -103,4 +103,5 @@ put_call_volume_ratio, put_call_open_interest_ratio
 ```
 
 ### Futu 对应字段(参考)
-Futu 的 `get_option_quote` 额外返回:delta/gamma/theta/vega/rho/implied_volatility/open_interest/volume。Longbridge 这些 Greeks 需通过 BS 计算(chain 只给 IV)。
+Futu 的 `get_option_quote` 额外返回:delta/gamma/theta/vega/rho/implied_volatility/open_interest/volume。
+Longbridge 的 `option quote` 单合约仍返回空,但 v0.3.2 起可经 **calc-index 按合约获取原生 Greeks + OI**(get_option_quote.py 已接入,BS 回退)。

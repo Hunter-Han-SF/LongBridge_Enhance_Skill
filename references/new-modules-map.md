@@ -303,22 +303,20 @@ Gamma Profile 方法论(calc_gamma_profile.py,2026-08-20):
 strike, call_iv, put_iv, call_last, put_last, call_vol, put_vol, standard
 ```
 
-⚠️ **只有成交量(call_vol/put_vol),没有未平仓量(OI)按行权价分布**。
-`option volume daily` 只有全市场汇总 OI(total_call/put_open_interest)。
+⚠️ chain 本身只有成交量(call_vol/put_vol),`option volume daily` 只有全市场汇总 OI。
+**此限制已由 calc-index 按合约查询解决**(见上节);Wall/GEX/MaxPain 现为真实 OI 口径,
+成交量仅作 calc-index 不可用时的回退(脚本输出标注 weight_mode)。
 
-因此:
-- **Put/Call Wall**: 用成交量代理(非真实 OI Wall)
-- **GEX**: 用成交量加权(非真实 OI 加权)
-- 这是对真实指标的近似,流动性好的标的近似度较高。脚本输出已明确标注。
-
-### GEX 计算约定
+### GEX 计算约定(v0.3.2 起真实 OI 口径)
 
 每 strike 的 GEX:
 ```
-call_gex = gamma_call × call_vol × 100 × S² × 0.01   (正)
-put_gex  = -gamma_put × put_vol × 100 × S² × 0.01     (负,对冲方向相反)
+call_gex = gamma_call × call_oi × 100 × S² × 0.01    (正)
+put_gex  = -gamma_put × put_oi × 100 × S² × 0.01     (负,对冲方向相反)
 net_gex(K) = call_gex + put_gex
 ```
+(gamma 优先取 calc-index 原生值,缺失时 BS;OI 不可用时回退 call_vol/put_vol 并标注)
+跨到期日聚合剖面与插值 Flip 见 calc_gamma_profile.py(公式见 calc-formulas.md §11)。
 - 正总 GEX → 做市商抑制波动(偏稳)
 - 负总 GEX → 做市商放大波动(易剧烈行情)
 - Gamma 翻转点:net_gex 跨越零的价位
@@ -359,7 +357,6 @@ net_gex(K) = call_gex + put_gex
 
 | 计算 | 近似原因 | 备注 |
 |---|---|---|
-| Put/Call Wall | chain 无按行权价的 OI,用**当日成交量**代理 | 流动性好的标的近似度高 |
-| GEX | 同上,用成交量加权;符号为 SpotGamma 约定(假设做市商卖 call 买 put) | 符号方向是行业惯例,非绝对真理 |
+| Put/Call Wall / GEX / Max Pain | ~~成交量代理~~ → 已升级真实 OI(calc-index),成交量仅回退 | 符号约定为行业惯例(SpotGamma 约定),非绝对真理 |
 | 异动综合打分 | 权重(异动40/资金30/涨跌20/榜10)与阈值为设计选择 | 可按需调整 |
 | IV Crush 检测 | 依赖本地 IV 累积,用"单日跌>20%"近似财报效应 | 需每日运行 get_iv_history 积累 |
