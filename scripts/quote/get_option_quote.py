@@ -26,8 +26,10 @@ from common import (  # noqa: E402
     LongbridgeCliError,
     bs_greeks,
     bs_price,
+    build_lbr_option_symbol,
     build_occ_code,
     days_to_years,
+    get_option_contract_metrics,
     get_option_chain,
     get_underlying_price,
     is_empty,
@@ -78,18 +80,42 @@ def get_quote(
         iv = to_float(chain_row.get(iv_key))
         last = to_float(chain_row.get(last_key))
 
-    # 3. 正股现价 + BS Greeks
+    # 3. 正股现价 + Greeks(优先 calc-index 服务端原生值,回退 BS)
     price = get_underlying_price(underlying)
     T = days_to_years(expiry)
+    lbr_sym = build_lbr_option_symbol(ticker, expiry, strike, option_type)
     greeks = None
     bs_price_val = None
-    if price and iv and iv > 0:
-        greeks = bs_greeks(price, strike, T, rate, iv, cp)
-        bs_price_val = bs_price(price, strike, T, rate, iv, cp)
+    greeks_source = None
+    oi = None
+    if price:
+        try:
+            metrics = get_option_contract_metrics([lbr_sym])
+            m = metrics.get(lbr_sym) or {}
+            if m.get("delta") is not None:
+                greeks = {
+                    "delta": to_float(m.get("delta")),
+                    "gamma": to_float(m.get("gamma")),
+                    "theta": to_float(m.get("theta")),
+                    "vega": to_float(m.get("vega")),
+                    "rho": to_float(m.get("rho")),
+                }
+                if m.get("iv") and iv is None:
+                    iv = m["iv"]
+                oi = m.get("oi")
+                greeks_source = "native"
+        except LongbridgeCliError:
+            pass
+        if not greeks and iv and iv > 0:
+            greeks = bs_greeks(price, strike, T, rate, iv, cp)
+            greeks_source = "black_scholes"
+        if iv and iv > 0:
+            bs_price_val = bs_price(price, strike, T, rate, iv, cp)
 
     expired = T <= 0
     result = {
         "occ_symbol": occ,
+        "lbr_symbol": lbr_sym if price else None,
         "underlying": underlying,
         "expiry": expiry,
         "strike": strike,
@@ -97,13 +123,14 @@ def get_quote(
         "underlying_price": price,
         "implied_volatility": iv,
         "iv_pct": round(iv * 100, 2) if iv else None,
+        "open_interest": oi,
         "last": last,
         "bs_theoretical_price": round(bs_price_val, 4) if bs_price_val else None,
         "rate": rate,
         "days_to_expiry": round(T * 365),
         "greeks": greeks,
         "native_quote": native is not None,  # 是否拿到了原生 option quote 数据
-        "greeks_source": "native" if (native and native.get("delta")) else "black_scholes",
+        "greeks_source": greeks_source,
     }
     if expired:
         result["warning"] = ("到期日已过期或为今天,Greeks 为退化值"
@@ -122,9 +149,12 @@ def get_quote(
         print(f"  ⚠️ {result['warning']}")
     print(f"  正股现价:    {price}")
     print(f"  隐含波动率:  {result['iv_pct']}%")
+    print(f"  未平仓量OI:  {oi if oi is not None else 'N/A'}")
     print(f"  最新成交价:  {last}")
     print(f"  BS 理论价:   {result['bs_theoretical_price']}")
-    src = "原生 option quote" if result["greeks_source"] == "native" else "Black-Scholes 计算(IV 来自 chain)"
+    src = ("服务端原生 Greeks(calc-index)" if result["greeks_source"] == "native"
+           else "Black-Scholes 计算(IV 来自 chain)" if result["greeks_source"] == "black_scholes"
+           else "无")
     print(f"  Greeks 来源: {src}")
     if greeks:
         print(f"    delta = {greeks['delta']:.4f}")

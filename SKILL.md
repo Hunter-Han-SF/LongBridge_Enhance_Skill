@@ -20,7 +20,7 @@ description: |
 license: MIT
 metadata:
   author: community
-  version: "0.3.1"
+  version: "0.3.2"
   risk_level: read_only
   requires_login: false
   default_install: true
@@ -49,7 +49,8 @@ metadata:
 2. **`option chain` 无法查历史** → IV Rank/Percentile 靠 `get_iv_history.py` 本地累积,需多日运行
 3. **仅支持美股 OPRA** → 港股/A 股期权数据可能为空
 4. **P/C 比率仅美股** → `option volume daily` 不支持港股
-5. **chain 无按行权价的 OI** → Put/Call Wall 和 GEX 用成交量近似(脚本已标注)
+5. ~~chain 无按行权价的 OI~~ → **已解决**:calc-index 可按合约查真实 OI + 原生 Greeks
+   (Wall/GEX/MaxPain/P-C OI 均已升级真 OI 口径,成交量仅作回退;注意 OI 逐合约查询有限频成本)
 6. **broker-holding 仅港股** → 美股调用会优雅报错
 7. **short 数据 US/HK 字段不同** → 脚本按字段存在性自动识别市场
 8. **盘口/逐笔为瞬时快照** → 休市时为最后快照,主动买卖比样本取决于时段
@@ -97,6 +98,13 @@ python scripts/decision/analyze_buy_sell.py AAPL.US
 ```bash
 python scripts/quote/get_option_expiration.py AAPL.US [--limit 10] [--json]
 ```
+
+#### 期权持仓量(OI)分布 + P/C OI 比率 + OI 墙
+```bash
+python scripts/quote/get_option_oi.py MSFT.US [--date 2026-09-18] [--range 0.25] [--max-strikes 60] [--json]
+```
+- 真实 OI 口径(calc-index 按合约批量查询):P/C OI 比率(存量持仓)、Put/Call OI 墙、原生 delta
+- ⚠️ 逐合约查询有限频成本:默认现价 ±25%、离 ATM 最近 60 档
 
 #### 获取期权链(某到期日的所有行权价 + IV)
 ```bash
@@ -197,18 +205,18 @@ python scripts/quote/get_option_strategy.py AAPL.US 2026-08-14 STRADDLE [--json]
 `BUTTERFLY` / `COLLAR` / `COVERED_CALL` / `CASH_SECURED_PUT`
 - 输出的 legs JSON 可直接传给 `calc_option_greeks.py` 或 `calc_option_pnl.py`
 
-#### Put/Call Wall(关键支撑/阻力)
+#### Put/Call Wall(关键支撑/阻力,真实 OI 优先)
 ```bash
 python scripts/quote/get_put_call_wall.py AAPL.US --date 2026-09-18 [--walls 3] [--json]
 ```
-- 找成交量最大的 Put 行权价(支撑)/ Call 行权价(阻力)
-- ⚠️ 基于成交量近似(Longbridge chain 无按行权价的 OI)
+- 找持仓量(OI)最大的价外 Put 行权价(支撑)/ Call 行权价(阻力)
+- ✅ 真实 OI 口径(calc-index),不可用时回退成交量并标注
 
-#### Gamma Exposure (GEX)
+#### Gamma Exposure (GEX,真实 OI + 原生 gamma 优先)
 ```bash
 python scripts/quote/calc_gex.py AAPL.US --date 2026-09-18 [--rate 0.045] [--json]
 ```
-- 各 strike gamma × 成交量加权,算净 GEX 和翻转点
+- 各 strike gamma × OI 加权(原生 gamma 优先,BS 回退),算净 GEX 和翻转点
 - 正 GEX=抑制波动,负 GEX=放大波动
 
 #### 财报 IV Crush 分析
@@ -387,11 +395,11 @@ python scripts/quote/calc_risk_reversal.py AAPL.US [--date 2026-09-18] [--delta 
 ```
 - IV(25Δ Call) - IV(25Δ Put):负值=下行保护占优(恐慌),正值=上行需求
 
-#### Max Pain(最大痛点)
+#### Max Pain(最大痛点,真实 OI 优先)
 ```bash
 python scripts/quote/calc_max_pain.py AAPL.US [--date 2026-09-18] [--json]
 ```
-- 期权到期"引力位"(⚠️成交量近似 OI),距到期越近参考意义越大
+- 期权到期"引力位"(✅真实 OI 加权,成交量回退),距到期越近参考意义越大
 
 ---
 
@@ -515,12 +523,13 @@ longbridge-pro/
 └── scripts/
     ├── common.py              # 公共模块(CLI 封装/BS/HV/异动/资金流/估值/盘口等)
     ├── check_env.py           # 环境预检
-    ├── quote/                 # ① 期权模块(17 脚本 + 4 个补充)
+    ├── quote/                 # ① 期权模块(17 脚本 + 5 个补充)
     │   ├── ...                #   (见上方命令速查)
+    │   ├── get_option_oi.py            # 补充:按行权价OI/P-C OI比率/OI墙(calc-index)
     │   ├── calc_expected_move.py      # 补充:隐含波动幅度(ATM straddle)
     │   ├── get_iv_term_structure.py   # 补充:IV 期限结构 + 事件溢价
     │   ├── calc_risk_reversal.py      # 补充:25Δ 风险逆转
-    │   └── calc_max_pain.py           # 补充:Max Pain(成交量近似)
+    │   └── calc_max_pain.py           # 补充:Max Pain(真实OI优先)
     ├── market/                # ② 异动追踪(get_anomaly/get_top_movers/calc_anomaly_score)
     ├── flow/                  # ③ 主力资金流(capital_flow/broker_holding/short_sale)
     ├── calendar/              # ④ 事件日历(earnings/dividend)

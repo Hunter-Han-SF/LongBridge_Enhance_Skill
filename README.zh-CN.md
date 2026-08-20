@@ -147,7 +147,7 @@ python scripts/decision/analyze_buy_sell.py AAPL.US        # 六维多空对照
 1. **单合约 `option quote` 返回空** — 希腊值改用 Black-Scholes 公式(chain IV 作输入)计算。
 2. **无历史 IV** — IV Rank/Percentile 采用**本地累积**模式(每日运行 `get_iv_history.py`)。
 3. **仅支持美股期权(OPRA)** — 港股/A 股期权数据返回空。
-4. **期权链无按行权价的未平仓量(OI)** — Put/Call Wall 和 GEX 用成交量近似(输出已标注)。
+4. **~~期权链无按行权价的 OI~~(已解决)** — calc-index 可按合约查真实 OI + 原生 Greeks,Wall/GEX/MaxPain/P-C OI 已升级真 OI 口径(成交量仅作回退)。
 5. **经纪商持仓仅港股** — 美股调用返回空。
 6. **沽空数据 US/HK 字段不同** — 按字段存在性自动识别市场。
 

@@ -1,28 +1,22 @@
 """计算 Gamma Exposure (GEX) 和 Gamma 翻转点。
 
-⚠️ 重要限制:同 get_put_call_wall,Longbridge chain 不返回按行权价的 OI,
-   本脚本用成交量(call_vol/put_vol)加权,是真实 GEX 的近似。
+权重口径(自动选择):
+  ✅ 优先 **真实 OI**(calc-index 按合约查询,存量持仓口径,与主流 GEX 一致)
+  ⬇️ OI 不可用时回退 **成交量代理**(输出已标注)
+
+gamma 口径:优先服务端原生 gamma(calc-index),缺失时回退 BS(chain IV 作输入)。
 
 GEX 含义:
   - Gamma 衡量 delta 对标的价格变化的敏感度
-  - GEX = Σ(gamma × OI × 100 × spot² × 0.01),按 call(+)/put(-) 加权
+  - GEX = Σ(gamma × 权重 × 100 × spot² × 0.01),按 call(+)/put(-) 加权
     (做市商卖 Put 时做多 delta 对冲,符号为正;约定因数据源而异,这里用通用约定)
   - 正 GEX 区域:做市商对冲方向抑制波动(价格涨就卖,跌就买)→ 低波动
   - 负 GEX 区域:做市商对冲方向放大波动(价格涨就买,跌就卖)→ 高波动(易出现逼空/闪崩)
   - Gamma 翻转点(Zero Gamma Level): GEX 由正转负的价位,市场稳定性临界点
 
-计算方法:
-  对每个行权价 K:
-    call_gex = gamma_call × vol_call × 100 × S² × 0.01
-    put_gex  = gamma_put  × vol_put  × 100 × S² × 0.01 × (-1)  (put 对冲方向相反)
-  net_gex(K) = call_gex + put_gex
-  总 GEX = Σ net_gex(K)
-  翻转点 = 累积 GEX 跨越零的价位(这里用各 strike 的 net_gex 符号变化定位)
-
 用法:
-    python calc_gex.py AAPL.US --date 2026-09-18
-    python calc_gex.py AAPL.US --date 2026-09-18 --rate 0.045
-    python calc_gex.py AAPL.US --date 2026-09-18 --json
+    python calc_gex.py MSFT.US --date 2026-09-18
+    python calc_gex.py MSFT.US --date 2026-09-18 --rate 0.045 --json
 """
 from __future__ import annotations
 
@@ -35,6 +29,7 @@ sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath
 from common import (  # noqa: E402
     bs_greeks,
     days_to_years,
+    get_chain_oi,
     get_option_chain,
     get_underlying_price,
     is_empty,
@@ -62,47 +57,76 @@ def calc_gex(
     if T <= 0:
         raise ValueError(f"到期日 {date} 已过期或为今天,GEX 计算无意义")
 
-    # 逐 strike 算 gamma 加权
+    # 权重口径:优先真实 OI(calc-index),回退成交量代理
+    # gamma 口径:优先服务端原生 gamma,回退 BS(chain IV 作输入)
+    oi_data = get_chain_oi(symbol, date)
+    mode = "oi" if oi_data.get("oi_mode") else "volume"
+
     rows = []
     total_gex = 0.0
-    for r in chain:
-        strike = to_float(r.get("strike"))
-        if strike is None or strike <= 0:
-            continue
-        call_iv = to_float(r.get("call_iv"))
-        put_iv = to_float(r.get("put_iv"))
-        call_vol = to_float(r.get("call_vol"), 0) or 0
-        put_vol = to_float(r.get("put_vol"), 0) or 0
-        if call_vol == 0 and put_vol == 0:
-            continue
+    native_gamma_used = 0
+    if mode == "oi":
+        for strike_s, v in sorted(oi_data["strikes"].items()):
+            call_oi, put_oi = float(v["call_oi"]), float(v["put_oi"])
+            if call_oi == 0 and put_oi == 0:
+                continue
+            # 原生 gamma 缺失时回退 BS(chain IV)
+            chain_row = next((r for r in chain
+                              if abs((to_float(r.get("strike")) or 0) - strike_s) < 0.001), {})
+            def _gamma(native, iv):
+                if native is not None:
+                    return native, True
+                iv_val = iv if iv is not None else to_float(chain_row.get("call_iv"))
+                return (bs_greeks(price, strike_s, T, rate, iv_val, "C")["gamma"]
+                        if iv_val and iv_val > 0 else 0.0), False
+            call_gamma, ok1 = _gamma(v["call_gamma"], v["call_iv"])
+            put_gamma, ok2 = _gamma(v["put_gamma"], v["put_iv"])
+            native_gamma_used += int(ok1) + int(ok2)
 
-        # call gamma
-        call_gamma = bs_greeks(price, strike, T, rate, call_iv, "C")["gamma"] if call_iv and call_iv > 0 else 0
-        # put gamma(BS 下 call/put gamma 相同,但 IV 可能不同,分别算)
-        put_gamma = bs_greeks(price, strike, T, rate, put_iv, "P")["gamma"] if put_iv and put_iv > 0 else 0
-
-        # GEX 约定:每张合约 100 股,gamma exposure per 1% move
-        # call_gex = gamma × vol × 100 × S² × 0.01(做市商通常卖 call → 负,但此处用买方视角)
-        # 采用通用约定:call 贡献正,put 贡献负(做市商对冲方向)
-        call_gex = call_gamma * call_vol * 100 * price * price * 0.01
-        put_gex = -put_gamma * put_vol * 100 * price * price * 0.01
-        net = call_gex + put_gex
-        total_gex += net
-
-        rows.append({
-            "strike": strike,
-            "call_gamma": round(call_gamma, 6),
-            "put_gamma": round(put_gamma, 6),
-            "call_vol": call_vol,
-            "put_vol": put_vol,
-            "call_gex": round(call_gex, 0),
-            "put_gex": round(put_gex, 0),
-            "net_gex": round(net, 0),
-        })
+            call_gex = call_gamma * call_oi * 100 * price * price * 0.01
+            put_gex = -put_gamma * put_oi * 100 * price * price * 0.01
+            net = call_gex + put_gex
+            total_gex += net
+            rows.append({
+                "strike": strike_s, "call_gamma": round(call_gamma, 6),
+                "put_gamma": round(put_gamma, 6),
+                "call_oi": int(call_oi), "put_oi": int(put_oi),
+                "call_gex": round(call_gex, 0), "put_gex": round(put_gex, 0),
+                "net_gex": round(net, 0),
+            })
+    else:
+        for r in chain:
+            strike = to_float(r.get("strike"))
+            if strike is None or strike <= 0:
+                continue
+            call_iv = to_float(r.get("call_iv"))
+            put_iv = to_float(r.get("put_iv"))
+            call_vol = to_float(r.get("call_vol"), 0) or 0
+            put_vol = to_float(r.get("put_vol"), 0) or 0
+            if call_vol == 0 and put_vol == 0:
+                continue
+            call_gamma = bs_greeks(price, strike, T, rate, call_iv, "C")["gamma"] if call_iv and call_iv > 0 else 0
+            put_gamma = bs_greeks(price, strike, T, rate, put_iv, "P")["gamma"] if put_iv and put_iv > 0 else 0
+            call_gex = call_gamma * call_vol * 100 * price * price * 0.01
+            put_gex = -put_gamma * put_vol * 100 * price * price * 0.01
+            net = call_gex + put_gex
+            total_gex += net
+            rows.append({
+                "strike": strike, "call_gamma": round(call_gamma, 6),
+                "put_gamma": round(put_gamma, 6),
+                "call_oi": int(call_vol), "put_oi": int(put_vol),  # 代理口径下放成交量
+                "call_gex": round(call_gex, 0), "put_gex": round(put_gex, 0),
+                "net_gex": round(net, 0),
+            })
 
     # 按 strike 排序,找翻转点(net_gex 累积跨越零的区间)
     rows.sort(key=lambda x: x["strike"])
     zero_gamma = _find_zero_gamma(rows, price)
+
+    weight_note = ("✅ 真实 OI 加权(calc-index)" if mode == "oi"
+                   else "⚠️ 成交量加权(近似,Longbridge chain 无按行权价 OI)")
+    gamma_note = (f"原生 gamma {native_gamma_used}/{len(rows) * 2} 条"
+                  if (mode == "oi" and rows) else "BS 计算 gamma")
 
     result = {
         "symbol": symbol,
@@ -110,13 +134,13 @@ def calc_gex(
         "underlying_price": price,
         "rate": rate,
         "T_years": round(T, 4),
+        "weight_mode": mode,
         "total_gex": round(total_gex, 0),
         "total_gex_label": _gex_label(total_gex),
         "zero_gamma_level": zero_gamma,
         "strikes_analyzed": len(rows),
-        "note": "基于成交量加权(非真实 OI)。Longbridge chain 不返回按行权价的 OI,"
-                "GEX 数值为近似,主要看相对大小和翻转点位置。",
         "per_strike": rows,
+        "note": f"{weight_note};{gamma_note}。正 GEX=抑制波动,负=放大波动。",
     }
 
     if output_json:
@@ -124,20 +148,20 @@ def calc_gex(
         return result
 
     print(f"{symbol} Gamma Exposure 分析(到期 {date},现价 {price})")
-    print(f"  ⚠️ 基于成交量近似(非真实 OI)")
+    print(f"  权重口径: {weight_note}")
+    print(f"  gamma 来源: {gamma_note}")
     print(f"  剩余时间: {T*365:.0f} 天")
     print(f"  总 GEX: {total_gex:,.0f}  → {_gex_label(total_gex)}")
     print(f"  Gamma 翻转点: {zero_gamma if zero_gamma else '未检测到明确翻转'}")
     print()
-    # 按 |net_gex| 排序,显示贡献最大的 strike
     top = sorted(rows, key=lambda x: abs(x["net_gex"]), reverse=True)[:8]
     top.sort(key=lambda x: x["strike"])
     print("Gamma 贡献最大的行权价(top 8 by |net_gex|):")
     print_display_table(
         [{"行权价": r["strike"], "call_γ": r["call_gamma"], "put_γ": r["put_gamma"],
-          "call_vol": r["call_vol"], "put_vol": r["put_vol"],
+          "call_w": r["call_oi"], "put_w": r["put_oi"],
           "net_GEX": f"{r['net_gex']:,.0f}"} for r in top],
-        columns=["行权价", "call_γ", "put_γ", "call_vol", "put_vol", "net_GEX"])
+        columns=["行权价", "call_γ", "put_γ", "call_w", "put_w", "net_GEX"])
     return result
 
 

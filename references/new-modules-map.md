@@ -249,9 +249,40 @@ longbridge rank --key <KEY> [--count N]         # 第二步:拉具体榜
 
 ---
 
-## 模块⑤扩展 期权现货联动
+## 模块①扩展 期权现货联动
 
-### 关键限制:chain 无按行权价的 OI
+### 关键突破:按行权价的真实 OI(calc-index)
+
+chain 本身仍无按行权价的 OI,但实测 **`calc-index` 可按单个期权合约查询 OI 与原生 Greeks**:
+
+```bash
+longbridge calc-index MSFT260821C485000.US --fields oi,iv,delta,gamma,theta,vega,rho --format json
+# → {symbol, oi:"3741", iv:"22.40%", delta:"0.479", gamma:"0.046", theta:"-0.054", vega:"0.154", rho:"0.014", strike, exp, last_done}
+```
+
+要点(实测 2026-08,CLI 0.26.0):
+- **合约代码格式与 OCC 不同**:行权价×1000 后**不补零**(`C485000`,OCC 是 `C00485000`),
+  尾缀 `.US`。`common.build_lbr_option_symbol()` 已封装
+- **支持一次传多个合约**(实测 ≥6 个),不存在的合约静默跳过(返回行数变少)
+- **iv 是百分比字符串**("22.40%"),`get_option_contract_metrics()` 已归一化为小数
+- 限频 10 次/秒;`get_chain_oi()` 默认只查现价 ±25%、离 ATM 最近 60 档(约 12 次调用),
+  并带进程级缓存
+
+据此升级(成交量仅作 OI 不可用时的回退,输出标注 weight_mode):
+- **get_option_oi.py**:按行权价 OI 表 + P/C OI 比率(存量口径)+ OI 墙
+- **calc_max_pain.py**:真实 OI 加权
+- **calc_gex.py**:OI 加权 + 原生 gamma(缺失时 BS 回退)
+- **get_put_call_wall.py**:OI 墙(约定:Call Wall 只在 ≥现价、Put Wall 只在 ≤现价 中找)
+- **get_option_quote.py**:原生 Greeks 优先(greeks_source="native"),BS 回退,附带 OI
+
+交叉验证(与第三方期权分析站对照,2026-08-20 MSFT):
+- Gamma 翻转点:本 skill 387.5 vs 网站 383.84 ✅
+- Call Wall 500(+3.2%)在网站阻力区 492.56/502.18 内 ✅
+- P/C OI 比率 0.381 vs 网站 0.430(不同到期日快照,同量级)✅
+- Max Pain 差异属口径不同:网站用的是已到期的 0DTE 链(OI 集中在 ATM),
+  本 skill 查询存续链(深度价内 Call 大持仓会把痛点拉低,数学正确)
+
+### chain 无按行权价的 OI(旧限制,已由 calc-index 解决)
 
 `longbridge option chain <SYM> --date <DATE>` 返回字段:
 ```

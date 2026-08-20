@@ -1139,6 +1139,128 @@ def get_kline_adjusted(symbol: str, count: int = 260, period: str = "day") -> li
     return normalize_records(data)
 
 
+# ---- 期权合约级指标(calc-index:真实 OI + 服务端原生 Greeks) ----
+# 实测(2026-08,CLI 0.26.0):calc-index 支持按单个期权合约查询 oi/iv/delta/gamma/
+# theta/vega/rho/strike/exp/last_done,支持一次传多个合约(不存在的静默跳过)。
+# 这是 chain 之外唯一的按行权价 OI 数据源,Wall/GEX/MaxPain/P-C OI 比率据此升级为真 OI 口径。
+
+_LBR_OPTION_CACHE: dict[str, dict] = {}
+
+
+def build_lbr_option_symbol(ticker: str, expiry: str, strike: float, option_type: str) -> str:
+    """构造 Longbridge calc-index 使用的期权代码。
+
+    ⚠️ 与 OCC 标准不同:行权价×1000 后不补零。
+    例: MSFT 2026-08-21 485.0 Call → MSFT260821C485000.US(OCC 则是 MSFT260821C00485000)
+    """
+    ot = option_type.strip().upper()
+    cp = "C" if ot in ("CALL", "C") else ("P" if ot in ("PUT", "P") else None)
+    if cp is None:
+        raise ValueError(f"option_type 必须是 CALL/PUT/C/P,收到 {option_type!r}")
+    return f"{ticker.upper()}{expiry[2:4]}{expiry[5:7]}{expiry[8:10]}{cp}{int(round(strike * 1000))}.US"
+
+
+def get_option_contract_metrics(
+    contracts: list[str],
+    fields: str = "oi,iv,delta,gamma,theta,vega,rho,strike,exp,last_done",
+    batch_size: int = 10,
+    use_cache: bool = True,
+) -> dict[str, dict]:
+    """批量查询期权合约的 OI / 原生 Greeks / IV。
+
+    Args:
+        contracts: build_lbr_option_symbol 构造的合约代码列表
+        batch_size: 每次 calc-index 调用携带的合约数(实测多合约单调用可行)
+        use_cache: 同进程内相同合约复用结果(进程级缓存)
+
+    Returns:
+        {合约代码: {oi:int, iv:小数, delta, gamma, theta, vega, rho, strike, exp, last_done}}
+        无数据的合约不在返回 dict 中。iv 已从 "22.40%" 归一化为 0.224。
+    """
+    out: dict[str, dict] = {}
+    todo = []
+    for c in contracts:
+        if use_cache and c in _LBR_OPTION_CACHE:
+            out[c] = _LBR_OPTION_CACHE[c]
+        else:
+            todo.append(c)
+    for i in range(0, len(todo), batch_size):
+        chunk = todo[i:i + batch_size]
+        data = run_cli("calc-index", *chunk, "--fields", fields)
+        rows = data if isinstance(data, list) else []
+        for r in normalize_records(rows):
+            sym = r.get("symbol")
+            if not sym:
+                continue
+            iv = r.get("iv")
+            if isinstance(iv, str):
+                is_pct = iv.endswith("%")
+                f = to_float(iv[:-1] if is_pct else iv)
+                if f is not None:
+                    r["iv"] = f / 100 if is_pct else f
+            if use_cache:
+                _LBR_OPTION_CACHE[sym] = r
+            out[sym] = r
+    return out
+
+
+def get_chain_oi(underlying: str, expiry: str, near_atm_pct: float = 0.25,
+                 max_strikes: int = 60) -> dict:
+    """按行权价拉取整条链的 call/put OI + 原生 Greeks(用于 Wall/GEX/MaxPain/P-C OI)。
+
+    只查询现价 ±near_atm_pct 范围内、离 ATM 最近的 max_strikes 个行权价
+    (控制 calc-index 调用量;限频 10 次/秒,60 档 × 2 边 = 12 次调用)。
+
+    Returns:
+        {oi_mode: bool, strikes: {strike: {call_oi, put_oi, call_iv, put_iv,
+         call_gamma, put_gamma, call_delta, put_delta}},
+         total_call_oi, total_put_oi, pc_oi_ratio, strikes_queried}
+        oi_mode=False 表示拿不到 OI(调用方应回退成交量代理)。
+    """
+    chain = get_option_chain(underlying, expiry)
+    price = get_underlying_price(underlying)
+    ticker, _ = parse_underlying(underlying)
+    strikes = sorted({to_float(r.get("strike")) for r in chain if to_float(r.get("strike"))})
+    if not strikes:
+        return {"oi_mode": False, "strikes": {}}
+    if price:
+        strikes = [s for s in strikes if abs(s - price) / price <= near_atm_pct]
+    if len(strikes) > max_strikes:
+        strikes = sorted(strikes, key=lambda s: abs(s - (price or strikes[0])))[:max_strikes]
+        strikes.sort()
+
+    contracts = []
+    for s in strikes:
+        contracts.append(build_lbr_option_symbol(ticker, expiry, s, "CALL"))
+        contracts.append(build_lbr_option_symbol(ticker, expiry, s, "PUT"))
+    metrics = get_option_contract_metrics(contracts, fields="oi,iv,delta,gamma")
+
+    strike_map: dict[float, dict] = {}
+    total_c = total_p = 0
+    for s in strikes:
+        cm = metrics.get(build_lbr_option_symbol(ticker, expiry, s, "CALL"), {})
+        pm = metrics.get(build_lbr_option_symbol(ticker, expiry, s, "PUT"), {})
+        c_oi = to_int(cm.get("oi")) or 0
+        p_oi = to_int(pm.get("oi")) or 0
+        strike_map[s] = {
+            "call_oi": c_oi, "put_oi": p_oi,
+            "call_iv": to_float(cm.get("iv")), "put_iv": to_float(pm.get("iv")),
+            "call_gamma": to_float(cm.get("gamma")), "put_gamma": to_float(pm.get("gamma")),
+            "call_delta": to_float(cm.get("delta")), "put_delta": to_float(pm.get("delta")),
+        }
+        total_c += c_oi
+        total_p += p_oi
+    has_oi = any(v["call_oi"] or v["put_oi"] for v in strike_map.values())
+    return {
+        "oi_mode": has_oi,
+        "strikes": strike_map,
+        "total_call_oi": total_c,
+        "total_put_oi": total_p,
+        "pc_oi_ratio": round(total_p / total_c, 3) if total_c else None,
+        "strikes_queried": len(strikes),
+    }
+
+
 # ---------------------------------------------------------------------------
 # 主入口:环境自检(被 import 时不触发,仅在直接运行 check_env.py 时)
 # ---------------------------------------------------------------------------

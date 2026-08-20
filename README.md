@@ -143,7 +143,7 @@ These are **data-source limitations** of the Longbridge API, not bugs:
 1. **Single-contract `option quote` returns empty** — Greeks computed via Black-Scholes using chain IV.
 2. **No historical IV** — IV Rank/Percentile use **local accumulation** (`get_iv_history.py` daily).
 3. **US options only (OPRA)** — HK / A-share options return empty.
-4. **No per-strike open interest** — Put/Call Wall and GEX use volume as proxy (labeled in output).
+4. **Per-strike OI — solved** — `calc-index` provides real OI + native Greeks per contract; Wall/GEX/MaxPain/P-C OI now use real OI (volume only as fallback).
 5. **broker-holding is HK-only** — US symbols return empty.
 6. **Short data US/HK fields differ** — auto-detected by field presence.
 7. **Depth/trades are snapshots** — after-hours shows the last snapshot; tick-flow sample size depends on session.

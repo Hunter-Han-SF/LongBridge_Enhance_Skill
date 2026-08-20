@@ -4,12 +4,13 @@
   (该价位上所有 Call+Put 的内在价值赔付总和最小)。
 到期日效应: 越接近到期,价格向 Max Pain 收敛的引力越常被观察到。
 
-⚠️ 近似说明: 标准算法用 OI(未平仓量)加权;Longbridge chain 无按行权价的 OI,
-   本脚本用成交量(call_vol/put_vol)代理,流动性好的标的近似度较高。
+权重口径(自动选择):
+  ✅ 优先 **真实 OI**(calc-index 按合约逐个查询,存量持仓口径,与主流 Max Pain 一致)
+  ⬇️ OI 拿不到时回退 **成交量代理**(chain 无按行权价 OI 的旧限制,输出已标注)
 
 用法:
-    python calc_max_pain.py AAPL.US --date 2026-09-18
-    python calc_max_pain.py AAPL.US --json
+    python calc_max_pain.py MSFT.US --date 2026-09-18
+    python calc_max_pain.py MSFT.US --json
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ import sys
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
 from common import (  # noqa: E402
+    get_chain_oi,
     get_option_chain,
     get_option_expirations,
     get_underlying_price,
@@ -41,47 +43,57 @@ def analyze(symbol: str, date: str | None = None, output_json: bool = False) -> 
             raise ValueError(f"{symbol} 无可用到期日")
         date = exps[0]
 
-    chain = get_option_chain(symbol, date)
-    if is_empty(chain):
-        raise ValueError(f"{symbol} 在 {date} 无期权链")
+    # 1) 尝试真实 OI 口径
+    weights: list[tuple[float, float, float]] = []  # (strike, call_w, put_w)
+    mode = "volume"
+    oi_data = get_chain_oi(symbol, date)
+    if oi_data.get("oi_mode"):
+        for s, v in sorted(oi_data["strikes"].items()):
+            if v["call_oi"] or v["put_oi"]:
+                weights.append((s, float(v["call_oi"]), float(v["put_oi"])))
+        mode = "oi"
+    if mode == "volume":
+        chain = get_option_chain(symbol, date)
+        if is_empty(chain):
+            raise ValueError(f"{symbol} 在 {date} 无期权链")
+        for r in chain:
+            s = to_float(r.get("strike"))
+            cv = to_float(r.get("call_vol"), 0) or 0
+            pv = to_float(r.get("put_vol"), 0) or 0
+            if s and (cv > 0 or pv > 0):
+                weights.append((s, cv, pv))
+    if not weights:
+        raise ValueError("链上无有效权重数据(OI 与成交量均为空)")
 
-    strikes = []
-    for r in chain:
-        s = to_float(r.get("strike"))
-        cv = to_float(r.get("call_vol"), 0) or 0
-        pv = to_float(r.get("put_vol"), 0) or 0
-        if s and (cv > 0 or pv > 0):
-            strikes.append((s, cv, pv))
-    if not strikes:
-        raise ValueError("链上无有效成交量数据")
-
-    # 对每个候选结算价 S,计算总赔付 = Σ max(S-K,0)·call_vol + Σ max(K-S,0)·put_vol
-    candidates = sorted({s for s, _, _ in strikes})
+    # 2) 对每个候选结算价 S,总赔付 = Σ max(S-K,0)·call_w + Σ max(K-S,0)·put_w
+    candidates = sorted({s for s, _, _ in weights})
     curve = []
     for s_settle in candidates:
-        payout = 0.0
-        for k, cv, pv in strikes:
-            payout += max(s_settle - k, 0) * cv + max(k - s_settle, 0) * pv
+        payout = sum(max(s_settle - k, 0) * cw + max(k - s_settle, 0) * pw
+                     for k, cw, pw in weights)
         curve.append({"settle": s_settle, "total_payout": payout})
 
     min_row = min(curve, key=lambda r: r["total_payout"])
     max_pain = min_row["settle"]
     dist_pct = (max_pain / price - 1) * 100
-
-    # 赔付最敏感的两个邻点(引力区间)
     sorted_by_payout = sorted(curve, key=lambda r: r["total_payout"])[:3]
+
+    mode_note = ("真实 OI 加权(calc-index 按合约查询,存量持仓口径)"
+                 if mode == "oi" else
+                 "⚠️ 成交量近似加权(OI 不可用;Longbridge chain 无按行权价 OI,已自动回退)")
 
     result = {
         "symbol": symbol,
         "expiry": date,
         "underlying_price": price,
+        "weight_mode": mode,
         "max_pain": max_pain,
         "distance_pct": round(dist_pct, 2),
         "total_payout_at_max_pain": round(min_row["total_payout"], 0),
-        "top3_lowest_payout": [{"settle": r["settle"],
-                                "payout": round(r["total_payout"], 0)}
+        "top3_lowest_payout": [{"settle": r["settle"], "payout": round(r["total_payout"], 0)}
                                for r in sorted_by_payout],
-        "note": "成交量代理 OI(Longbridge chain 无按行权价 OI)。到期日当天参考意义最大。",
+        "strikes_used": len(weights),
+        "note": f"{mode_note}。到期日当天参考意义最大。",
     }
 
     if output_json:
@@ -89,11 +101,11 @@ def analyze(symbol: str, date: str | None = None, output_json: bool = False) -> 
         return result
 
     print(f"{symbol} Max Pain(到期 {date},现价 {price})")
-    print(f"  ⚠️ 基于成交量近似(非真实 OI)")
+    print(f"  权重口径: {'✅ ' + '真实 OI' if mode == 'oi' else '⚠️ 成交量近似(回退)'}"
+          f"({len(weights)} 档行权价)")
     print(f"  Max Pain 行权价: {max_pain}(距现价 {dist_pct:+.2f}%)")
     print(f"  引力区间(赔付最低的3个价位): "
           f"{' / '.join(str(r['settle']) for r in sorted_by_payout)}")
-    # 展示赔付曲线采样
     show = [curve[i] for i in range(0, len(curve), max(1, len(curve) // 12))][:12]
     if curve[-1] not in show:
         show.append(curve[-1])
@@ -107,8 +119,8 @@ def analyze(symbol: str, date: str | None = None, output_json: bool = False) -> 
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Max Pain 最大痛点(成交量近似)")
-    parser.add_argument("symbol", help="正股代码,如 AAPL.US")
+    parser = argparse.ArgumentParser(description="Max Pain 最大痛点(真实 OI 优先)")
+    parser.add_argument("symbol", help="正股代码,如 MSFT.US")
     parser.add_argument("--date", default=None, help="到期日 YYYY-MM-DD(默认最近)")
     parser.add_argument("--json", action="store_true", dest="output_json", help="输出 JSON 格式")
     args = parser.parse_args()
