@@ -3,8 +3,13 @@
 [English](README.md) | **[中文](README.zh-CN.md)**
 
 > 基于 [Longbridge OpenAPI](https://open.longbridge.com) 的社区多维度分析增强工具。
-> 五大模块:① 期权分析(BS 希腊值、IV/HV、波动率微笑、P/C 比率、损益、Put/Call Wall、GEX、IV Crush)
-> ② 异动追踪 ③ 主力资金流 ④ 事件日历 ⑤ 市场情绪 —— 全部基于 Longbridge CLI 数据本地计算。
+> 九大模块:① 期权分析(BS 希腊值、IV/HV、波动率微笑、P/C 比率、损益、Put/Call Wall、GEX、IV Crush、
+> Expected Move、风险逆转、IV 期限结构、Max Pain)
+> ② 异动追踪 ③ 主力资金流 ④ 事件日历 ⑤ 市场情绪
+> ⑥ 技术面(MA/MACD/RSI/KDJ/BOLL/ATR/OBV + 综合评分 + 相对强度/Beta)
+> ⑦ 基本面(估值历史分位/分析师共识/财务健康/股息质量)
+> ⑧ 日内微观(VWAP/盘口失衡/逐笔主动买卖) ⑨ 买卖决策仪表盘
+> —— 全部基于 Longbridge CLI 数据本地计算。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -43,6 +48,27 @@
 - **市场温度** — 0-100 指数 + 估值/情绪分项 + 历史
 - **热度排行榜** — 总热度/热度上升/热门交易/热议/关注度,各市场
 - **每日简报** — 一键聚合(温度 + 热度榜 top5 + 异动榜 top5 + 异动统计 + SPY P/C 比率)
+
+### 📈 模块⑥:技术面
+- **全套指标** — MA/EMA/MACD/RSI/KDJ/BOLL/ATR/OBV/MFI/量比/ROC/Williams %R/CCI/52周位置/最大回撤(前复权计算)
+- **信号检测** — 均线多空排列、MA/MACD/KDJ 金叉死叉、超买超卖、20日新高新低、年线
+- **综合评分** — 趋势/动量/量能/位置四维 0-100 打分
+- **相对强度 + Beta** — 1周~1年跑赢/跑输大盘,默认基准 SPY/2800/510300
+
+### 🏦 模块⑦:基本面
+- **估值分位** — PE/PB 当前值 vs 5 年历史百分位 + 行业同行对比
+- **分析师共识** — 评级分布、目标价空间、EPS 预测分歧度
+- **财务健康** — 三大报表关键指标红绿灯(增长/盈利/杠杆/现金流)
+- **股息质量** — TTM 股息率、连续分红年数、完整年度增长率
+
+### ⚡ 模块⑧:日内微观
+- **VWAP 分析** — 现价 vs 当日均价偏离 + 上方时间占比
+- **盘口压力** — L2 深度失衡、买卖量比、最大挂单墙
+- **主动买卖比** — 逐笔方向统计 + 大单检测 + 尾盘情绪
+
+### 🎯 模块⑨:买卖决策仪表盘
+- **六维聚合** — 技术 30% + 估值 15% + 资金 20% + 期权 10% + 分析师 15% + 事件风险 10%
+- 输出多空因素对照 + 综合信号(看多/偏多/中性/偏空/看空)
 
 ## 环境要求
 
@@ -102,8 +128,14 @@ python scripts/flow/get_broker_holding.py 700.HK --detail      # 港股经纪商
 python scripts/calendar/get_earnings_calendar.py --market US
 python scripts/sentiment/get_market_temp.py US
 
-# === 一键每日简报 ===
+# === 技术面 & 基本面 & 日内 ===
+python scripts/technical/calc_indicators.py AAPL.US        # 全套技术指标+信号
+python scripts/fundamental/get_valuation_percentile.py AAPL.US  # 估值分位
+python scripts/intraday/get_vwap_analysis.py AAPL.US       # VWAP
+
+# === 一键每日简报 / 买卖仪表盘 ===
 python scripts/sentiment/daily_briefing.py --market US
+python scripts/decision/analyze_buy_sell.py AAPL.US        # 六维多空对照
 ```
 
 完整命令参考见 [`SKILL.md`](SKILL.md)。

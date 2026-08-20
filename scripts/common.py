@@ -1006,6 +1006,139 @@ def get_heat_rank(key: str, count: int = 20) -> dict:
     }
 
 
+# ===========================================================================
+# 增强模块公共封装(技术面 / 基本面 / 日内微观 / 期权补充)
+# ===========================================================================
+# 以下对应 Longbridge CLI 的扁平命令,字段结构均实测验证(2026-08,CLI 0.26.0)。
+
+
+# ---- 日内微观(intraday / depth / trades) ----
+
+def get_intraday(symbol: str, date: str | None = None, session: str = "intraday") -> list[dict]:
+    """分钟线(自带 VWAP)。
+
+    Returns:
+        [{time, price, avg_price(即 VWAP), volume, turnover}, ...](按时间升序)
+    """
+    args = ["intraday", symbol, "--session", session]
+    if date:
+        args += ["--date", date]  # YYYYMMDD
+    data = run_cli(*args)
+    if is_empty(data) or not isinstance(data, list):
+        return []
+    return normalize_records(data)
+
+
+def get_depth(symbol: str) -> dict:
+    """L2 盘口买卖梯子。asks 按价格降序(卖一在前),bids 按价格降序(买一在前)。"""
+    data = run_cli("depth", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return {"asks": [], "bids": []}
+    return {
+        "asks": normalize_records(data.get("asks", [])),
+        "bids": normalize_records(data.get("bids", [])),
+    }
+
+
+def get_trades(symbol: str, count: int = 200) -> list[dict]:
+    """最近逐笔成交(按时间倒序,最新在前)。
+
+    direction: 'Up'=主动买(买方推动),'Down'=主动卖,'Flat'=平。
+    """
+    data = run_cli("trades", symbol, "--count", str(min(count, 1000)))
+    if is_empty(data) or not isinstance(data, list):
+        return []
+    return normalize_records(data)
+
+
+# ---- 基本面(valuation / rating / forecast / financial-report / dividend) ----
+
+def get_valuation(symbol: str) -> dict:
+    """估值分析:当前估值 + 5 年历史序列 + 行业同行对比。
+
+    Returns:
+        {overview: {metrics: {pe: {desc, circle...}, ...}},
+         history: {metrics: {pe: {list: [{timestamp, value}], median, high, low}}},
+         peers: {pe: {industry_median, list: [{counter_id, name, value}]}}}
+        实测美股常见只有 pe;部分标的有 pb/ps 等,按实际返回的 metric 处理。
+    """
+    data = run_cli("valuation", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return {}
+    return data
+
+
+def get_institution_rating(symbol: str) -> dict:
+    """机构/分析师评级。
+
+    Returns:
+        {analyst: {evaluate: {buy, over, hold, under, sell, no_opinion, total},
+                   target: {highest_price, lowest_price, prev_close},
+                   industry_name, industry_rank, industry_total},
+         instratings: {...评级变动}}
+    """
+    data = run_cli("institution-rating", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return {}
+    return data
+
+
+def get_forecast_eps(symbol: str) -> list[dict]:
+    """EPS 预测(分析师共识,按报告期)。
+
+    Returns:
+        [{forecast_eps_mean, forecast_eps_highest, forecast_eps_lowest,
+          forecast_eps_median, forecast_start_date, forecast_end_date,
+          institution_up, institution_down, institution_total}]
+    """
+    data = run_cli("forecast-eps", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return []
+    return normalize_records(data.get("items", []))
+
+
+def get_financial_report(symbol: str) -> dict:
+    """三大报表关键指标(利润 IS / 资产负债 BS / 现金流 CF),含行业排名。
+
+    Returns:
+        {list: {IS: {indicators: [{accounts: [{name, ranking_code, ratio,
+           values: [{period, year, value, yoy}]}]}]}, BS: ..., CF: ...}}
+    """
+    data = run_cli("financial-report", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return {}
+    return data
+
+
+def get_dividend_history(symbol: str) -> list[dict]:
+    """分红历史(按除息日倒序)。
+
+    Returns:
+        [{symbol, ex_date('2026.08.10'), record_date, payment_date,
+          desc('每股派息 0.27 USD'), amount, currency}](amount/currency 由 desc 解析)
+    """
+    data = run_cli("dividend", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return []
+    rows = normalize_records(data.get("list", []))
+    import re as _re
+    for r in rows:
+        m = _re.search(r"([\d.]+)\s*([A-Za-z]+)", str(r.get("desc", "")))
+        if m:
+            r["amount"] = to_float(m.group(1))
+            r["currency"] = m.group(2).upper()
+    return rows
+
+
+# ---- K 线辅助 ----
+
+def get_kline_adjusted(symbol: str, count: int = 260, period: str = "day") -> list[dict]:
+    """前复权 K 线(--adjust forward),技术指标计算专用,避免除权跳空污染均线。"""
+    data = run_cli("kline", symbol, "--period", period, "--count", str(count),
+                   "--adjust", "forward")
+    return normalize_records(data)
+
+
 # ---------------------------------------------------------------------------
 # 主入口:环境自检(被 import 时不触发,仅在直接运行 check_env.py 时)
 # ---------------------------------------------------------------------------

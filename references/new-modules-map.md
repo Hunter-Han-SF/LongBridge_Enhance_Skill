@@ -1,7 +1,81 @@
 # 新增模块 CLI 字段映射 & 已知限制
 
-本文档记录 5 大新增模块(异动/资金流/日历/情绪/期权现货联动)对 Longbridge CLI 的封装细节、
-字段映射和实测限制。对标 [capability-map.md](capability-map.md)(期权部分)。
+本文档记录各增强模块(异动/资金流/日历/情绪/技术面/基本面/日内微观/决策)对 Longbridge CLI 的
+封装细节、字段映射和实测限制。对标 [capability-map.md](capability-map.md)(期权部分)。
+
+---
+
+## 模块⑥ 技术面(本地计算,无新增 CLI 命令)
+
+数据源:`kline --period day --adjust forward`(前复权,避免除权跳空污染均线)。
+全部指标本地实现(`scripts/technical/indicators.py`,纯函数):
+SMA/EMA/MACD(12,26,9)/RSI(Wilder)/KDJ(9,3,3)/BOLL(20,2,总体标准差)/ATR(Wilder)/
+OBV(20期回归斜率)/MFI/量比/ROC/Williams %R/CCI/唐奇安/52周位置/最大回撤/Beta。
+
+实现约定:
+- EMA 种子 = 前 n 个的 SMA;KDJ 种子 K=D=50;BOLL 用总体方差(ddof=0)
+- Beta 基于与基准按日期对齐后的日收益(US 默认 SPY / HK 2800 / A股 510300)
+- 单元测试:单边涨跌边界值、Wilder RSI 对称序列=50、BOLL 与 statistics.pstdev 一致、
+  Beta(2×市场)=2 等约束全部通过
+
+---
+
+## 模块⑦ 基本面
+
+### `valuation` — 估值分析(5年历史 + 同行)
+
+返回 `{overview, history, layouts, peers, stocks}`:
+- `overview.metrics.{pe,...}.circle`:当前值;`desc`:AI 摘要(HTML)
+- `history.metrics.{pe}.list`:约 5 年季度序列 `[{timestamp, value}]`,另有 `median/high/low`
+- `peers.pe.list`:同行 `[{counter_id, name, value}]`(按估值降序)+ `industry_median`
+
+⚠️ 美股常见只有 `pe` 一个 metric;部分标的才有 pb/ps。分位脚本按实际返回的 metric 处理。
+
+### `institution-rating` — 机构评级
+
+- `analyst.evaluate`: `{buy, over, hold, under, sell, no_opinion, total}`
+  (over/under = 跑赢/跑输;buy+over 视为看多,sell+under 视为看空)
+- `analyst.target`: `{highest_price, lowest_price, prev_close}`(无中值,需自算)
+- `analyst.industry_name/industry_rank/industry_total`:行业归属与排名
+
+### `forecast-eps` — EPS 预测
+
+`items[]: {forecast_eps_mean/highest/lowest/median, forecast_start_date/end_date(Unix秒),
+institution_up/down/total}`。分歧度 = (highest-lowest)/mean。
+
+### `financial-report` — 三大报表
+
+`list.{IS,BS,CF}.indicators[].accounts[]`,每个 account:
+`{name(中文名), ranking_code(不总存在), ratio, values[]}`;
+`values[]` **最新期在前**:`{period:"Q3 2026", year, fp_end, value, yoy}`。
+
+⚠️ 科目按中文名匹配(如"营业收入"/"总负债");排名用 `industry_ranking`(如 "1/49")。
+实测可用科目:每股收益/ROE/营业收入/净利润/毛利率/净利率/总资产/总负债/权益乘数/
+每股净资产/净债务/经营现金流/自由现金流/资本支出。
+
+### `dividend` — 分红历史
+
+`list[]: {desc:"每股派息 0.27 USD", ex_date:"2026.08.10"(点分格式), record_date, payment_date}`。
+金额与币种从 desc 正则解析。年度增长只用完整年份(当年期数少于上年时跳过)。
+
+---
+
+## 模块⑧ 日内微观
+
+### `intraday` — 分钟线(自带 VWAP)
+
+`[{time, price, avg_price(=VWAP), volume, turnover}]`,升序。`--date YYYYMMDD` 查历史,
+`--session intraday|all` 过滤盘前盘后。
+
+### `depth` — L2 盘口
+
+`{asks:[{position, price, volume, order_num}], bids:[...]}`(卖档价格升序,买档降序)。
+⚠️ 休市时通常只剩 1 档(最后快照),失衡指标此时参考意义有限。
+
+### `trades` — 逐笔成交
+
+`[{direction: "Up"|"Down", price, time, volume}]`,**最新在前**(`--count ≤1000`)。
+Up=主动买(买方推动),Down=主动卖。大单阈值按股数(不同价位标的需调整)。
 
 ---
 

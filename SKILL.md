@@ -1,30 +1,26 @@
 ---
 name: longbridge-pro
 description: |
-  长桥多维度数据增强 skill。在官方 longbridge 系列基础上加工原始接口,
-  提供更深的分析能力,覆盖五大模块:
-  ① 期权分析(期权链/Greeks/IV/HV/波动率微笑/P-C比率/损益/策略,美股 OPRA)
-  ② 异动追踪(大单异动/涨跌异动榜+关联新闻)
-  ③ 主力资金流(大中小单分布/分钟流/港股经纪商持仓/沽空数据)
-  ④ 事件日历(财报/除权除息/分拆/IPO/宏观)
-  ⑤ 市场情绪(温度指数/热度排行榜)
-  只读,无任何交易功能。
-  Triggers: "期权", "期权链", "Greeks", "delta", "gamma", "theta", "vega", "rho",
-  "IV", "隐含波动率", "HV", "历史波动率", "IV Rank", "IV Percentile", "波动率微笑",
-  "P/C 比率", "put call ratio", "行权概率", "损益分析", "盈亏平衡", "期权策略",
-  "straddle", "strangle", "spread", "butterfly", "collar", "covered call",
-  "cash secured put", "0DTE", "期权报价", "option", "option chain", "option quote",
-  "异动", "大单", "anomaly", "top movers", "异动榜",
-  "资金流", "主力", "capital flow", "大单流入", "经纪商持仓", "broker holding",
-  "沽空", "做空", "short sale", "short position", "沽空压力",
-  "财报日历", "除权除息", "分红日历", "earnings calendar", "dividend calendar",
-  "市场温度", "情绪", "market temperature", "热度榜", "popularity rank",
-  "市场简报", "daily briefing", "Put Wall", "Call Wall", "GEX", "IV Crush",
-  "期權", "異動", "資金流", "經紀商持倉", "沽空", "市場溫度"
+  长桥(Longbridge)数据增强 skill,只读无交易。九大模块:
+  ①期权分析(链/Greeks/IV/HV/微笑/P-C比率/损益/策略/Wall/GEX/IV Crush/EM/风险逆转/期限结构/Max Pain,美股OPRA)
+  ②异动追踪 ③主力资金流(大中小单/分钟流/港股经纪商持仓/沽空)
+  ④事件日历(财报/除权除息) ⑤市场情绪(温度/热度榜/简报)
+  ⑥技术面(MA/MACD/RSI/KDJ/BOLL/ATR/OBV/量比/52周/信号/评分/相对强度/Beta)
+  ⑦基本面(估值分位/分析师评级/目标价/EPS预测/财务健康/股息)
+  ⑧日内微观(VWAP/盘口压力/逐笔主动买卖) ⑨买卖决策仪表盘。
+  Triggers: 期权,期权链,Greeks,IV,隐含波动率,波动率微笑,P/C比率,损益,期权策略,
+  straddle,spread,butterfly,collar,异动,大单,资金流,主力,经纪商持仓,沽空,做空,
+  财报日历,分红日历,除权除息,市场温度,热度榜,Put Wall,GEX,IV Crush,
+  技术指标,技术分析,均线,MACD,RSI,KDJ,布林,ATR,OBV,量比,金叉,死叉,超买超卖,
+  52周新高,支撑阻力,Beta,相对强度,估值分位,市盈率,分析师,评级,目标价,EPS预测,
+  ROE,毛利率,负债率,自由现金流,财务健康,股息,股息率,收息,VWAP,盘口,买卖盘,
+  主动买卖,逐笔,隐含波动幅度,风险逆转,Max Pain,期限结构,该买吗,该卖吗,买卖信号,
+  多空对照,仪表盘,option chain,put call ratio,capital flow,short sale,
+  earnings calendar,market temperature,expected move,risk reversal,order flow
 license: MIT
 metadata:
   author: community
-  version: "0.2.0"
+  version: "0.3.1"
   risk_level: read_only
   requires_login: false
   default_install: true
@@ -35,7 +31,8 @@ metadata:
 # Longbridge Pro
 
 长桥多维度数据增强 skill。在官方 longbridge 系列基础上加工原始接口,提供更深的分析能力。
-覆盖五大模块:① 期权分析 ② 异动追踪 ③ 主力资金流 ④ 事件日历 ⑤ 市场情绪。
+覆盖九大模块:① 期权分析 ② 异动追踪 ③ 主力资金流 ④ 事件日历 ⑤ 市场情绪
+⑥ 技术面 ⑦ 基本面 ⑧ 日内微观 ⑨ 买卖决策仪表盘。
 
 > **语言规则**:根据用户输入语言自动回复。
 > **安全提示**:本 skill 只读,无任何交易功能。
@@ -44,7 +41,7 @@ metadata:
 
 - **期权部分**:实现 A 档(原生)+ B 档(计算),不实现 C 档(期权逐笔异动/0DTE —— Longbridge 无数据源)。
   详见 [references/capability-map.md](references/capability-map.md)。
-- **新增四模块**(异动/资金流/日历/情绪):加工 Longbridge CLI 原生数据 + 跨模块融合分析。
+- **新增模块**(异动/资金流/日历/情绪/技术/基本面/日内/决策):加工 Longbridge CLI 原生数据 + 跨模块融合分析。
   详见 [references/new-modules-map.md](references/new-modules-map.md)。
 
 ### 已知限制(实测)
@@ -55,12 +52,15 @@ metadata:
 5. **chain 无按行权价的 OI** → Put/Call Wall 和 GEX 用成交量近似(脚本已标注)
 6. **broker-holding 仅港股** → 美股调用会优雅报错
 7. **short 数据 US/HK 字段不同** → 脚本按字段存在性自动识别市场
+8. **盘口/逐笔为瞬时快照** → 休市时为最后快照,主动买卖比样本取决于时段
+9. **估值历史美股常见只有 PE** → 部分标的才有 PB/PS,脚本按实际返回处理
+10. **技术面打分权重/灯号阈值为设计选择** → 可按风格调整,输出已标注
 
 ## 前提条件
 
 1. **longbridge CLI** 已安装并登录(`longbridge auth login`)
 2. **Python 3.8+**(本 skill 用 Python 做 BS/HV 等计算,不需要 longport SDK)
-3. 期权模块需账户开通 **OPRA 期权行情权限**(异动/资金流/日历/情绪模块不需要)
+3. 期权模块需账户开通 **OPRA 期权行情权限**(其余模块不需要;基本面/日内/技术面仅需股票行情)
 
 环境检查:
 ```bash
@@ -72,16 +72,21 @@ python scripts/check_env.py
 本 skill 脚本按模块分目录:
 ```bash
 {SKILL_BASE_DIR}/scripts/
-├── quote/       # 期权模块(原 derivatives-pro)
-├── market/      # 异动追踪
-├── flow/        # 资金流/主力
-├── calendar/    # 事件日历
-└── sentiment/   # 市场情绪
+├── quote/       # ① 期权模块(原 derivatives-pro + EM/RR/期限结构/MaxPain)
+├── market/      # ② 异动追踪
+├── flow/        # ③ 资金流/主力
+├── calendar/    # ④ 事件日历
+├── sentiment/   # ⑤ 市场情绪
+├── technical/   # ⑥ 技术面(指标库/综合评分/相对强度)
+├── fundamental/ # ⑦ 基本面(估值/评级/财务/股息)
+├── intraday/    # ⑧ 日内微观(VWAP/盘口/逐笔)
+└── decision/    # ⑨ 买卖决策仪表盘
 ```
 运行示例:
 ```bash
 python scripts/market/get_anomaly.py --market US
 python scripts/flow/get_capital_flow.py AAPL.US
+python scripts/decision/analyze_buy_sell.py AAPL.US
 ```
 
 ## 命令速查
@@ -289,7 +294,115 @@ python scripts/sentiment/get_heat_rank.py --key hot_all-us [--count 20] [--json]
 
 ---
 
+### 📈 技术面(模块⑥)
+
+#### 全套技术指标 + 信号
+```bash
+python scripts/technical/calc_indicators.py AAPL.US [--count 300] [--json]
+```
+- MA5/10/20/60/120/250、EMA、MACD、RSI、KDJ、BOLL、ATR、OBV、MFI、量比、ROC、Williams %R、CCI、52周位置、最大回撤(前复权 K 线计算)
+- 信号:均线多空排列、MA5/20 与 MACD 金叉死叉、KDJ 超买卖、20日新高新低、年线上下
+
+#### 技术面综合评分(0-100)
+```bash
+python scripts/technical/calc_technical_score.py AAPL.US [--json]
+```
+- 四维:趋势(30)/动量(25)/量能(20)/位置(25),≥70 强势 / 50-70 偏多 / 30-50 偏弱
+
+#### 相对强度 + Beta(vs 大盘)
+```bash
+python scripts/technical/calc_relative_strength.py AAPL.US [--benchmark QQQ.US] [--json]
+```
+- 1周~1年各窗口跑赢/跑输基准 + Beta 弹性;默认基准 US=SPY / HK=2800 / A股=510300
+
+---
+
+### 🏦 基本面(模块⑦)
+
+#### 估值分位(当前 vs 5年历史 + 同行)
+```bash
+python scripts/fundamental/get_valuation_percentile.py AAPL.US [--json]
+```
+- PE/PB 当前值处于历史百分位(<30% 便宜 / >70% 偏贵)+ 行业同行排名
+
+#### 分析师共识 + 目标价 + EPS 预测
+```bash
+python scripts/fundamental/get_analyst_consensus.py AAPL.US [--json]
+```
+- 买入/跑赢/持有/跑输/卖出分布、目标价区间 vs 现价空间、EPS 预测分歧度
+
+#### 财务健康(三大报表)
+```bash
+python scripts/fundamental/get_financial_health.py AAPL.US [--json]
+```
+- 营收/净利/毛利/ROE/负债率/现金流 + 红绿灯评级(实测字段中文名匹配)
+
+#### 股息质量
+```bash
+python scripts/fundamental/get_dividend_quality.py AAPL.US [--json]
+```
+- TTM 股息率、连续分红年数、年度增长(仅完整年份)、频率稳定性
+
+---
+
+### ⚡ 日内微观(模块⑧)
+
+#### VWAP 分析
+```bash
+python scripts/intraday/get_vwap_analysis.py AAPL.US [--date 20260819] [--json]
+```
+- 现价 vs 当日 VWAP 偏离、上方时间占比、当日区间位置 → 日内强弱
+
+#### 盘口买卖压力
+```bash
+python scripts/intraday/get_orderbook_pressure.py AAPL.US [--json]
+```
+- L2 深度失衡率、买卖盘量比、最大挂单墙(隐形支撑/阻力)、加权中枢
+
+#### 逐笔主动买卖比(Order Flow)
+```bash
+python scripts/intraday/get_trade_flow.py AAPL.US [--count 300] [--big 1000] [--json]
+```
+- 主动买/卖量占比(量的口径+金额口径)、大单统计、尾盘情绪
+
+---
+
+### 🧮 期权补充(模块①扩展)
+
+#### 隐含波动幅度(Expected Move)
+```bash
+python scripts/quote/calc_expected_move.py AAPL.US [--date 2026-09-18] [--all] [--json]
+```
+- ATM straddle 法:市场定价的到期前 ±波动区间(1σ),财报前判断"赌多大行情"
+
+#### IV 期限结构
+```bash
+python scripts/quote/get_iv_term_structure.py AAPL.US [--count 8] [--json]
+```
+- 各到期日 ATM IV 连线:Contango/Backwardation + 事件溢价到期日检测
+
+#### 25-Delta 风险逆转
+```bash
+python scripts/quote/calc_risk_reversal.py AAPL.US [--date 2026-09-18] [--delta 0.25] [--json]
+```
+- IV(25Δ Call) - IV(25Δ Put):负值=下行保护占优(恐慌),正值=上行需求
+
+#### Max Pain(最大痛点)
+```bash
+python scripts/quote/calc_max_pain.py AAPL.US [--date 2026-09-18] [--json]
+```
+- 期权到期"引力位"(⚠️成交量近似 OI),距到期越近参考意义越大
+
+---
+
 ### 🎯 跨模块旗舰
+
+#### 买卖决策仪表盘(六维聚合)
+```bash
+python scripts/decision/analyze_buy_sell.py AAPL.US [--json]
+```
+- 技术面30% + 估值面15% + 资金面20% + 期权定位10% + 分析师15% + 事件风险10%
+- 输出:六维得分 + 多头/空头因素对照 + 综合信号(看多/偏多/中性/偏空/看空)
 
 #### 单标的异动综合打分
 ```bash
@@ -362,6 +475,28 @@ python scripts/quote/calc_gex.py AAPL.US --date 2026-09-18
 python scripts/quote/analyze_iv_crush.py AAPL.US
 ```
 
+### 工作流 7:判断"该不该买"(一站式)
+```bash
+# 1. 六维仪表盘(技术+估值+资金+期权+分析师+事件)
+python scripts/decision/analyze_buy_sell.py AAPL.US
+# 2. 深挖:估值贵不贵
+python scripts/fundamental/get_valuation_percentile.py AAPL.US
+# 3. 深挖:技术面信号明细
+python scripts/technical/calc_indicators.py AAPL.US
+# 4. 深挖:是否跑赢大盘
+python scripts/technical/calc_relative_strength.py AAPL.US
+```
+
+### 工作流 8:财报前后的期权决策
+```bash
+# 1. 市场押注多大行情(Expected Move)
+python scripts/quote/calc_expected_move.py AAPL.US --all
+# 2. 近月是否含事件溢价(期限结构)
+python scripts/quote/get_iv_term_structure.py AAPL.US
+# 3. 下行担忧程度(风险逆转)
+python scripts/quote/calc_risk_reversal.py AAPL.US --date 2026-09-18
+```
+
 ## 与官方 skill 的关系
 
 - **官方 `longbridge` 系列**(derivatives/fundamentals/market-data 等):prompt-only,基础查询
@@ -375,44 +510,37 @@ longbridge-pro/
 ├── SKILL.md
 ├── references/
 │   ├── capability-map.md      # 期权部分:Futu↔Longbridge 能力映射(含 C 档缺失)
-│   ├── new-modules-map.md     # 新模块:CLI 字段映射 + 已知限制
-│   └── calc-formulas.md       # B 档数学公式参考
+│   ├── new-modules-map.md     # 各模块:CLI 字段映射 + 已知限制
+│   └── calc-formulas.md       # 数学公式参考
 └── scripts/
-    ├── common.py              # 公共模块(CLI 封装/BS/HV/异动/资金流/日历/情绪)
+    ├── common.py              # 公共模块(CLI 封装/BS/HV/异动/资金流/估值/盘口等)
     ├── check_env.py           # 环境预检
-    ├── quote/                 # ① 期权模块(原 derivatives-pro)
-    │   ├── get_option_expiration.py    # A 到期日
-    │   ├── get_option_chain.py         # A 期权链
-    │   ├── get_option_volume.py        # A 成交量+P/C比率
-    │   ├── resolve_option_code.py      # A OCC代码
-    │   ├── get_option_quote.py         # B 单合约报价+Greeks
-    │   ├── get_option_volatility.py    # B IV vs HV
-    │   ├── get_vol_smile.py            # B 波动率微笑
-    │   ├── get_iv_history.py           # B IV历史(本地累积)
-    │   ├── calc_iv_rank.py             # B IV Rank
-    │   ├── calc_iv_percentile.py       # B IV Percentile
-    │   ├── calc_exercise_prob.py       # B 行权概率
-    │   ├── calc_option_greeks.py       # B 组合Greeks
-    │   ├── calc_option_pnl.py          # B 损益分析
-    │   ├── get_option_strategy.py      # B 策略腿生成
-    │   ├── get_put_call_wall.py        # B Put/Call Wall(成交量近似)
-    │   ├── calc_gex.py                 # B Gamma Exposure
-    │   └── analyze_iv_crush.py         # B 财报 IV Crush
-    ├── market/                # ② 异动追踪
-    │   ├── get_anomaly.py              # 异动信号
-    │   ├── get_top_movers.py           # 涨跌异动榜+新闻
-    │   └── calc_anomaly_score.py       # 异动综合打分(跨模块)
-    ├── flow/                  # ③ 主力资金流
-    │   ├── get_capital_flow.py         # 大中小单分布+分钟流
-    │   ├── get_broker_holding.py       # 港股经纪商持仓
-    │   └── get_short_sale.py           # 沽空数据
-    ├── calendar/              # ④ 事件日历
-    │   ├── get_earnings_calendar.py    # 财报日历
-    │   └── get_dividend_calendar.py    # 除权除息日历
-    └── sentiment/             # ⑤ 市场情绪
-        ├── get_market_temp.py          # 市场温度
-        ├── get_heat_rank.py            # 热度排行榜
-        └── daily_briefing.py           # 每日简报(跨模块)
+    ├── quote/                 # ① 期权模块(17 脚本 + 4 个补充)
+    │   ├── ...                #   (见上方命令速查)
+    │   ├── calc_expected_move.py      # 补充:隐含波动幅度(ATM straddle)
+    │   ├── get_iv_term_structure.py   # 补充:IV 期限结构 + 事件溢价
+    │   ├── calc_risk_reversal.py      # 补充:25Δ 风险逆转
+    │   └── calc_max_pain.py           # 补充:Max Pain(成交量近似)
+    ├── market/                # ② 异动追踪(get_anomaly/get_top_movers/calc_anomaly_score)
+    ├── flow/                  # ③ 主力资金流(capital_flow/broker_holding/short_sale)
+    ├── calendar/              # ④ 事件日历(earnings/dividend)
+    ├── sentiment/             # ⑤ 市场情绪(market_temp/heat_rank/daily_briefing)
+    ├── technical/             # ⑥ 技术面
+    │   ├── indicators.py               # 指标数学库(纯函数,可复用)
+    │   ├── calc_indicators.py          # 全套指标 + 信号检测
+    │   ├── calc_technical_score.py     # 技术面综合评分(0-100)
+    │   └── calc_relative_strength.py   # 相对强度 + Beta(vs 大盘)
+    ├── fundamental/           # ⑦ 基本面
+    │   ├── get_valuation_percentile.py # 估值历史分位 + 同行对比
+    │   ├── get_analyst_consensus.py    # 分析师共识/目标价/EPS预测
+    │   ├── get_financial_health.py     # 财务健康(三大报表+红绿灯)
+    │   └── get_dividend_quality.py     # 股息质量(TTM/连续性/增长)
+    ├── intraday/              # ⑧ 日内微观
+    │   ├── get_vwap_analysis.py        # VWAP 偏离 + 日内强弱
+    │   ├── get_orderbook_pressure.py   # L2 盘口失衡 + 挂单墙
+    │   └── get_trade_flow.py           # 逐笔主动买卖比 + 大单
+    └── decision/              # ⑨ 买卖决策
+        └── analyze_buy_sell.py         # 六维聚合仪表盘(旗舰)
 ```
 
 ## 错误处理
@@ -426,3 +554,6 @@ longbridge-pro/
 | `chain 中无有效 IV` | 该行权价无成交 | 换流动性更好的到期日/行权价 |
 | `无经纪商数据` | broker-holding 传了非港股 | 仅港股支持,确认 symbol 是 .HK |
 | `无资金流数据` | 标的当日无交易 | 确认是交易日且标的有流动性 |
+| `K 线数据不足` | 新股/退市/停牌 | 换 --count 更小或确认标的状态 |
+| `无估值/评级数据` | 覆盖不足(小票/新股) | 该维度仪表盘会标 N/A 并降权 |
+| `无逐笔/盘口数据` | 休市时段 | 盘中运行,或接受最后快照 |
