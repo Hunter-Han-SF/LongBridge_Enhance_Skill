@@ -20,7 +20,7 @@ description: |
 license: MIT
 metadata:
   author: community
-  version: "0.3.2"
+  version: "0.3.3"
   risk_level: read_only
   requires_login: false
   default_install: true
@@ -216,7 +216,16 @@ python scripts/quote/get_put_call_wall.py AAPL.US --date 2026-09-18 [--walls 3] 
 ```bash
 python scripts/quote/calc_gex.py AAPL.US --date 2026-09-18 [--rate 0.045] [--json]
 ```
-- 各 strike gamma × OI 加权(原生 gamma 优先,BS 回退),算净 GEX 和翻转点
+- 各 strike gamma × OI 加权(原生 gamma 优先,BS 回退),算净 GEX 和翻转点(剖面插值,无过零时如实报告)
+
+#### Gamma Profile(跨到期日聚合剖面,旗舰)
+```bash
+python scripts/quote/calc_gamma_profile.py NVDA.US [--window 60] [--range 0.20] [--json]
+```
+- 聚合未来 N 天所有到期日的 GEX 剖面(sticky-strike IV + BS gamma 重算)
+- **Gamma Flip(插值)**:剖面过零线性插值,自动扩域(翻转点最深可至 -40%)
+- **细粒度支撑/阻力**:call/put OI 高斯核密度峰 + 抛物线插值(输出非整数价位,如 220.52)
+- 成本:每个到期日约 12 次 calc-index 调用,60 天窗口约 12 秒(带进程缓存)
 - 正 GEX=抑制波动,负 GEX=放大波动
 
 #### 财报 IV Crush 分析
@@ -523,9 +532,10 @@ longbridge-pro/
 └── scripts/
     ├── common.py              # 公共模块(CLI 封装/BS/HV/异动/资金流/估值/盘口等)
     ├── check_env.py           # 环境预检
-    ├── quote/                 # ① 期权模块(17 脚本 + 5 个补充)
+    ├── quote/                 # ① 期权模块(17 脚本 + 6 个补充)
     │   ├── ...                #   (见上方命令速查)
     │   ├── get_option_oi.py            # 补充:按行权价OI/P-C OI比率/OI墙(calc-index)
+    │   ├── calc_gamma_profile.py       # 补充:聚合GEX剖面+插值Flip+核密度S/R(旗舰)
     │   ├── calc_expected_move.py      # 补充:隐含波动幅度(ATM straddle)
     │   ├── get_iv_term_structure.py   # 补充:IV 期限结构 + 事件溢价
     │   ├── calc_risk_reversal.py      # 补充:25Δ 风险逆转

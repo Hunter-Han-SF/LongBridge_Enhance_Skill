@@ -275,7 +275,21 @@ longbridge calc-index MSFT260821C485000.US --fields oi,iv,delta,gamma,theta,vega
 - **get_put_call_wall.py**:OI 墙(约定:Call Wall 只在 ≥现价、Put Wall 只在 ≤现价 中找)
 - **get_option_quote.py**:原生 Greeks 优先(greeks_source="native"),BS 回退,附带 OI
 
-交叉验证(与第三方期权分析站对照,2026-08-20 MSFT):
+Gamma Profile 方法论(calc_gamma_profile.py,2026-08-20):
+- **跨到期日聚合**:窗口内(默认60天)所有到期日的 (strike, IV, OI, T) 腿求和;
+  sticky-strike 近似(IV 固定当前值),gamma 随假设价位用 BS 重算
+- **Flip 插值**:±range 网格算 GEX(S),符号变化处线性插值,取离现价最近者;
+  无过零时自动扩域(×1.5、上限0.40);单链翻转点同样升级(calc_gex.py 的
+  `_find_flip_profile`),旧启发式已弃用
+- **细粒度 S/R**:call/put OI 高斯核密度(带宽=行权价间距)局部极大值 + 抛物线
+  插值 → 非整数价位;注意与第三方的"隐含波动分位 S/R"定义不同(我们=OI 密度墙)
+- 实测:1DTE 深度价内 Call 重仓的链(如 MSFT 08-21)可能全区间无过零 —— 这是
+  数学正确的结果(1DTE gamma 极度局域化),旧启发式在此类链上会给假翻转点
+
+交叉验证(与第三方期权分析站对照,2026-08-20):
+- NVDA Gamma Flip:本 skill 203.36 vs 网站 206.28(60天口径,差 1.4%)✅
+- MSFT Gamma Flip:本 skill 373.27 vs 网站 383.84(60天口径,差 2.7%,不同日快照)✅
+- NVDA 第一阻力:本 skill 220.52(插值) vs 网站 219.80 ✅
 - Gamma 翻转点:本 skill 387.5 vs 网站 383.84 ✅
 - Call Wall 500(+3.2%)在网站阻力区 492.56/502.18 内 ✅
 - P/C OI 比率 0.381 vs 网站 0.430(不同到期日快照,同量级)✅

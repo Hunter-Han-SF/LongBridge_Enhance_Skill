@@ -119,9 +119,12 @@ def calc_gex(
                 "net_gex": round(net, 0),
             })
 
-    # 按 strike 排序,找翻转点(net_gex 累积跨越零的区间)
+    # 按 strike 排序,找翻转点(OI 模式:剖面插值;成交量回退:启发式)
     rows.sort(key=lambda x: x["strike"])
-    zero_gamma = _find_zero_gamma(rows, price)
+    if mode == "oi":
+        zero_gamma = _find_flip_profile(oi_data["strikes"], price, T, rate)
+    else:
+        zero_gamma = _find_zero_gamma(rows, price)
 
     weight_note = ("✅ 真实 OI 加权(calc-index)" if mode == "oi"
                    else "⚠️ 成交量加权(近似,Longbridge chain 无按行权价 OI)")
@@ -175,17 +178,59 @@ def _gex_label(total_gex: float) -> str:
 
 
 def _find_zero_gamma(rows: list[dict], spot: float) -> float | None:
-    """找累积 GEX 跨越零的价位(简化:找 net_gex 符号变化最显著的 strike 附近)。
+    """[已弃用的启发式] 找 net_gex 绝对值最小且接近现价的 strike。
 
-    严格做法需要逐 strike 累积并插值,这里用 net_gex 最接近 0 的 strike 近似翻转点。
+    仅作为成交量回退模式(无 IV 无法重算剖面)时使用;OI 模式请用
+    _find_flip_profile(基于 GEX 剖面插值)。
     """
     if not rows:
         return None
-    # 找 net_gex 绝对值最小且接近现价的 strike
     near_spot = [r for r in rows if abs(r["strike"] - spot) / spot < 0.3]
     candidates = near_spot or rows
     closest = min(candidates, key=lambda x: abs(x["net_gex"]))
     return closest["strike"]
+
+
+def _find_flip_profile(oi_strikes: dict, price: float, T: float,
+                       rate: float, range_pct: float = 0.20,
+                       steps: int = 120) -> float | None:
+    """单到期日 GEX 剖面插值翻转点(sticky-strike IV + BS gamma 重算)。
+
+    对 ±range_pct 的候选价位网格逐点算总 GEX,在符号变化处线性插值,
+    取离现价最近的穿越点 —— 替代旧的"找 |net_gex| 最小行权价"启发式。
+    """
+    legs = []
+    for s, v in oi_strikes.items():
+        if v["call_oi"] and v["call_iv"]:
+            legs.append((s, v["call_iv"], float(v["call_oi"]), "C"))
+        if v["put_oi"] and v["put_iv"]:
+            legs.append((s, v["put_iv"], float(v["put_oi"]), "P"))
+    if not legs:
+        return None
+    # 翻转点可能远离现价(深度价内持仓重的标的可达 -20% 以上),自动扩域重试
+    best = None
+    for rng in (range_pct, range_pct * 1.5, 0.40):
+        if rng > 0.40:
+            break
+        lo, hi = price * (1 - rng), price * (1 + rng)
+        dx = (hi - lo) / steps
+        best = None
+        prev_x = prev_y = None
+        x = lo
+        for i in range(steps + 1):
+            y = 0.0
+            for strike, iv, oi, side in legs:
+                g = bs_greeks(x, strike, T, rate, iv, side)["gamma"]
+                y += (1.0 if side == "C" else -1.0) * g * oi * 100 * x * x * 0.01
+            if prev_y is not None and ((prev_y <= 0 < y) or (prev_y >= 0 > y)):
+                cross = prev_x + (0 - prev_y) * (x - prev_x) / (y - prev_y)
+                if best is None or abs(cross - price) < abs(best - price):
+                    best = cross
+            prev_x, prev_y = x, y
+            x += dx
+        if best is not None:
+            break
+    return round(best, 2) if best is not None else None
 
 
 if __name__ == "__main__":
