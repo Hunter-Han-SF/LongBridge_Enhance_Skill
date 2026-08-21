@@ -78,6 +78,8 @@ longbridge option chain AAPL.US --date 2026-07-01 → []
 longbridge option volume daily 700.HK → {"stats": []}
 ```
 文档 Quote Coverage 中港股未列期权(仅列 OPRA 美股期权)。本 skill 脚本对港股可能返回空。
+→ **v0.4.0 补位**:港股衍生品经 `warrant` 命令覆盖(涡轮/权证,
+`scripts/quote/get_warrant.py`,⚠️ 仅 HK)。
 
 ### 4. P/C 比率仅美股
 `option volume daily` 仅支持美股 OPRA。

@@ -1,13 +1,15 @@
 ---
 name: longbridge-pro
 description: |
-  长桥(Longbridge)数据增强 skill,只读无交易。九大模块:
-  ①期权分析(链/Greeks/IV/HV/微笑/P-C比率/损益/策略/Wall/GEX/IV Crush/EM/风险逆转/期限结构/Max Pain,美股OPRA)
-  ②异动追踪 ③主力资金流(大中小单/分钟流/港股经纪商持仓/沽空)
-  ④事件日历(财报/除权除息) ⑤市场情绪(温度/热度榜/简报)
-  ⑥技术面(MA/MACD/RSI/KDJ/BOLL/ATR/OBV/量比/52周/信号/评分/相对强度/Beta)
-  ⑦基本面(估值分位/分析师评级/目标价/EPS预测/财务健康/股息)
-  ⑧日内微观(VWAP/盘口压力/逐笔主动买卖) ⑨买卖决策仪表盘。
+  长桥(Longbridge)数据增强 skill,只读无交易。十大模块:
+  ①期权分析(链/Greeks/IV/HV/微笑/P-C比率/损益/策略/Wall/GEX/IV Crush/EM/风险逆转/期限结构/Max Pain,美股OPRA;港股涡轮)
+  ②异动追踪 ③主力资金流(大中小单/分钟流/港股经纪商持仓/沽空/经纪商队列)
+  ④事件日历(财报/除权除息/拆股/IPO/宏观/休市/新股档案) ⑤市场情绪(温度/热度榜/简报/宏观指标)
+  ⑥技术面(MA/MACD/RSI/KDJ/BOLL/ATR/OBV/量比/52周/信号/评分/相对强度/Beta/服务端quant)
+  ⑦基本面(估值分位/分析师评级/目标价/EPS预测/财务健康/股息/多股对比/业务分部/行业排行/共识/公司行动/经营回顾/公司档案)
+  ⑧日内微观(VWAP/盘口压力/逐笔主动买卖/量价分布Volume Profile)
+  ⑨买卖决策仪表盘 ⑩选股器(预设策略/自定义指标条件筛选)。
+  信号源:内部人交易(SEC Form 4)/13F机构持仓/基金持仓/机构股东/指数成分/AH溢价。
   Triggers: 期权,期权链,Greeks,IV,隐含波动率,波动率微笑,P/C比率,损益,期权策略,
   straddle,spread,butterfly,collar,异动,大单,资金流,主力,经纪商持仓,沽空,做空,
   财报日历,分红日历,除权除息,市场温度,热度榜,Put Wall,GEX,IV Crush,
@@ -16,11 +18,16 @@ description: |
   ROE,毛利率,负债率,自由现金流,财务健康,股息,股息率,收息,VWAP,盘口,买卖盘,
   主动买卖,逐笔,隐含波动幅度,风险逆转,Max Pain,期限结构,该买吗,该卖吗,买卖信号,
   多空对照,仪表盘,option chain,put call ratio,capital flow,short sale,
-  earnings calendar,market temperature,expected move,risk reversal,order flow
+  earnings calendar,market temperature,expected move,risk reversal,order flow,
+  选股,筛选,选股器,screener,策略选股,低估值选股,涡轮,权证,warrant,认购证,认沽证,
+  内部人交易,insider,高管买卖,13F,机构持仓,基金持仓,机构股东,股东变动,
+  指数成分,成分股,板块轮动,AH溢价,量价分布,筹码分布,volume profile,POC,
+  宏观指标,CPI,PMI,拆股,合股,休市,新股,IPO申购,暗盘,基石投资者,
+  经纪商队列,多股对比,同行对比,业务分部,营收拆分,行业排行,公司行动,经营回顾
 license: MIT
 metadata:
   author: community
-  version: "0.3.3"
+  version: "0.4.0"
   risk_level: read_only
   requires_login: false
   default_install: true
@@ -31,8 +38,8 @@ metadata:
 # Longbridge Pro
 
 长桥多维度数据增强 skill。在官方 longbridge 系列基础上加工原始接口,提供更深的分析能力。
-覆盖九大模块:① 期权分析 ② 异动追踪 ③ 主力资金流 ④ 事件日历 ⑤ 市场情绪
-⑥ 技术面 ⑦ 基本面 ⑧ 日内微观 ⑨ 买卖决策仪表盘。
+覆盖十大模块:① 期权分析(含港股涡轮) ② 异动追踪 ③ 主力资金流 ④ 事件日历 ⑤ 市场情绪
+⑥ 技术面 ⑦ 基本面 ⑧ 日内微观 ⑨ 买卖决策仪表盘 ⑩ 选股器。
 
 > **语言规则**:根据用户输入语言自动回复。
 > **安全提示**:本 skill 只读,无任何交易功能。
@@ -41,21 +48,26 @@ metadata:
 
 - **期权部分**:实现 A 档(原生)+ B 档(计算),不实现 C 档(期权逐笔异动/0DTE —— Longbridge 无数据源)。
   详见 [references/capability-map.md](references/capability-map.md)。
-- **新增模块**(异动/资金流/日历/情绪/技术/基本面/日内/决策):加工 Longbridge CLI 原生数据 + 跨模块融合分析。
+- **新增模块**(异动/资金流/日历/情绪/技术/基本面/日内/决策/选股):加工 Longbridge CLI 原生数据 + 跨模块融合分析。
   详见 [references/new-modules-map.md](references/new-modules-map.md)。
 
 ### 已知限制(实测)
 1. **`option quote` 单合约查询返回空** → 原生 Greeks/OI 改经 calc-index 按合约获取,Black-Scholes 作回退
 2. **`option chain` 无法查历史** → IV Rank/Percentile 靠 `get_iv_history.py` 本地累积,需多日运行
-3. **仅支持美股 OPRA** → 港股/A 股期权数据可能为空
+3. **仅支持美股 OPRA** → 港股/A 股期权数据可能为空(港股衍生品用 `warrant` 涡轮)
 4. **P/C 比率仅美股** → `option volume daily` 不支持港股
 5. ~~chain 无按行权价的 OI~~ → **已解决**:calc-index 可按合约查真实 OI + 原生 Greeks
    (Wall/GEX/MaxPain/P-C OI 均已升级真 OI 口径,成交量仅作回退;注意 OI 逐合约查询有限频成本)
-6. **broker-holding 仅港股** → 美股调用会优雅报错
+6. **broker-holding/brokers 仅港股** → 美股调用会优雅报错
 7. **short 数据 US/HK 字段不同** → 脚本按字段存在性自动识别市场
 8. **盘口/逐笔为瞬时快照** → 休市时为最后快照,主动买卖比样本取决于时段
 9. **估值历史美股常见只有 PE** → 部分标的才有 PB/PS,脚本按实际返回处理
 10. **技术面打分权重/灯号阈值为设计选择** → 可按风格调整,输出已标注
+11. ~~`quant run` 服务端故障~~ → **已解决(pine 方案)**:Navi 路径服务端 500(实测 2026-08-21,
+    官方示例同挂),PineScript 路径正常 —— 内置预设全部改用 pine;指标序列值只在 pretty 表
+    (JSON 模式的 events_json 不含 plot 值,CLI 0.27.1 缺口),脚本已自动解析;回测走 report_json
+12. **warrant list 的 type 字段不可信** → 真实方向以 quote 的 type 为准(Call/Bull=认购,Bear/Put=认沽),
+    `get_warrant.py --enrich` 已按此处理
 
 ## 前提条件
 
@@ -73,15 +85,16 @@ python scripts/check_env.py
 本 skill 脚本按模块分目录:
 ```bash
 {SKILL_BASE_DIR}/scripts/
-├── quote/       # ① 期权模块(原 derivatives-pro + EM/RR/期限结构/MaxPain)
-├── market/      # ② 异动追踪
-├── flow/        # ③ 资金流/主力
-├── calendar/    # ④ 事件日历
-├── sentiment/   # ⑤ 市场情绪
-├── technical/   # ⑥ 技术面(指标库/综合评分/相对强度)
-├── fundamental/ # ⑦ 基本面(估值/评级/财务/股息)
-├── intraday/    # ⑧ 日内微观(VWAP/盘口/逐笔)
-└── decision/    # ⑨ 买卖决策仪表盘
+├── quote/       # ① 期权模块(原 derivatives-pro + EM/RR/期限结构/MaxPain + 港股涡轮)
+├── market/      # ② 异动追踪(含指数成分/AH溢价)
+├── flow/        # ③ 资金流/主力(含经纪商队列)
+├── calendar/    # ④ 事件日历(财报/分红/拆股/IPO/宏观/休市/新股档案)
+├── sentiment/   # ⑤ 市场情绪(含宏观指标)
+├── technical/   # ⑥ 技术面(指标库/综合评分/相对强度/服务端quant)
+├── fundamental/ # ⑦ 基本面(估值/评级/财务/股息/对比/分部/行业/共识/公司档案/信号源)
+├── intraday/    # ⑧ 日内微观(VWAP/盘口/逐笔/量价分布)
+├── decision/    # ⑨ 买卖决策仪表盘
+└── screener/    # ⑩ 选股器(预设策略/自定义条件)
 ```
 运行示例:
 ```bash
@@ -251,6 +264,20 @@ python scripts/market/get_top_movers.py [--market US] [--sort hot|time|change] [
 ```
 - 波动超 20 日均值的个股,自动关联新闻摘要
 
+#### 指数/ETF 成分股(板块轮动)
+```bash
+python scripts/market/get_constituent.py HSI.HK [--limit 20] [--sort change|inflow|turnover|market-cap] [--json]
+python scripts/market/get_constituent.py .SPX.US --sort inflow      # 美股指数前缀点
+python scripts/market/get_constituent.py IVV.US                    # ETF(美股默认 SEC 全持仓)
+```
+- 成分按涨跌/资金流入/成交额排序,涨跌广度一目了然
+
+#### A/H 溢价监控(仅 A+H 两地上市)
+```bash
+python scripts/market/get_ah_premium.py 939.HK [--count 60] [--kline-type day] [--intraday] [--json]
+```
+- 当前溢价 vs 均值/极值/z-score + 收窄/走阔趋势(如 -25% = H股折价25%)
+
 ---
 
 ### 💰 主力资金流(模块③)
@@ -276,6 +303,13 @@ python scripts/flow/get_short_sale.py AAPL.US [--position] [--count 20] [--json]
 - 默认:日沽空成交量比率(趋势判断)
 - `--position`:未平仓持仓(美股 days_to_cover / 港股 cost)
 
+#### 港股经纪商买卖队列(⚠️仅HK)
+```bash
+python scripts/flow/get_broker_queue.py 700.HK [--levels 10] [--json]
+```
+- 每档价位的经纪商队列(participants 解析名称):哪家机构在哪一档挂单
+- 统计买/卖盘出现最多的经纪商(潜在托单/压单),与 broker-holding 联动判断护盘意图
+
 ---
 
 ### 📅 事件日历(模块④)
@@ -291,6 +325,32 @@ python scripts/calendar/get_earnings_calendar.py [--market US] [--symbol AAPL.US
 python scripts/calendar/get_dividend_calendar.py [--market US] [--symbol AAPL.US] [--count 50] [--json]
 ```
 - 每股分红金额、类型(常规/特别)、派息日
+
+#### 拆股/合股日历
+```bash
+python scripts/calendar/get_split_calendar.py [--market US] [--symbol AAPL.US] [--count 50] [--json]
+```
+- 拆合股比例自动解析(如"5 股合并为 1 股" → 5→1 合股)
+
+#### IPO 上市日历 + 按阶段列表 + 新股档案
+```bash
+python scripts/calendar/get_ipo_calendar.py [--market US] [--count 50] [--json]        # 按日期
+python scripts/calendar/get_ipo_listings.py --stage subscriptions|wait-listing|listed  # 按阶段(暗盘/认购)
+python scripts/calendar/get_ipo_detail.py 3223.HK [--json]                            # 招股档案/基石投资者/申购额度
+```
+- `us-subscriptions`/`us-wait-listing`/`us-listed` 查美股阶段
+
+#### 宏观数据发布日历
+```bash
+python scripts/calendar/get_macro_calendar.py [--market US] [--count 50] [--json]
+```
+- 利率/CPI/PMI/就业等发布时间表,含前值/预测/实际
+
+#### 休市日历
+```bash
+python scripts/calendar/get_closed_calendar.py [--market US] [--json]
+```
+- 各交易所节假日(全日/半日休市)
 
 ---
 
@@ -308,6 +368,14 @@ python scripts/sentiment/get_heat_rank.py [--market US]                         
 python scripts/sentiment/get_heat_rank.py --key hot_all-us [--count 20] [--json]  # 拉具体榜
 ```
 - 综合热度/热度上升/热门交易/热议/关注度,各市场(US/HK/CN/SG)
+
+#### 宏观经济指标(发现 + 历史 + 超逊预期统计)
+```bash
+python scripts/sentiment/get_macro_data.py --keyword CPI --country US             # 找指标
+python scripts/sentiment/get_macro_data.py --code 30771936 --count 12 [--json]    # 查历史
+```
+- 历史模式每期算 actual vs forecast 偏差,统计超/逊预期率
+- 与 get_macro_calendar.py 互补:那个按日期看即将发布,本脚本按指标看历史
 
 ---
 
@@ -331,6 +399,16 @@ python scripts/technical/calc_technical_score.py AAPL.US [--json]
 python scripts/technical/calc_relative_strength.py AAPL.US [--benchmark QQQ.US] [--json]
 ```
 - 1周~1年各窗口跑赢/跑输基准 + Beta 弹性;默认基准 US=SPY / HK=2800 / A股=510300
+
+#### 服务端量化指标/回测(quant run,pine)
+```bash
+python scripts/technical/run_quant_indicator.py AAPL.US ema|rsi|macd --start 2026-01-01 [--cross-check] [--json]
+python scripts/technical/run_quant_indicator.py AAPL.US backtest --start 2025-01-01     # EMA交叉策略回测
+python scripts/technical/run_quant_indicator.py AAPL.US custom --start 2026-01-01 --script '<Pine代码>'
+```
+- 内置 EMA/RSI/MACD 指标预设 + EMA 交叉回测预设(PineScript);`--cross-check` 与本地
+  indicators.py 对齐末值(实测相对偏差 <0.02%)
+- ⚠️ 用 pine(Navi 路径服务端故障);指标序列值取自 pretty 表解析,回测取自 report_json
 
 ---
 
@@ -360,6 +438,78 @@ python scripts/fundamental/get_dividend_quality.py AAPL.US [--json]
 ```
 - TTM 股息率、连续分红年数、年度增长(仅完整年份)、频率稳定性
 
+#### 多股估值横向对比(≤5只)
+```bash
+python scripts/fundamental/compare_stocks.py AAPL.US MSFT.US NVDA.US [--currency USD] [--json]
+```
+- PE/PB/PS/ROE/净利率/股息率等横向对比 + 同组内各维度排名(估值类越低越好/质量类越高越好)
+- 单只时自动对比行业同行(服务端选择)
+
+#### 业务分部营收拆分
+```bash
+python scripts/fundamental/get_business_segments.py AAPL.US [--json]
+```
+- 地区/产品分部占比与同比 + 集中度(CR1/CR2,>70% 单一依赖风险)
+
+#### 行业板块排行 + 层级树 + 行业估值分布
+```bash
+python scripts/fundamental/get_industry_rank.py --market US [--count 10] [--json]
+python scripts/fundamental/get_industry_rank.py --peers BK/US/IN00362 [--json]
+python scripts/fundamental/get_industry_rank.py --valuation AAPL.US [--json]
+```
+- 各分类下行业涨跌幅+领涨股;`--peers` 查行业在层级树的位置与子行业
+- `--valuation` 当前 PE/PB/PS vs 行业中位数/区间/排名分位(>70% 行业内偏贵)
+
+#### 财务共识明细(预测 vs 实际)
+```bash
+python scripts/fundamental/get_consensus.py AAPL.US [--count 6] [--json]
+```
+- 按报告期的营收/EPS 等科目共识,已公布期标注超/逊预期与偏离幅度
+
+#### 公司行动事件流
+```bash
+python scripts/fundamental/get_corp_actions.py AAPL.US [--count 20] [--json]
+```
+- 分红/拆合股/配股/业绩披露事件流,类型分布统计
+
+#### 港股经营回顾(⚠️仅HK)
+```bash
+python scripts/fundamental/get_operating.py 700.HK [--count 2] [--json]
+```
+- 按报告期的营收/净利/EPS + 同比
+
+#### 公司档案(概况 + 高管)
+```bash
+python scripts/fundamental/get_company_profile.py AAPL.US [--execs 10] [--json]
+```
+- 成立/员工/地址/管理层 + 高管团队(职务/背景),一次聚合
+
+#### 内部人交易(SEC Form 4,⚠️仅US)
+```bash
+python scripts/fundamental/get_insider_trades.py TSLA.US [--count 20] [--json]
+```
+- 高管/大股东真实买卖:净买入额、买卖统计、最大单笔 + 多空信号
+
+#### 13F 机构持仓(排名/持仓/变动)
+```bash
+python scripts/fundamental/get_institutional_holdings.py [--count 20] [--json]          # AUM 排名
+python scripts/fundamental/get_institutional_holdings.py --cik 0001422848 [--count 20]  # 单机构持仓
+python scripts/fundamental/get_institutional_holdings.py --cik 0001422848 --changes     # 两期变动(新建/加仓/减仓/清仓)
+```
+- 季度披露(延迟45天),最大新建仓位一眼可见
+
+#### 基金/ETF 持仓(谁重仓这只股)
+```bash
+python scripts/fundamental/get_fund_holders.py AAPL.US [--count 15] [--json]
+```
+- 占基金净值比例排序(比例越高,基金申赎对股价影响越大)
+
+#### 机构股东列表(含变动)
+```bash
+python scripts/fundamental/get_shareholders.py AAPL.US [--count 15] [--json]
+```
+- 合计持股比例、增减持家数统计 + 方向判断
+
 ---
 
 ### ⚡ 日内微观(模块⑧)
@@ -381,6 +531,13 @@ python scripts/intraday/get_orderbook_pressure.py AAPL.US [--json]
 python scripts/intraday/get_trade_flow.py AAPL.US [--count 300] [--big 1000] [--json]
 ```
 - 主动买/卖量占比(量的口径+金额口径)、大单统计、尾盘情绪
+
+#### 量价分布 Volume Profile(近5日)
+```bash
+python scripts/intraday/get_trade_stats.py 700.HK [--json]
+```
+- POC(最大成交价位=最强支撑/阻力)、Value Area 70% 区间(VAH/VAL)
+- 现价在 VA 上/下方判断强弱,主动买卖失衡比;比均线支撑阻力更客观
 
 ---
 
@@ -410,6 +567,15 @@ python scripts/quote/calc_max_pain.py AAPL.US [--date 2026-09-18] [--json]
 ```
 - 期权到期"引力位"(✅真实 OI 加权,成交量回退),距到期越近参考意义越大
 
+#### 港股涡轮/权证(⚠️仅HK,模块①补位)
+```bash
+python scripts/quote/get_warrant.py 700.HK [--sort leverage|expiry|price] [--count 20] [--enrich 20] [--json]
+python scripts/quote/get_warrant.py 700.HK --quote 61304.HK 53472.HK   # 单合约报价
+python scripts/quote/get_warrant.py --issuers                          # 发行商列表
+```
+- list 模式附统计(数量/到期年份分布/杠杆分布);`--enrich N` 用 quote 批量补全真实方向
+- ⚠️ list 的 type 字段不可信(实测 61304 标 Call、quote 返回 Bear),方向以 quote 为准
+
 ---
 
 ### 🎯 跨模块旗舰
@@ -420,6 +586,7 @@ python scripts/decision/analyze_buy_sell.py AAPL.US [--json]
 ```
 - 技术面30% + 估值面15% + 资金面20% + 期权定位10% + 分析师15% + 事件风险10%
 - 输出:六维得分 + 多头/空头因素对照 + 综合信号(看多/偏多/中性/偏空/看空)
+- 信号补充:内部人交易/13F变动/基金持仓可作第 7 维独立参考(get_insider_trades 等)
 
 #### 单标的异动综合打分
 ```bash
@@ -432,6 +599,23 @@ python scripts/market/calc_anomaly_score.py AAPL.US [--market US] [--json]
 python scripts/sentiment/daily_briefing.py [--market US] [--no-pc] [--json]
 ```
 - 一键聚合:温度 + 热度榜 top5 + 异动榜 top5 + 异动统计 + 大盘 P/C 比率
+
+---
+
+### 🔍 选股器(模块⑩)
+
+#### 预设策略 / 自定义条件 / 指标发现
+```bash
+python scripts/screener/run_screener.py                                  # 预设策略列表
+python scripts/screener/run_screener.py --run 27                         # 执行策略(如"低估值")
+python scripts/screener/run_screener.py --filter pettm:10:50 --filter roe:5: --market HK [--json]
+python scripts/screener/run_screener.py --indicators                     # 全部可用指标 key
+```
+- 条件语法 `KEY:MIN:MAX`(可省一侧),常用 key:pettm/pbmrq/roe/roa/netmargin/
+  salesgrowthyoy/divyld/marketcap/leverage/epsttm
+- 筛出的股票可直接送 `decision/analyze_buy_sell.py` 六维打分(见工作流 9)
+
+---
 
 
 ## 典型工作流
@@ -514,6 +698,36 @@ python scripts/quote/get_iv_term_structure.py AAPL.US
 python scripts/quote/calc_risk_reversal.py AAPL.US --date 2026-09-18
 ```
 
+### 工作流 9:选股 → 打分(从发现到决策)
+```bash
+# 1. 条件选股(如 低估值+高ROE 的港股)
+python scripts/screener/run_screener.py --filter pettm:5:30 --filter roe:10: --market HK
+# 2. 候选逐个六维打分
+python scripts/decision/analyze_buy_sell.py 2291.HK
+# 3. 候选间横向对比(谁最便宜/质量最高)
+python scripts/fundamental/compare_stocks.py 2291.HK 6693.HK 9973.HK --currency HKD
+```
+
+### 工作流 10:机构与内部人信号(第 7 维视角)
+```bash
+# 1. 内部人在买还是在卖
+python scripts/fundamental/get_insider_trades.py TSLA.US
+# 2. 头部机构最新 13F 在建什么仓
+python scripts/fundamental/get_institutional_holdings.py --cik 0001422848 --changes
+# 3. 谁在重仓(基金申赎敏感度)
+python scripts/fundamental/get_fund_holders.py AAPL.US
+```
+
+### 工作流 11:港股深度(涡轮 + 经纪商 + 量价分布)
+```bash
+# 1. 正股的涡轮全景(杠杆/到期分布)
+python scripts/quote/get_warrant.py 700.HK --enrich 20
+# 2. 买卖盘各档是谁在挂单
+python scripts/flow/get_broker_queue.py 700.HK
+# 3. 近5日筹码分布(POC/Value Area)
+python scripts/intraday/get_trade_stats.py 700.HK
+```
+
 ## 与官方 skill 的关系
 
 - **官方 `longbridge` 系列**(derivatives/fundamentals/market-data 等):prompt-only,基础查询
@@ -525,6 +739,10 @@ python scripts/quote/calc_risk_reversal.py AAPL.US --date 2026-09-18
 ```
 longbridge-pro/
 ├── SKILL.md
+├── tests/                   # 单元测试(mock CLI,python -m unittest discover -s tests)
+│   ├── fixtures.py                  # 真实 CLI 探测数据做夹具
+│   ├── test_common_v04.py           # 38 个新封装函数测试
+│   └── test_scripts_v04.py          # 39 个新脚本价值加工逻辑测试
 ├── references/
 │   ├── capability-map.md      # 期权部分:Futu↔Longbridge 能力映射(含 C 档缺失)
 │   ├── new-modules-map.md     # 各模块:CLI 字段映射 + 已知限制
@@ -532,34 +750,59 @@ longbridge-pro/
 └── scripts/
     ├── common.py              # 公共模块(CLI 封装/BS/HV/异动/资金流/估值/盘口等)
     ├── check_env.py           # 环境预检
-    ├── quote/                 # ① 期权模块(17 脚本 + 6 个补充)
+    ├── quote/                 # ① 期权模块(17 脚本 + 6 个补充 + 港股涡轮)
     │   ├── ...                #   (见上方命令速查)
     │   ├── get_option_oi.py            # 补充:按行权价OI/P-C OI比率/OI墙(calc-index)
     │   ├── calc_gamma_profile.py       # 补充:聚合GEX剖面+插值Flip+核密度S/R(旗舰)
     │   ├── calc_expected_move.py      # 补充:隐含波动幅度(ATM straddle)
     │   ├── get_iv_term_structure.py   # 补充:IV 期限结构 + 事件溢价
     │   ├── calc_risk_reversal.py      # 补充:25Δ 风险逆转
-    │   └── calc_max_pain.py           # 补充:Max Pain(真实OI优先)
-    ├── market/                # ② 异动追踪(get_anomaly/get_top_movers/calc_anomaly_score)
-    ├── flow/                  # ③ 主力资金流(capital_flow/broker_holding/short_sale)
-    ├── calendar/              # ④ 事件日历(earnings/dividend)
-    ├── sentiment/             # ⑤ 市场情绪(market_temp/heat_rank/daily_briefing)
+    │   ├── calc_max_pain.py           # 补充:Max Pain(真实OI优先)
+    │   └── get_warrant.py             # 补充:港股涡轮(list/quote/issuers)
+    ├── market/                # ② 异动追踪 + 指数成分 + AH溢价
+    │   ├── get_anomaly.py / get_top_movers.py / calc_anomaly_score.py
+    │   ├── get_constituent.py          # 指数/ETF 成分(板块轮动)
+    │   └── get_ah_premium.py           # A/H 溢价(K线/分时+统计)
+    ├── flow/                  # ③ 主力资金流
+    │   ├── get_capital_flow.py / get_broker_holding.py / get_short_sale.py
+    │   └── get_broker_queue.py         # 港股经纪商买卖队列(名称解析)
+    ├── calendar/              # ④ 事件日历(7 个日历 + IPO 档案)
+    │   ├── get_earnings_calendar.py / get_dividend_calendar.py
+    │   ├── get_split_calendar.py / get_ipo_calendar.py
+    │   ├── get_macro_calendar.py / get_closed_calendar.py
+    │   ├── get_ipo_listings.py / get_ipo_detail.py
+    ├── sentiment/             # ⑤ 市场情绪
+    │   ├── get_market_temp.py / get_heat_rank.py / daily_briefing.py
+    │   └── get_macro_data.py           # 宏观指标(发现+历史+超逊预期)
     ├── technical/             # ⑥ 技术面
     │   ├── indicators.py               # 指标数学库(纯函数,可复用)
     │   ├── calc_indicators.py          # 全套指标 + 信号检测
     │   ├── calc_technical_score.py     # 技术面综合评分(0-100)
-    │   └── calc_relative_strength.py   # 相对强度 + Beta(vs 大盘)
-    ├── fundamental/           # ⑦ 基本面
-    │   ├── get_valuation_percentile.py # 估值历史分位 + 同行对比
-    │   ├── get_analyst_consensus.py    # 分析师共识/目标价/EPS预测
-    │   ├── get_financial_health.py     # 财务健康(三大报表+红绿灯)
-    │   └── get_dividend_quality.py     # 股息质量(TTM/连续性/增长)
+    │   ├── calc_relative_strength.py   # 相对强度 + Beta(vs 大盘)
+    │   └── run_quant_indicator.py      # 服务端 quant run(预设+交叉验证)
+    ├── fundamental/           # ⑦ 基本面(4 原有 + 11 新增)
+    │   ├── get_valuation_percentile.py / get_analyst_consensus.py
+    │   ├── get_financial_health.py / get_dividend_quality.py
+    │   ├── compare_stocks.py           # 多股对比+排名
+    │   ├── get_business_segments.py    # 业务分部+集中度
+    │   ├── get_industry_rank.py        # 行业排行+层级树
+    │   ├── get_consensus.py            # 财务共识(超/逊预期)
+    │   ├── get_corp_actions.py         # 公司行动事件流
+    │   ├── get_operating.py            # 港股经营回顾
+    │   ├── get_company_profile.py      # 公司档案+高管
+    │   ├── get_insider_trades.py       # 内部人交易(信号)
+    │   ├── get_institutional_holdings.py # 13F(排名/持仓/变动)
+    │   ├── get_fund_holders.py         # 基金/ETF 持仓
+    │   └── get_shareholders.py         # 机构股东+变动
     ├── intraday/              # ⑧ 日内微观
     │   ├── get_vwap_analysis.py        # VWAP 偏离 + 日内强弱
     │   ├── get_orderbook_pressure.py   # L2 盘口失衡 + 挂单墙
-    │   └── get_trade_flow.py           # 逐笔主动买卖比 + 大单
-    └── decision/              # ⑨ 买卖决策
-        └── analyze_buy_sell.py         # 六维聚合仪表盘(旗舰)
+    │   ├── get_trade_flow.py           # 逐笔主动买卖比 + 大单
+    │   └── get_trade_stats.py          # 量价分布(POC/Value Area)
+    ├── decision/              # ⑨ 买卖决策
+    │   └── analyze_buy_sell.py         # 六维聚合仪表盘(旗舰)
+    └── screener/              # ⑩ 选股器
+        └── run_screener.py             # 预设策略/自定义条件/指标发现
 ```
 
 ## 错误处理
@@ -576,3 +819,7 @@ longbridge-pro/
 | `K 线数据不足` | 新股/退市/停牌 | 换 --count 更小或确认标的状态 |
 | `无估值/评级数据` | 覆盖不足(小票/新股) | 该维度仪表盘会标 N/A 并降权 |
 | `无逐笔/盘口数据` | 休市时段 | 盘中运行,或接受最后快照 |
+| `internal server error`(quant/navi) | Navi 路径服务端故障 | 用 pine(脚本默认已切换);指标值经 pretty 表解析 |
+| `无 A/H 溢价数据` | 非 A+H 两地上市 | 用 939.HK/1398.HK 等双市场标的 |
+| `无涡轮数据` | 非港股或无发行 | 确认是港股且发行过涡轮 |
+| `code 不存在`(macrodata) | 用了文档示例代码 | 先 `get_macro_data.py --keyword` 拿真实 code |

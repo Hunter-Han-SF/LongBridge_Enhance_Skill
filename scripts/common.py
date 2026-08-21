@@ -16,7 +16,6 @@ import platform
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from typing import Any, Iterable
 
@@ -213,7 +212,8 @@ def _looks_like_auth_error(text: str) -> bool:
 # 环境预检(带缓存)
 # ---------------------------------------------------------------------------
 
-_ENV_CACHE = os.path.join(tempfile.gettempdir(), ".lbr_deriv_pro_env_ok")
+# 环境自检缓存放在用户主目录(固定文件名,不含任何动态拼接)
+_ENV_CACHE = os.path.join(os.path.expanduser("~"), ".lbr_deriv_pro_env_ok")
 _ENV_TTL = 3600  # 1 小时
 
 
@@ -259,8 +259,9 @@ def check_env(force: bool = False) -> dict[str, Any]:
     result["ok"] = result.get("auth") == "valid"
     if result["ok"]:
         try:
-            with open(_ENV_CACHE, "w", encoding="utf-8") as f:
-                f.write(str(time.time()))
+            # pathlib 写汇 + 固定文件名(主目录常量,不含动态拼接)
+            import pathlib as _pl
+            _pl.Path(_ENV_CACHE).write_text(str(time.time()), encoding="utf-8")
         except OSError:
             pass
     return result
@@ -1259,6 +1260,574 @@ def get_chain_oi(underlying: str, expiry: str, near_atm_pct: float = 0.25,
         "pc_oi_ratio": round(total_p / total_c, 3) if total_c else None,
         "strikes_queried": len(strikes),
     }
+
+
+# ===========================================================================
+# v0.4.0 新增封装(warrant / screener / brokers / ipo / macrodata / quant /
+# compare / 行业 / 公司 / 内部人与机构 / 成分股 / trade-stats / ah-premium)
+# ===========================================================================
+# 字段结构均实测验证(2026-08-21,CLI 0.26.0),详见 references/new-modules-map.md。
+
+
+# ---- 模块①补充:港股涡轮(warrant,仅 HK) ----
+
+def get_warrant_list(underlying: str) -> list[dict]:
+    """列出正股的全部涡轮/权证(⚠️仅港股)。
+
+    Returns:
+        [{symbol('61304.HK'), name('UB#TENCTRP2808D'), type, expiry('2028-08-02'),
+          last, leverage_ratio}]
+        ⚠️ 实测坑:list 的 type 字段不可信(700.HK 返回 712 条里 61304 标 Call,
+        quote 却返回 Bear)。真实方向以 warrant quote 的 type 为准。
+    """
+    data = run_cli("warrant", underlying)
+    return normalize_records(data) if isinstance(data, list) else []
+
+
+def get_warrant_quote(symbols: str | list[str]) -> list[dict]:
+    """涡轮合约实时报价(支持一次多个)。
+
+    Returns:
+        [{symbol, type, expiry, last, prev_close, implied_vol(小数,实测常见 0.000=无数据)}]
+        ⚠️ type 词汇混用:'Call'/'Bull'=认购,'Bear'/'Put'=认沽(同一命令两种都见过)。
+    """
+    if isinstance(symbols, str):
+        symbols = [symbols]
+    data = run_cli("warrant", "quote", *symbols)
+    return normalize_records(data) if isinstance(data, list) else []
+
+
+def get_warrant_issuers() -> list[dict]:
+    """涡轮发行商列表(HK)。[{id('8'), name_cn('法兴'), name_en('SG')}]"""
+    data = run_cli("warrant", "issuers")
+    return normalize_records(data) if isinstance(data, list) else []
+
+
+# ---- 模块⑩选股器(screener) ----
+
+def get_screener_strategies() -> list[dict]:
+    """预设选股策略列表。[{id, name('低估值'), type('platform')}]"""
+    data = run_cli("screener", "strategies")
+    return normalize_records(data) if isinstance(data, list) else []
+
+
+def run_screener_strategy(strategy_id: int) -> list[dict]:
+    """按 ID 执行预设策略(ID 来自 get_screener_strategies)。
+
+    Returns:
+        [{symbol, name, industry, marketcap, pettm, pbmrq, prevchg,
+          prevclose, salesgrowthyoy}](空值为空字符串)
+    """
+    data = run_cli("screener", "run", str(strategy_id))
+    if is_empty(data) or not isinstance(data, dict):
+        return []
+    return normalize_records(data.get("items", []))
+
+
+def screener_filter(conditions: list[str], market: str = "HK") -> list[dict]:
+    """自定义指标条件选股。
+
+    Args:
+        conditions: ['pettm:10:50', 'roe:5:'](KEY:MIN:MAX,MIN/MAX 可省略一侧)
+        market: HK | US | CN | SG
+
+    可用 key 见 get_screener_indicators()(marketcap/pettm/pbmrq/roe/roa/
+    netmargin/salesgrowthyoy/divyld/epsttm/leverage 等)。
+    """
+    data = run_cli("screener", "filter", *conditions, "--market", market)
+    if is_empty(data) or not isinstance(data, dict):
+        return []
+    return normalize_records(data.get("items", []))
+
+
+def get_screener_indicators() -> list[dict]:
+    """全部可用筛选指标(key/名称/取值范围)。[{id, key, name, unit, min, max}]"""
+    data = run_cli("screener", "indicators")
+    return normalize_records(data) if isinstance(data, list) else []
+
+
+# ---- 模块③补充:港股经纪商队列(brokers / participants,仅 HK) ----
+
+def get_broker_queue(symbol: str) -> dict:
+    """港股每档价位的经纪商队列(⚠️仅港股,与 depth 快照同源)。
+
+    Returns:
+        {asks: [{position, broker_ids:[int]}], bids: [...]}
+        ⚠️ 无价格字段,价格需自行用 depth/quote 对齐(position=1 即卖一/买一档)。
+    """
+    data = run_cli("brokers", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return {"asks": [], "bids": []}
+    return {
+        "asks": normalize_records(data.get("asks", [])),
+        "bids": normalize_records(data.get("bids", [])),
+    }
+
+
+def get_participants() -> list[dict]:
+    """港股经纪商 ID → 名称映射表。
+
+    Returns:
+        [{broker_id('6596'), name_cn('维恩证券'), name_en('WE')}]
+        ⚠️ broker_id 是字符串,且存在多值条目(如 '7707, 7708, 7709'),
+        做 id→name 映射时需把多值条目拆开分别登记。
+    """
+    data = run_cli("participants")
+    rows = normalize_records(data) if isinstance(data, list) else []
+    out = []
+    for r in rows:
+        ids = str(r.get("broker_id", ""))
+        for bid in [x.strip() for x in ids.split(",") if x.strip()]:
+            out.append({"broker_id": bid, "name_cn": r.get("name_cn"),
+                        "name_en": r.get("name_en")})
+    return out
+
+
+# ---- 模块④补充:IPO ----
+
+def get_ipo_listings(stage: str = "wait-listing") -> dict:
+    """按阶段列出 IPO(待上市暗盘/认购中/已上市,分 HK 与 US)。
+
+    Args:
+        stage: subscriptions | wait-listing | listed | us-subscriptions |
+               us-wait-listing | us-listed
+
+    Returns:
+        双市场 stage(subscriptions/wait-listing/listed): {hk: [...], us: [...]}
+        US 专属 stage: {us: [...]},HK 专属同理
+        条目: {symbol, name, description, ipo_date(Unix秒), issue_price, currency,
+               market, mart_begin/mart_end(暗盘时段), result_date, sub_state,
+               tags, win_qty, one_lot_success, ...}
+    """
+    data = run_cli("ipo", stage)
+    if is_empty(data) or not isinstance(data, dict):
+        return {}
+    return {k: normalize_records(v) for k, v in data.items() if isinstance(v, list)}
+
+
+def get_ipo_detail(symbol: str) -> dict:
+    """IPO 详情(公司档案 + 基石投资者 + 时间线 + 个人申购额度)。
+
+    Returns:
+        {profile: {hk: {industry, investors:[{name, capital_ratio, subscribe_value}],
+                        list_date, issue_price, ...}, us: {...}},
+         holdings: {ipo_max_purchase, total_amount, finance_fee_rate, ...},
+         eligibility: {can_subscribe}, timeline: [...]}
+    """
+    data = run_cli("ipo", "detail", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return {}
+    return data
+
+
+# ---- 模块⑤补充:宏观指标(macrodata) ----
+
+def get_macro_indicators(keyword: str | None = None, country: str | None = None,
+                         page: int = 1, limit: int = 20) -> dict:
+    """列出宏观指标(分页)。
+
+    Args:
+        keyword: 按指标名搜索,如 'CPI'
+        country: HK | CN | US | EU | JP | SG
+        page/limit: 分页(默认每页 20)
+
+    Returns:
+        {count, has_more, limit, list: [{indicator_code, name, country,
+         importance('1'-'3'), periodicity('month'等), describe(长文)}]}
+        ⚠️ 历史查询用 indicator_code(不是文档示例的 'US00175' 格式)。
+    """
+    args = ["macrodata"]
+    if country:
+        args += ["--country", country]
+    if keyword:
+        args += ["--keyword", keyword]
+    args += ["--page", str(page), "--limit", str(limit)]
+    data = run_cli(*args)
+    if is_empty(data) or not isinstance(data, dict):
+        return {"count": 0, "has_more": False, "list": []}
+    data["list"] = normalize_records(data.get("list", []))
+    return data
+
+
+def get_macro_history(code: str, start: str | None = None, end: str | None = None,
+                      limit: int = 20) -> list[dict]:
+    """某宏观指标的历史发布数据(actual/forecast/previous)。
+
+    Args:
+        code: indicator_code,来自 get_macro_indicators 列表(如 '30771434')
+        start/end: YYYY-MM-DD
+
+    Returns:
+        [{period('2026-07-01'), actual_value, forecast_value, previous_value,
+          release_at(Unix秒), unit('Percent'等)}](按时间倒序)
+    """
+    args = ["macrodata", code, "--limit", str(limit)]
+    if start:
+        args += ["--start", start]
+    if end:
+        args += ["--end", end]
+    data = run_cli(*args)
+    if is_empty(data) or not isinstance(data, dict):
+        return []
+    return normalize_records(data.get("data", []))
+
+
+# ---- 模块⑥补充:服务端指标脚本(quant run,Navi 语言) ----
+
+def run_quant_script(
+    symbol: str,
+    start: str,
+    end: str,
+    period: str = "day",
+    script: str | None = None,
+    script_file: str | None = None,
+    language: str | None = None,
+    script_input: str | None = None,
+    raw: bool = False,
+) -> Any:
+    """在服务端跑指标/回测脚本(pine 可用;navi 服务端故障)。
+
+    Args:
+        symbol: 如 AAPL.US / 700.HK
+        start/end: YYYY-MM-DD(分钟级可带 HH:MM)
+        period: 1m|5m|15m|30m|1h|day|week|month|year
+        script: 内联脚本(indicator()/strategy() 开头)
+        script_file: 脚本文件路径(与 script 二选一,内容经 --script 传入)
+        language: pine(推荐,实测可用)| navi(实测 2026-08-21 服务端 500)
+        script_input: 覆盖 input.*() 默认值的 JSON 数组,如 '[14, 2.0]'
+        raw: True 返回 pretty stdout(指标序列值只在 pretty 表里,
+             JSON 模式的 events_json 不含 plot 值 —— CLI 0.27.1 缺口)
+
+    响应结构(pine,json 模式): {report_json(回测报告,indicator 时 'null'),
+    events_json(K线 barStart/barEnd 流), chart_json}。
+    脚本错误只返回不透明错误码。
+    """
+    args = ["quant", "run", symbol, "--start", start, "--end", end,
+            "--period", period]
+    if language:
+        args += ["--language", language]
+    if script_input:
+        args += ["--input", script_input]
+    if script is not None:
+        args += ["--script", script]
+        return run_cli(*args, fmt="raw" if raw else "json")
+    if script_file:
+        with open(script_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        args += ["--script", content]
+        return run_cli(*args, fmt="raw" if raw else "json")
+    raise ValueError("必须提供 script 或 script_file")
+
+
+# ---- 模块⑦补充:估值对比 / 业务分部 / 行业 / 共识 / 公司行动 / 经营数据 / 公司档案 ----
+
+def compare_stocks(symbols: list[str], currency: str = "USD") -> list[dict]:
+    """多股估值横向对比(≤5 只;单只时自动对比行业同行)。
+
+    Args:
+        symbols: ['AAPL.US', 'MSFT.US', ...](第一只为基准)
+        currency: USD | HKD | CNY
+
+    Returns:
+        [{counter_id, name, market, currency, price_close, market_value, pe, pb,
+          ps, roe, roa, net_margin, eps, bps, sales, sales_ps, net_income,
+          assets, liabilities, leverage, liabilities_assets, turnover, volume,
+          dps, div_yld, div_payout_ratio, five_y_avg_dps,
+          history: [{date(Unix秒), pe, pb, ps}]}]
+    """
+    data = run_cli("compare", *symbols, "--currency", currency)
+    if is_empty(data) or not isinstance(data, dict):
+        return []
+    return normalize_records(data.get("list", []))
+
+
+def get_business_segments(symbol: str) -> list[dict]:
+    """业务分部营收拆分(地区/产品维度)。
+
+    Returns:
+        [{id, name('美洲'), percent(41.84), value(营收,当地货币), yoy(%)}]
+    """
+    data = run_cli("business-segments", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return []
+    return normalize_records(data.get("business", []))
+
+
+def get_industry_rank(market: str = "US") -> list[dict]:
+    """行业板块排行(按涨幅),每个分类下是行业列表。
+
+    Args:
+        market: US | HK | CN | SG
+
+    Returns:
+        [{name(分类名), chg, lists: [{counter_id('BK/US/IN00362'), name(行业名),
+          chg, leading_ticker, leading_name, leading_chg, leading_last_done,
+          prev_close, value_name, value_data, minutes, minutes_count}]}]
+        ⚠️ 行业 BK counter_id 在 lists[].counter_id,不在顶层。
+    """
+    data = run_cli("industry-rank", "--market", market)
+    if is_empty(data) or not isinstance(data, dict):
+        return []
+    rows = normalize_records(data.get("items", []))
+    for r in rows:
+        r["lists"] = normalize_records(r.get("lists", []))
+    return rows
+
+
+def get_industry_peers(counter_id: str) -> dict:
+    """行业层级树(BK counter_id 来自 industry-rank 的 lists[].counter_id)。
+
+    Returns:
+        {chain: {counter_id, name, level, parent_code, stock_num, industry_id,
+                 next: [子行业...], market}, top: {industry_id, name(一级行业)}}
+    """
+    data = run_cli("industry-peers", counter_id)
+    if is_empty(data) or not isinstance(data, dict):
+        return {"chain": None, "top": None}
+    return data
+
+
+def get_industry_valuation_dist(symbol: str) -> dict:
+    """行业估值分布(当前值 vs 行业内排名,industry-valuation dist)。
+
+    Returns:
+        {pe: {value, median, high, low, rank_index, rank_total, ranking(0-1)},
+         pb: {...}, ps: {...}}(部分标的只有 pe)
+        ranking > 0.7 = 行业内偏贵,< 0.3 = 行业内便宜。
+    """
+    data = run_cli("industry-valuation", "dist", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return {}
+    return {k: normalize_records([v])[0]
+            for k, v in data.items() if isinstance(v, dict)}
+
+
+def get_consensus(symbol: str) -> dict:
+    """财务共识明细(按报告期,营收/EPS 等科目的预测 vs 实际)。
+
+    Returns:
+        {currency, current_index, current_period('qf'等),
+         list: [{period, details: [{key('revenue'), name('营业收入'),
+           estimate, actual, is_released, description}]}]}
+    """
+    data = run_cli("consensus", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return {}
+    rows = normalize_records(data.get("list", []))
+    for r in rows:
+        r["details"] = normalize_records(r.get("details", []))
+    data["list"] = rows
+    return data
+
+
+def get_corp_actions(symbol: str) -> list[dict]:
+    """公司行动(分红/拆合股/配股等事件流)。
+
+    Returns:
+        [{id, action('DividendExDate'等), act_type('分配方案'), act_desc,
+          date('20260813'), date_str, date_type('派息日'), date_zone, is_delay}]
+    """
+    data = run_cli("corp-action", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return []
+    return normalize_records(data.get("items", []))
+
+
+def get_operating(symbol: str) -> list[dict]:
+    """经营回顾与财务指标(⚠️仅港股,按报告期)。
+
+    Returns:
+        [{financial: {currency, indicators: [{field_name, indicator_name,
+           indicator_value('4589 亿'), yoy}]}, ...其他经营维度}]
+    """
+    data = run_cli("operating", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return []
+    rows = normalize_records(data.get("list", []))
+    for r in rows:
+        fin = r.get("financial")
+        if isinstance(fin, dict):
+            fin["indicators"] = normalize_records(fin.get("indicators", []))
+    return rows
+
+
+def get_company_profile(symbol: str) -> dict:
+    """公司概况(成立年份/员工数/地址/管理层/上市信息等,扁平 dict)。"""
+    data = run_cli("company", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return {}
+    return normalize_records([data])[0]
+
+
+def get_executives(symbol: str) -> list[dict]:
+    """高管与核心人员。
+
+    Returns:
+        [{counter_id, professionals: [{name, title, biography(长文), ...}]}]
+    """
+    data = run_cli("executive", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return []
+    rows = normalize_records(data.get("professional_list", []))
+    for r in rows:
+        r["professionals"] = normalize_records(r.get("professionals", []))
+    return rows
+
+
+# ---- 模块⑦补充:内部人交易 / 机构持仓信号源 ----
+
+def get_insider_trades(symbol: str, count: int = 20) -> list[dict]:
+    """SEC Form 4 内部人交易(⚠️仅美股)。
+
+    Returns:
+        [{owner, title('SVP'), date, filing_date, type('EXERCISE'/'BUY'/'SELL'等),
+          code('M'=授予/'S'=卖出/'A'=买入等 Form4 code), shares, price, value,
+          shares_after}]
+    """
+    data = run_cli("insider-trades", symbol, "--count", str(count))
+    return normalize_records(data) if isinstance(data, list) else []
+
+
+def get_investor_rankings() -> list[dict]:
+    """13F 机构 AUM 排名(顶层入口)。
+
+    Returns:
+        [{cik('0001422848'), name, aum_usd, rank, period('31-MAR-2026')}]
+        ⚠️ cik 保留原始字符串(前导零有意义,不能被数值化)。
+    """
+    data = run_cli("investors")
+    if not isinstance(data, list):
+        return []
+    rows = normalize_records(data)
+    for raw, r in zip(data, rows):
+        if isinstance(raw, dict) and raw.get("cik") is not None:
+            r["cik"] = str(raw["cik"])
+    return rows
+
+
+def get_investor_holdings(cik: str) -> dict:
+    """某机构(CIK)的最新 13F 持仓。
+
+    Args:
+        cik: 如 '0001422848'(前导零可选)
+
+    Returns:
+        {cik, firm, filing_date, accession_number,
+         holdings: [{cusip, name, shares, value_usd, weight_pct, share_type}]}
+    """
+    data = run_cli("investors", cik)
+    if is_empty(data) or not isinstance(data, dict):
+        return {}
+    data["holdings"] = normalize_records(data.get("holdings", []))
+    return data
+
+
+def get_investor_changes(cik: str) -> dict:
+    """某机构最近两期 13F 的持仓变动(新建/加仓/减仓/清仓)。
+
+    Returns:
+        {added: 新建数量, changes: [{action('NEW'/'ADDED'/'REDUCED'/'EXITED'),
+          cusip, name, shares, value_usd, prev_shares, prev_value_usd,
+          delta_usd, delta_pct}]}
+    """
+    data = run_cli("investors", "changes", cik)
+    if is_empty(data) or not isinstance(data, dict):
+        return {"added": 0, "changes": []}
+    data["changes"] = normalize_records(data.get("changes", []))
+    return data
+
+
+def get_fund_holders(symbol: str) -> list[dict]:
+    """持有该股票的基金/ETF(做市资金面信号)。
+
+    Returns:
+        [{counter_id('ETF/US/AAPX'), code, name, position_ratio(%),
+          report_date('2026.08.18'), currency}]
+    """
+    data = run_cli("fund-holder", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return []
+    return normalize_records(data.get("lists", []))
+
+
+def get_shareholders(symbol: str) -> list[dict]:
+    """机构股东列表(含变动)。
+
+    Returns:
+        [{shareholder_name, percent_of_shares, report_date, shares_changed,
+          institution_type, stocks: [{counter_id, code, market, chg}]}]
+    """
+    data = run_cli("shareholder", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return []
+    rows = normalize_records(data.get("shareholder_list", []))
+    for r in rows:
+        r["stocks"] = normalize_records(r.get("stocks", []))
+    return rows
+
+
+# ---- 模块②/⑧补充:指数成分 / 成交量价分布 / A-H 溢价 ----
+
+def get_constituent(index_symbol: str, limit: int = 50, sort: str = "change",
+                    order: str = "desc") -> dict:
+    """指数/ETF 成分股(板块轮动监控)。
+
+    Args:
+        index_symbol: 指数用 HSI.HK / .SPX.US(美指数前缀点);
+                      ETF 用 IVV.US(美股 ETF 默认拉 SEC N-PORT 全持仓)
+        sort: change | price | turnover | inflow | turnover-rate | market-cap
+        order: desc | asc
+
+    Returns:
+        {rise_num, fall_num, flat_num, stocks: [{counter_id, name, market,
+          last_done, prev_close, chg, turnover, amount, inflow, balance,
+          total_shares, circulating_shares, tags(['领涨龙头']), ...}]}
+    """
+    data = run_cli("constituent", index_symbol, "--limit", str(limit),
+                   "--sort", sort, "--order", order)
+    if is_empty(data) or not isinstance(data, dict):
+        return {"rise_num": 0, "fall_num": 0, "flat_num": 0, "stocks": []}
+    data["stocks"] = normalize_records(data.get("stocks", []))
+    return data
+
+
+def get_trade_stats(symbol: str) -> dict:
+    """成交量按价位分布(近 5 日,Volume Profile)。
+
+    Returns:
+        {statistics: {avgprice, preclose, buy, sell, neutral, total_amount,
+                      trades_count, timestamp, trade_date[Unix秒]},
+         trades: [{price, buy_amount, sell_amount, neutral_amount}](按价位分布)}
+    """
+    data = run_cli("trade-stats", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return {"statistics": {}, "trades": []}
+    data["statistics"] = normalize_records([data.get("statistics", {})])[0] \
+        if isinstance(data.get("statistics"), dict) else {}
+    data["trades"] = normalize_records(data.get("trades", []))
+    return data
+
+
+def get_ah_premium(symbol: str, count: int = 100, kline_type: str = "day") -> list[dict]:
+    """A/H 溢价 K 线(⚠️仅 A+H 两地上市股,如 939.HK/1398.HK)。
+
+    Returns:
+        [{ahpremium_rate(-0.266=H股比A股便宜26.6%), aprice, apreclose,
+          hprice, hpreclose, currency_rate, timestamp}]
+    """
+    data = run_cli("ah-premium", symbol, "--kline-type", kline_type,
+                   "--count", str(count))
+    if is_empty(data) or not isinstance(data, dict):
+        return []
+    return normalize_records(data.get("klines", []))
+
+
+def get_ah_premium_intraday(symbol: str) -> list[dict]:
+    """A/H 溢价当日分时。结构同 get_ah_premium。"""
+    data = run_cli("ah-premium", "intraday", symbol)
+    if is_empty(data) or not isinstance(data, dict):
+        return []
+    return normalize_records(data.get("klines", []))
 
 
 # ---------------------------------------------------------------------------

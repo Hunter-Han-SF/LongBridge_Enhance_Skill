@@ -360,3 +360,143 @@ net_gex(K) = call_gex + put_gex
 | Put/Call Wall / GEX / Max Pain | ~~成交量代理~~ → 已升级真实 OI(calc-index),成交量仅回退 | 符号约定为行业惯例(SpotGamma 约定),非绝对真理 |
 | 异动综合打分 | 权重(异动40/资金30/涨跌20/榜10)与阈值为设计选择 | 可按需调整 |
 | IV Crush 检测 | 依赖本地 IV 累积,用"单日跌>20%"近似财报效应 | 需每日运行 get_iv_history 积累 |
+
+---
+
+# v0.4.0 新增模块字段映射(实测 2026-08-21,CLI 0.26.0;quant 修复复核于 0.27.1)
+
+对应 common.py 的 v0.4.0 封装段与 25 个新脚本。单测见 `tests/`(夹具即本节真实输出)。
+
+## 模块⑩ 选股器(screener)
+
+```bash
+longbridge screener strategies                 # [{id, name, type('platform')}]
+longbridge screener run <ID>                   # {items: [...]}
+longbridge screener filter KEY:MIN:MAX ... --market HK
+longbridge screener indicators                 # [{id, key, name, unit, min, max}]
+```
+
+- `run`/`filter` 的 items: `{symbol, name, industry, marketcap, pettm, pbmrq,
+  prevchg, prevclose, salesgrowthyoy}`(空值是**空字符串**,不是 null)
+- 常用 key(实测 25+):marketcap/circulating_marketcap/assets/liabilities/la/leverage/
+  bpsmrq/bpsgrowthyoy/sales/netincome/epsttm/roe/netmargin/roa/asset_turnover/
+  netincomegrowthyoy/salesgrowthyoy/epsgrowthyoy/assetgrowthyoy/divyld/dpseps/
+  fiveyearavgdps;维度 key:market/industry/tag
+- `prevchg` 直接是百分数(16.25=+16.25%),与 industry-rank 的分数形式不同
+
+## 模块①补充:港股涡轮(warrant,仅HK)
+
+| 命令 | 返回 | 坑 |
+|---|---|---|
+| `warrant 700.HK` | `[{symbol, name, type, expiry, last, leverage_ratio}]` | **list 的 type 不可信**(实测 61304 标 Call,quote 却返回 Bear;700.HK 712 条几乎全 Call) |
+| `warrant quote <SYM...>` | `[{symbol, type, expiry, last, prev_close, implied_vol}]` | **type 词汇混用**:'Call'/'Bull'=认购,'Bear'/'Put'=认沽(同一命令两种都见过);implied_vol 常见 0.000(无数据) |
+| `warrant issuers` | `[{id, name_cn, name_en}]` | — |
+
+`get_warrant.py` 的方向判断以 quote 为准(`--enrich` 批量补全,每批 10 只)。
+
+## 模块③补充:经纪商队列(brokers / participants,仅HK)
+
+- `brokers 700.HK` → `{asks/bids: [{position, broker_ids: [int]}]}`
+  ⚠️ **无价格字段**(position=1 即卖一/买一,价格需用 depth 对齐)
+- `participants` → `[{broker_id, name_cn, name_en}]`
+  ⚠️ broker_id 是**字符串**,且有多值条目 `'7707, 7708, 7709'`(需拆分登记);
+  `get_participants()` 已拆分为逐 id 行
+
+## 模块④补充:日历新类别 + IPO
+
+finance-calendar 六类别同构(`{date, list:[{date, count, infos[]}]}`):
+- `split`: infos[].content 为"5 股合并为 1 股"中文(脚本正则解析比例)
+- `ipo`: 与 `ipo` 命令的 calendar 子命令数据同源
+- `macrodata`: data_kv 的 type= previous/estimate/actual
+- `closed`: ext.holiday_date/holiday_type(full_day/half_day)
+
+`ipo` 命令(阶段列表/详情):
+- `ipo subscriptions|wait-listing|listed` → `{hk: [...], us: [...]}` 双市场合并返回;
+  `us-*` 变体只含 us 键
+- 条目: `{symbol, name, description, ipo_date(Unix秒), issue_price, currency,
+  mart_begin/mart_end(暗盘RFC3339), result_date, sub_state, tags, win_qty}`
+- `ipo detail <SYM>` → `{profile: {hk: {industry, investors:[基石], issue_price,
+  prospectus, profile}}, holdings: {ipo_max_purchase, finance_fee_rate},
+  eligibility: {can_subscribe}}`
+  ⚠️ profile 里的日期字段是 Unix 秒原始值(mart_begin 等),展示时需自行转换
+
+## 模块⑤补充:宏观指标(macrodata)
+
+- 列表: `macrodata [--keyword] [--country]` → `{count, has_more, limit,
+  list: [{indicator_code, name, country, importance('1'-'3'), periodicity, describe}]}`
+- 历史: `macrodata <CODE>` → `{count, data: [{period, actual_value,
+  forecast_value, previous_value, release_at(Unix秒), unit}]}`
+- ⚠️ **文档示例 code 'US00175' 已失效**(报 not found),真实 code 是纯数字如 '30771936',
+  必须从列表模式拿
+- `finance-calendar macrodata`(按日期)与 `macrodata <CODE>`(按指标)是同一数据的两个维度
+
+## 模块⑥补充:quant run(pine 可用,navi 服务端故障)
+
+- 语法(PineScript):`indicator("标题","副题",precision=N)` / `strategy("名")`;
+  `x1=input(20,"fast")`;`ta.ema(close,n)`/`ta.rsi(close,n)`/`[a,b,c]=ta.macd(close,12,26,9)`;
+  `plot(序列,"名")`;回测用 `ta.crossover/crossunder` + `strategy.entry/close`
+- **实测(2026-08-21,CLI 0.27.1)**:
+  - navi 路径:internal server error(官方文档 Navi 原版示例同样失败)→ 不要用
+  - pine 路径:正常
+  - **JSON 模式缺口**:events_json 只含 K 线(barStart/barEnd)+sessionInfo,
+    **不含 plot 序列值**;chart_json 为空串,indicator 的 report_json 为 "null"
+  - 指标值取法:pretty 输出有 Series 表(名称/Bars/First/Last/Min/Max+sparkline),
+    `run_quant_indicator.py` 以 `fmt=raw` 抓取并解析(ANSI 剥离 + 按 │ 分列)
+  - 回测取法:JSON 模式的 report_json 是嵌套 JSON 字符串,
+    含 config(initialCapital/commission)+ performanceAll(netProfit/maxDrawdown/
+    sharpeRatio/profitFactor/winRate/numberOfWining/LosingTrades/buyHoldReturn...)
+- `--input '[14]'` 覆盖 input.*() 默认值;`--language pine` 必须显式传(默认 navi 会 500)
+- 交叉验证实测:服务端 EMA20/RSI14 与本地 indicators.py 末值相对偏差 <0.02% ✅
+
+## 模块⑦补充:基本面新命令
+
+| 命令 | 返回结构 | 要点 |
+|---|---|---|
+| `compare A B --currency` | `{list: [{counter_id, pe, pb, ps, roe, roa, net_margin, div_yld, market_value, history:[{date,pe,pb,ps}], ...}]}` | ≤5 只;单只自动对比同行;脚本做组内排名(估值低好/质量高好) |
+| `business-segments` | `{bus_ids, business: [{id, name, percent, value, yoy}]}` | value 是当地货币原始值;脚本算 CR1/CR2 |
+| `industry-rank --market` | `{items: [{name, lists: [{counter_id(BK/US/INxxx), chg, leading_ticker, leading_chg, ...}]}]}` | ⚠️ **chg 是分数**(0.1544=+15.44%,与 pretty 输出对照确认);BK id 在 lists[].counter_id |
+| `industry-peers <BK_ID>` | `{chain: {name, level, stock_num, next:[子行业]}, top: {name}}` | BK id 来自 industry-rank |
+| `industry-valuation dist <SYM>` | `{pe/pb/ps: {value, median, high, low, rank_index, rank_total, ranking(0-1)}}` | ranking>0.7=行业内偏贵;部分标的只有 pe;getter 按实际 metric 处理 |
+| `consensus` | `{currency, list: [{period_text('Q2 2027'), fiscal_year, fiscal_period, details: [{key, name, estimate, actual, is_released}]}]}` | 报告期标签在 period_text;脚本算超/逊预期 |
+| `corp-action` | `{items: [{action('DividendExDate'), act_type, act_desc, date('20260813'), date_type, date_zone}]}` | date 是 YYYYMMDD 无分隔符 |
+| `operating`(仅HK) | `{list: [{financial: {currency, indicators: [{indicator_name, indicator_value('4589 亿'), yoy}]}}]}` | 指标值是带单位的中文串 |
+| `company` | 扁平 dict(company_name/founded/employees/address/manager/...) | 大多数字段按标的覆盖度可能为空 |
+| `executive` | `{professional_list: [{professionals: [{name, title, biography}]}]}` | biography 是长文 |
+
+## 模块⑦信号源(内部人/机构)
+
+| 命令 | 返回结构 | 要点 |
+|---|---|---|
+| `insider-trades`(仅US) | `[{owner, title, date, filing_date, type('EXERCISE'/'SELL'...), code('A'/'D'/'M'), shares, price, value, shares_after}]` | 数值字段已是原生数值(非字符串);脚本按 type+code 双重分类方向 |
+| `investors` | `[{cik, name, aum_usd, rank, period}]` | ⚠️ **cik 必须保留字符串**(前导零有意义);`get_investor_rankings()` 已特殊处理(绕过数值化) |
+| `investors <CIK>` | `{cik, firm, filing_date, holdings: [{cusip, name, shares, value_usd, weight_pct}]}` | cusip 含字母不会数值化 |
+| `investors changes <CIK>` | `{added, changes: [{action(NEW/ADDED/REDUCED/EXITED), shares, prev_shares, delta_usd, delta_pct}]}` | delta_pct 新建时是字符串 'NEW' |
+| `fund-holder` | `{lists: [{counter_id, code, name, position_ratio, report_date}]}` | position_ratio=占基金净值% |
+| `shareholder` | `{shareholder_list: [{shareholder_name, percent_of_shares, shares_changed, report_date, stocks:[{code, chg}]}]}` | shares_changed 正=增持;⚠️ 个别条目 shareholder_name 为空 |
+
+## 模块②/⑧补充:成分股 / 量价分布 / AH溢价
+
+- `constituent HSI.HK --sort inflow` → `{rise_num, fall_num, flat_num, stocks: [...]}`
+  - ⚠️ **chg 是分数**(0.0731=+7.31%,由 28.18→30.24 验证)
+  - ⚠️ HSI 的 rise/fall/flat 实测全 0(不回填),美股指数需前缀点(.SPX.US)
+  - 美股 ETF 默认 SEC N-PORT 全持仓(--limit 0 全量)
+- `trade-stats 700.HK` → `{statistics: {avgprice, preclose, buy, sell, neutral,
+  total_amount, trades_count, trade_date[]}, trades: [{price, buy_amount,
+  sell_amount, neutral_amount}]}`(近5日)
+  - Volume Profile 口径:vol(K) = buy+sell+neutral;POC=最大量价位;
+    Value Area 从 POC 向更厚一侧贪心扩展至 70%
+- `ah-premium 939.HK [--kline-type]` / `ah-premium intraday` → `{klines: [{ahpremium_rate,
+  aprice, hprice, currency_rate, timestamp}]}`
+  - **ahpremium_rate<0 = H股折价**(如 -0.266 = H 比 A 便宜 26.6%)
+  - 仅 A+H 双市场标的;非双市场返回空 klines
+
+## v0.4.0 新增已知坑汇总
+
+13. **screener 的空值是空字符串**("",不是 null),to_float 处理无碍但判断存在性时注意
+14. **industry-rank / constituent 的 chg 是分数**(×100 才是百分数;与 trade-stats 的
+    prevchg(直接百分数)和 compare 的 pe(直接倍数)口径均不同)
+15. **macrodata 文档示例 code 失效**:必须从列表模式拿真实 indicator_code
+16. **quant run 的 navi 路径服务端 500**(2026-08-21 实测,官方示例同挂)→ pine 可用,脚本已切换
+17. **CIK 前导零**:investors 的 cik 是 '0001422848' 形态,数值化会丢零;
+    `get_investor_rankings()` 已保留原始字符串
+18. **consensus 报告期标签在 period_text**(fiscal_year/fiscal_period 是拆开的字段)

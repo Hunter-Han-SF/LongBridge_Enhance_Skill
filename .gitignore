@@ -12,3 +12,6 @@ __pycache__/
 .zcode/
 .vscode/
 .idea/
+
+# Mimosa 安全扫描产物(本地工具缓存,不入库)
+.mimosa/

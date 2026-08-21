@@ -142,3 +142,74 @@ Gamma Flip = GEX 剖面过零处线性插值(取离现价最近,自动扩域至 
 - OBV 斜率:近 20 期最小二乘;量比=最新量/近5日均量
 - 52周位置 =(C-低)/(高-低)×100;Beta = cov(标的,市场)/var(市场)(按日期对齐)
 - 单元测试约束:单边涨 RSI=100、对称序列 Wilder RSI=50、BOLL vs statistics.pstdev、Beta(2×市场)=2
+
+## 13. v0.4.0 新增模块计算
+
+### 13.1 量价分布 Volume Profile(trade-stats)
+```
+vol(K) = buy_amount + sell_amount + neutral_amount        # 每价位总量(近5日)
+POC    = argmax_K vol(K)                                   # 最大成交价位(最强支撑/阻力)
+Value Area(70%):
+  从 POC 起向"更厚的一侧"贪心扩展 —— 每步比较相邻上/下档的 vol,
+  并入较大者,直到累计 ≥ 0.7 × Σvol;VAH/VAL = 区间上下沿
+买卖失衡 = Σbuy / Σsell (>1.1 买方占优, <0.9 卖方占优)
+位置判断: 现价(或均价) > VAH → 强势(VAH 为支撑); < VAL → 弱势(VAL 为阻力)
+```
+
+### 13.2 A/H 溢价统计(ah-premium)
+```
+rate 含义: ahpremium_rate < 0 = H股折价(如 -0.266 = H 比 A 便宜 26.6%)
+zscore = (latest − mean) / pstdev(rates)        # z>1: 当前折价深于均值(潜在修复)
+trend  = mean(后半段) − mean(前半段)             # >0 溢价收窄(H相对走强), <0 走阔
+```
+
+### 13.3 业务集中度(business-segments)
+```
+CR1 = max(percent)                 # 第一大分部营收占比
+CR2 = sum(top2 percent)            # 前二大分部合计(>70% 单一依赖风险)
+```
+
+### 13.4 财务共识 beat/miss(consensus)
+```
+pct = (actual − estimate) / |estimate| × 100
+pct > +0.5 → 超预期; pct < −0.5 → 逊预期; 其间 → 符合; actual 空 → 待公布
+```
+
+### 13.5 宏观 surprise(macrodata)
+```
+surprise = actual − forecast
+beat_rate = #{actual > forecast} / #{已发布期数}
+```
+
+### 13.6 拆股比例解析(split calendar)
+```
+正则: (\d+) 股 (合并为|拆分为) (\d+) 股  →  "X→Y(合股/拆股)"
+```
+
+### 13.7 多股对比排名(compare)
+```
+排名方向: 估值类(pe/pb/ps)升序,第 1 名=最低=最优;
+          质量类(roe/roa/net_margin/div_yld)降序,第 1 名=最高=最优
+best_per_metric = argmin(估值类) / argmax(质量类),跳过空值
+```
+
+### 13.8 内部人交易方向(insider-trades)
+```
+卖出: type ∈ {SELL, SALE} 或 code='D'
+买入: type ∈ {BUY, PURCHASE, GRANT, EXERCISE} 或 code ∈ {'A','M'}
+信号: 净额=Σ买入值−Σ卖出值; >0 且无卖出→净买入(偏多);
+      <0 且无买入→净卖出(偏空); 否则→多空混合(中性)
+```
+
+### 13.9 经纪商队列权重(brokers)
+```
+level_presence(broker) = Σ 出现档位 × 权重;买一档(bids, position=1)权重 2,其余 1
+```
+
+### 13.10 quant pine 交叉验证口径
+```
+服务端(pine ta.*) vs 本地 indicators.py 末值:
+  EMA: 服务端 SMA 种子收敛后,实测相对偏差 <0.01%
+  RSI: 双方均为 Wilder 平滑,实测相对偏差 <0.02%
+偏差 >2% 视为口径不一致需检查
+```

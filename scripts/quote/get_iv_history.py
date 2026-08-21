@@ -38,8 +38,15 @@ _HISTORY_DIR = os.path.join(os.path.expanduser("~"), ".lbr_iv_history")
 
 
 def _history_path(symbol: str) -> str:
-    safe = symbol.replace(".", "_").replace("/", "_")
-    return os.path.join(_HISTORY_DIR, f"{safe}.json")
+    """symbol → 历史文件路径。白名单净化(仅字母数字_-)+ 穿越防护。"""
+    import re as _re
+    safe = _re.sub(r"[^A-Za-z0-9_-]", "_", str(symbol))[:64]
+    path = os.path.join(_HISTORY_DIR, f"{safe}.json")
+    # 防路径穿越:净化后文件名不得含路径分隔符,最终目录必须是历史目录本身
+    if os.path.basename(path) != f"{safe}.json" or \
+            os.path.dirname(os.path.abspath(path)) != os.path.abspath(_HISTORY_DIR):
+        raise ValueError(f"非法 symbol: {symbol!r}")
+    return path
 
 
 def _load_history(symbol: str) -> list[dict]:
@@ -55,8 +62,10 @@ def _load_history(symbol: str) -> list[dict]:
 
 def _save_history(symbol: str, data: list[dict]) -> None:
     os.makedirs(_HISTORY_DIR, exist_ok=True)
-    with open(_history_path(symbol), "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    # pathlib 写汇(文件名经 _history_path 白名单净化+穿越防护)
+    import pathlib as _pl
+    _pl.Path(_history_path(symbol)).write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def get_current_atm_iv(symbol: str) -> tuple[float | None, dict | None]:
