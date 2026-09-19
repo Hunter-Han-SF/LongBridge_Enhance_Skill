@@ -10,20 +10,12 @@ description: |
   ⑧日内微观(VWAP/盘口压力/逐笔主动买卖/量价分布Volume Profile)
   ⑨买卖决策仪表盘 ⑩选股器(预设策略/自定义指标条件筛选)。
   信号源:内部人交易(SEC Form 4)/13F机构持仓/基金持仓/机构股东/指数成分/AH溢价。
-  Triggers: 期权,期权链,Greeks,IV,隐含波动率,波动率微笑,P/C比率,损益,期权策略,
-  straddle,spread,butterfly,collar,异动,大单,资金流,主力,经纪商持仓,沽空,做空,
-  财报日历,分红日历,除权除息,市场温度,热度榜,Put Wall,GEX,IV Crush,
-  技术指标,技术分析,均线,MACD,RSI,KDJ,布林,ATR,OBV,量比,金叉,死叉,超买超卖,
-  52周新高,支撑阻力,Beta,相对强度,估值分位,市盈率,分析师,评级,目标价,EPS预测,
-  ROE,毛利率,负债率,自由现金流,财务健康,股息,股息率,收息,VWAP,盘口,买卖盘,
-  主动买卖,逐笔,隐含波动幅度,风险逆转,Max Pain,期限结构,该买吗,该卖吗,买卖信号,
-  多空对照,仪表盘,option chain,put call ratio,capital flow,short sale,
-  earnings calendar,market temperature,expected move,risk reversal,order flow,
-  选股,筛选,选股器,screener,策略选股,低估值选股,涡轮,权证,warrant,认购证,认沽证,
-  内部人交易,insider,高管买卖,13F,机构持仓,基金持仓,机构股东,股东变动,
-  指数成分,成分股,板块轮动,AH溢价,量价分布,筹码分布,volume profile,POC,
-  宏观指标,CPI,PMI,拆股,合股,休市,新股,IPO申购,暗盘,基石投资者,
-  经纪商队列,多股对比,同行对比,业务分部,营收拆分,行业排行,公司行动,经营回顾
+  Triggers: 期权策略,straddle,spread,butterfly,collar,option chain,put call ratio,capital flow,order flow,short sale,
+  earnings calendar,market temperature,expected move,risk reversal,screener,warrant,insider,POC,
+  隐含波动率,做空,均线,金叉,死叉,超买超卖,支撑阻力,52周新高,技术分析,市盈率,ROE,毛利率,净利率,
+  负债率,自由现金流,股息率,收息,筹码分布,买卖盘,选股,筛选,低估值选股,权证,认购证,认沽证,
+  高管买卖,股东变动,成分股,板块轮动,同行对比,营收拆分,分红日历,合股,IPO申购,暗盘,基石投资者,
+  CPI,PMI,该买吗,该卖吗,买卖信号,多空对照
 license: MIT
 metadata:
   author: community
@@ -43,6 +35,28 @@ metadata:
 
 > **语言规则**:根据用户输入语言自动回复。
 > **安全提示**:本 skill 只读,无任何交易功能。
+
+## 触发词全表(维护参考)
+
+> description 字段受 ZCode **1024 字符上限**约束(超限会导致 skill 加载失败),只保留了模块概览未覆盖的高频词与英文别名。
+> 完整词汇表如下,调整 description 时据此增删,改完务必校验总长 < 1024。
+
+```
+期权,期权链,Greeks,IV,隐含波动率,波动率微笑,P/C比率,损益,期权策略,
+straddle,spread,butterfly,collar,异动,大单,资金流,主力,经纪商持仓,沽空,做空,
+财报日历,分红日历,除权除息,市场温度,热度榜,Put Wall,GEX,IV Crush,
+技术指标,技术分析,均线,MACD,RSI,KDJ,布林,ATR,OBV,量比,金叉,死叉,超买超卖,
+52周新高,支撑阻力,Beta,相对强度,估值分位,市盈率,分析师,评级,目标价,EPS预测,
+ROE,毛利率,净利率,负债率,自由现金流,财务健康,股息,股息率,收息,VWAP,盘口,买卖盘,
+主动买卖,逐笔,隐含波动幅度,风险逆转,Max Pain,期限结构,该买吗,该卖吗,买卖信号,
+多空对照,仪表盘,option chain,put call ratio,capital flow,short sale,
+earnings calendar,market temperature,expected move,risk reversal,order flow,
+选股,筛选,选股器,screener,策略选股,低估值选股,涡轮,权证,warrant,认购证,认沽证,
+内部人交易,insider,高管买卖,13F,机构持仓,基金持仓,机构股东,股东变动,
+指数成分,成分股,板块轮动,AH溢价,量价分布,筹码分布,volume profile,POC,
+宏观指标,CPI,PMI,拆股,合股,休市,新股,IPO申购,暗盘,基石投资者,
+经纪商队列,多股对比,同行对比,业务分部,营收拆分,行业排行,公司行动,经营回顾
+```
 
 ## 能力边界(重要)
 
