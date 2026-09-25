@@ -20,6 +20,20 @@ import time
 from typing import Any, Iterable
 
 # ---------------------------------------------------------------------------
+# 输出编码防护(Windows)
+# ---------------------------------------------------------------------------
+
+# Windows 下 stdout/stderr 被重定向或管道捕获(agent 调用、`> file` 等)时,
+# 编码会退回本地代码页(CP936),print emoji(🟢🔴⚠️ 等)直接抛 UnicodeEncodeError。
+# 所有脚本都 import 本模块,故在此统一重设为 UTF-8;交互式控制台走
+# WriteConsoleW,不受影响。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError, OSError):
+        pass  # 流已被替换/关闭等非常规场景,静默跳过
+
+# ---------------------------------------------------------------------------
 # CLI 探测
 # ---------------------------------------------------------------------------
 
@@ -128,6 +142,7 @@ def run_cli(
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
+                errors="replace",  # CLI 输出偶含非 UTF-8 字节时降级替换,而非抛 UnicodeDecodeError
                 timeout=60,
             )
         except subprocess.TimeoutExpired:

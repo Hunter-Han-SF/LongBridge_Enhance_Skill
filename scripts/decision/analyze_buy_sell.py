@@ -83,15 +83,23 @@ def _dim_capital(symbol: str, bulls: list, bears: list) -> tuple[float | None, s
     try:
         cap = get_capital_flow_snapshot(symbol)
         net_large = to_float((cap.get("net") or {}).get("large"), 0) or 0
+        # 强度 = |大单净额| / 当日大单总流量(尺度无关)。固定金额阈值对大盘股
+        # 会瞬间饱和(如 AAPL 级净额常超 ±$50M,300 万阈值直接打满 100/0 分);
+        # 失衡占比 ≥10% 视为满强度
+        li = to_float((cap.get("capital_in") or {}).get("large"), 0) or 0
+        lo = to_float((cap.get("capital_out") or {}).get("large"), 0) or 0
+        gross_large = max(li + lo, abs(net_large))
         s = 50.0
         if net_large > 0:
-            k = min(abs(net_large) / 3e6, 1.0)
+            k = min(abs(net_large) / gross_large / 0.10, 1.0)
             s = 50 + 50 * k
-            bulls.append(f"资金: 主力大单净流入 {abs(net_large)/1e8:.2f}亿")
+            bulls.append(f"资金: 主力大单净流入 {abs(net_large)/1e8:.2f}亿"
+                         f"(占大单流量 {abs(net_large)/gross_large*100:.0f}%)")
         elif net_large < 0:
-            k = min(abs(net_large) / 3e6, 1.0)
+            k = min(abs(net_large) / gross_large / 0.10, 1.0)
             s = 50 - 50 * k
-            bears.append(f"资金: 主力大单净流出 {abs(net_large)/1e8:.2f}亿")
+            bears.append(f"资金: 主力大单净流出 {abs(net_large)/1e8:.2f}亿"
+                         f"(占大单流量 {abs(net_large)/gross_large*100:.0f}%)")
         # 沽空压力
         try:
             st = get_short_trades(symbol, count=10)

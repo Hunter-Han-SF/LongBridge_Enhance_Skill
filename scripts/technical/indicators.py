@@ -73,12 +73,13 @@ def macd(closes: list[float], fast: int = 12, slow: int = 26, signal: int = 9) -
     if not dif or not dea:
         return empty
     hist = [d - s for d, s in zip(dif[-len(dea):], dea)]
-    # 检测近 3 根内 DIF 与 DEA 的交叉(长度可能差 1,用末段对齐)
-    n_cmp = min(len(dif), len(dea))
+    # 检测近 3 根内 DIF 与 DEA 的交叉。dea 比 dif 短 signal-1 个,
+    # 必须先尾部对齐,否则会用 signal-1 根之前的 DIF 与当期 DEA 比较
+    dif_aligned = dif[-len(dea):]
     cross = None
-    for k in range(max(1, n_cmp - 3), n_cmp):
-        d0, s0 = dif[k - 1], dea[k - 1]
-        d1, s1 = dif[k], dea[k]
+    for k in range(max(1, len(dea) - 3), len(dea)):
+        d0, s0 = dif_aligned[k - 1], dea[k - 1]
+        d1, s1 = dif_aligned[k], dea[k]
         if d0 <= s0 and d1 > s1:
             cross = "golden"
         elif d0 >= s0 and d1 < s1:
