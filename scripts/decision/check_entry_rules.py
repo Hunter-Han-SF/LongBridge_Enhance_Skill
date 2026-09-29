@@ -11,9 +11,11 @@
 可自动判定 vs 需人工:
   自动 — 收盘新低/新高、缩量、RSI、斐波那契、趋势线/颈线、支撑压力距离、
          K 线形态(吞没/锤子/W底/旗形)、均线回踩、背离、财报距离、
-         开盘后前 30 分钟(时区推算)、热度榜命中
+         盘前 30 分钟(9:00-9:30,时区推算+休市日历)、热度榜命中、
+         小市值(static 总股本×现价)、板块当日涨幅(industry-rank,
+         需 --sector 指名或该股为领涨股——CLI 无个股→行业映射,实测)
   人工 — 刚止损不久(D8)、是否熟悉(D9)、昨日板块内跌幅排名(D6)、
-         盘前盘后消息面异动(D11)、所属板块当日是否突破(B8 的板块半边)
+         盘前盘后消息面异动(D11)
   人工项均可通过 CLI 参数回答(--recent-stopout yes 等),回答后转为自动判定。
 
 ⚠️ 形态识别为算法近似(pivot/聚类/回归),非精确图形匹配;结论是纪律参考,
@@ -39,8 +41,9 @@ for _p in (os.path.normpath(os.path.join(_HERE, "..")), _HERE,
         sys.path.insert(0, _p)
 
 from common import (  # noqa: E402
-    get_finance_calendar, get_heat_rank, get_heat_rank_keys, get_kline_adjusted,
-    get_underlying_price, is_empty, print_error, print_json,
+    get_finance_calendar, get_heat_rank, get_heat_rank_keys, get_industry_rank,
+    get_kline_adjusted, get_underlying_price, is_empty, normalize_records,
+    print_error, print_json, run_cli, to_float,
 )
 from indicators import atr as _atr  # noqa: E402
 from indicators import sma_series  # noqa: E402
@@ -64,7 +67,7 @@ RULE_NAMES = {
     "D9": "不熟悉/累计跌幅过大",
     "D10": "大跌后社群热度飙升(小市值)",
     "D11": "盘前盘后非财报消息面异动",
-    "D12": "开盘后前 30 分钟",
+    "D12": "盘前 30 分钟(9:00-9:30)不买",
     "U1": "缩量创新高",
     "U2": "创历史新高但远离支撑",
     "U3": "突破压力后紧邻下一强压力",
@@ -409,15 +412,21 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
         R["D9"] = _r("manual", f"累计回撤 {pct(f['dd250'])};是否熟悉该标的?"
                      " 用 --familiar yes/no 回答")
 
-    # D10: 大跌后社群热度飙升(热度榜可查;市值人工)
+    # D10: 大跌后社群热度飙升的小市值(热度榜 + 市值自动;小市值是必要条件)
     in_heat = opts.get("in_heat")
+    smallcap = opts.get("smallcap")  # True/False/None(查询失败)
     d5 = (last - c[-6]) / c[-6] if n > 6 and c[-6] else 0.0
     if in_heat is None:
         R["D10"] = _r("manual", "热度榜数据不可用;该股是否刚经历大跌且社群热度飙升?"
                       " 市值是否偏小?")
+    elif in_heat and d5 <= -0.08 and smallcap is False:
+        R["D10"] = _r("clear", f"热度榜命中且近5日跌幅 {pct(d5)},"
+                      "但为大市值股,非小市值炒作形态")
     elif in_heat and d5 <= -0.08:
-        R["D10"] = _r("triggered", f"该股进入热度榜且近5日跌幅 {pct(d5)};"
-                      "小市值请自行确认")
+        ev = f"该股进入热度榜且近5日跌幅 {pct(d5)}"
+        ev += ";小市值(总股本×现价 < 阈值)" if smallcap else \
+            ";市值未知,请自行确认是否小市值"
+        R["D10"] = _r("triggered", ev)
     else:
         R["D10"] = _r("clear", f"热度榜{'命中' if in_heat else '未命中'};"
                       f"近5日涨跌 {pct(d5)}")
@@ -731,12 +740,13 @@ def _check_b8(f: dict, opts: dict) -> dict:
     if not ok:
         return _r("none", "近两日无「放量实体大阳突破最近压力」")
     ans = opts.get("sector_breakout")
+    detail = f"({opts['sector_detail']})" if opts.get("sector_detail") else ""
     if ans == "yes":
-        return _r("matched", "个股放量长阳突破成立,且确认所属板块当日突破")
+        return _r("matched", f"个股放量长阳突破成立,且确认所属板块当日突破{detail}")
     if ans == "no":
-        return _r("none", "个股突破成立但所属板块当日未突破")
+        return _r("none", f"个股突破成立但所属板块当日未突破{detail}")
     return _r("manual", "个股放量长阳突破成立;所属板块当日是否突破?"
-              " 用 --sector-breakout yes/no 回答")
+              " 用 --sector-breakout yes/no 回答,或 --sector <行业名> 自动查")
 
 
 def _check_b9(f: dict) -> dict:
@@ -763,27 +773,29 @@ def _check_b9(f: dict) -> dict:
 
 
 def _check_open_window(opts: dict) -> dict:
-    """D12: 当前是否处于市场开盘后前 30 分钟(按当地时钟,排除周末)。"""
+    """D12: 当前是否处于盘前 30 分钟(当地 9:00-9:30,开盘前最后一根半小时)。
+
+    语义经用户确认:「开盘前半小时不买」= 盘前时段的 30 分钟(US 竞价前夜盘尾声
+    9:00-9:30 ET / HK 竞价时段 9:00-9:30),不是开盘后的前 30 分钟。
+    周末与 closed-calendar 休市日直接放行;港股台风临时停市不在日历内,自行留意。
+    """
     now: datetime | None = opts.get("now")
     market = (opts.get("market") or "US").upper()
     if now is None:
-        return _r("manual", "无法获取当前时间,开盘后前30分钟请自行遵守")
+        return _r("manual", "无法获取当前时间,盘前30分钟纪律请自行遵守")
     wd = now.weekday()
     if wd >= 5:
-        return _r("clear", f"{'周六' if wd == 5 else '周日'}休市,"
-                 "不适用开盘时窗(法定节假日未覆盖,请自行留意)")
-    hour, minute = now.hour, now.minute
-    if market == "HK":
-        window = (9, 30), (10, 0)
-    elif market == "US":
-        window = (9, 30), (10, 0)
-    else:
-        return _r("manual", f"市场 {market} 开盘时段未内置,请自行判断")
-    (oh, om), (ch, cm) = window
-    t = hour * 60 + minute
-    if oh * 60 + om <= t < ch * 60 + cm:
-        return _r("triggered", f"当前 {hour:02d}:{minute:02d}(当地),处于开盘后前30分钟")
-    return _r("clear", f"当前 {hour:02d}:{minute:02d}(当地),不在开盘后前30分钟")
+        return _r("clear", f"{'周六' if wd == 5 else '周日'}休市")
+    if now.strftime("%Y-%m-%d") in (opts.get("closed_dates") or set()):
+        return _r("clear", f"{now.strftime('%Y-%m-%d')} 为休市日")
+    t = now.hour * 60 + now.minute
+    if market in ("US", "HK"):
+        if 9 * 60 <= t < 9 * 60 + 30:
+            return _r("triggered", f"当前 {now.hour:02d}:{now.minute:02d}(当地),"
+                     "处于盘前30分钟(9:00-9:30)")
+        return _r("clear", f"当前 {now.hour:02d}:{now.minute:02d}(当地),"
+                 "不在盘前30分钟(9:00-9:30)")
+    return _r("manual", f"市场 {market} 开盘时段未内置,请自行判断")
 
 
 def _market_local_now(symbol: str) -> datetime | None:
@@ -845,6 +857,80 @@ def _in_heat_rank(symbol: str) -> bool | None:
         return None
 
 
+def _closed_dates(market: str) -> set[str]:
+    """近端休市日(closed-calendar),D12 排除节假日。失败返回空集(仅剩周末规则)。"""
+    try:
+        buckets = get_finance_calendar(category="closed", market=market, count=30)
+        out: set[str] = set()
+        for b in buckets or []:
+            for info in b.get("infos", []):
+                ext = info.get("ext") or {}
+                d = str(ext.get("holiday_date") or b.get("date") or "")[:10]
+                d = d.replace(".", "-")
+                if len(d) == 10:
+                    out.add(d)
+        return out
+    except Exception:
+        return set()
+
+
+def _is_small_cap(symbol: str, threshold_usd: float,
+                  price: float | None = None) -> bool | None:
+    """static 的 total_shares × 现价;HK 按 7.8 折算美元。失败返回 None。"""
+    try:
+        rows = normalize_records(run_cli("static", symbol))
+        if not rows:
+            return None
+        shares = to_float(rows[0].get("total_shares"))
+        px = price or get_underlying_price(symbol)
+        if not shares or not px:
+            return None
+        cap = shares * px
+        if symbol.upper().endswith(".HK"):
+            cap /= 7.8
+        return cap < threshold_usd
+    except Exception:
+        return None
+
+
+def _auto_sector_breakout(symbol: str, market: str, sector: str | None,
+                          chg_pct: float) -> tuple[str | None, str]:
+    """B8 板块半边自动化: industry-rank 当日板块涨幅榜。
+
+    ⚠️ 实测 CLI 无「个股→所属行业」映射命令(industry-peers 只吃 BK 码,
+    quote/static/anomaly/compare 均无行业字段),因此走两条路径:
+      ① 用户 --sector <行业名> 指名匹配;
+      ② 该股恰为某行业 leading_ticker(领涨股)时反查。
+    板块涨幅 ≥ chg_pct 视为「板块突破日」(设计阈值,可 --sector-chg-pct 调整)。
+    返回 (yes/no/None, 说明)。
+    """
+    try:
+        rows = get_industry_rank(market=market)
+    except Exception:
+        return None, "行业排行数据不可用"
+    cands = []
+    for row in rows or []:
+        cands.extend(row.get("lists") or [])
+    if sector:
+        key = sector.strip().lower()
+        hit = next((i for i in cands
+                    if key in str(i.get("name", "")).lower()), None)
+        if not hit:
+            return None, f"当日涨幅榜未见行业「{sector}」"
+    else:
+        ticker = symbol.split(".")[0].upper()
+        hit = next((i for i in cands
+                    if str(i.get("leading_ticker", "")).upper() == ticker), None)
+        if not hit:
+            return None, "无法定位该股所属行业(可用 --sector <行业名> 指定)"
+    chg = to_float(hit.get("chg"))
+    if chg is None:
+        return None, f"行业「{hit.get('name')}」无当日涨幅数据"
+    ok = chg >= chg_pct
+    return ("yes" if ok else "no",
+            f"行业「{hit.get('name')}」今日 {chg * 100:.1f}%,阈值 {chg_pct * 100:.0f}%")
+
+
 # ---------------------------------------------------------------------------
 # 输出渲染
 # ---------------------------------------------------------------------------
@@ -877,7 +963,8 @@ def render(symbol: str, result: dict, price, generated: str) -> None:
         print(f"    · {why}")
     print(f"\n  ⚠️ 纪律参考非投资建议;形态识别为算法近似,请人工复核。")
     print(f"  人工项回答方式: --sector-top-decline/--recent-stopout/--familiar/")
-    print(f"                 --prepost-move/--sector-breakout yes|no")
+    print(f"                 --prepost-move/--sector-breakout yes|no;")
+    print(f"  B8 板块可 --sector <行业名> 自动查当日涨幅(阈值 --sector-chg-pct)。")
 
 
 def analyze(symbol: str, args) -> dict:
@@ -885,6 +972,7 @@ def analyze(symbol: str, args) -> dict:
     if len(bars) < 30:
         raise RuntimeError(f"K线不足 30 根(实际 {len(bars)}),无法检查")
     f = build_features(bars)
+    market = symbol.rsplit(".", 1)[-1] if "." in symbol else "US"
     opts = {
         "lookback": args.lookback, "max_stop_pct": args.max_stop_pct,
         "sector_top_decline": args.sector_top_decline,
@@ -893,7 +981,9 @@ def analyze(symbol: str, args) -> dict:
         "sector_breakout": args.sector_breakout,
         "earnings_days": args.earnings_days,
         "in_heat": None if args.no_heat else _in_heat_rank(symbol),
-        "market": symbol.rsplit(".", 1)[-1] if "." in symbol else "US",
+        "smallcap": None if args.no_heat else _is_small_cap(symbol, args.smallcap_usd),
+        "closed_dates": _closed_dates(market),
+        "market": market,
     }
     if args.now:
         opts["now"] = datetime.strptime(args.now, "%Y-%m-%d %H:%M")
@@ -901,6 +991,13 @@ def analyze(symbol: str, args) -> dict:
         opts["now"] = _market_local_now(symbol)
     if opts["earnings_days"] is None:
         opts["earnings_days"] = _days_to_earnings(symbol)
+    # B8 板块半边: 用户显式回答优先;否则尝试 industry-rank 自动判定
+    if not args.sector_breakout:
+        ans, note = _auto_sector_breakout(symbol, market, args.sector,
+                                          args.sector_chg_pct / 100.0)
+        opts["sector_breakout"] = ans
+        if note:
+            opts["sector_detail"] = note
 
     result = check_rules(f, opts)
     price = get_underlying_price(symbol) or f["last"]
@@ -908,6 +1005,7 @@ def analyze(symbol: str, args) -> dict:
                    "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                    "levels": {"support": f["stop"], "resistance": f["target"],
                               "rr": f["rr"]},
+                   "smallcap": opts["smallcap"],
                    "disclaimer": "纪律清单参考,非投资建议;形态识别为算法近似。"})
     if args.output_json:
         print_json(result)
@@ -978,10 +1076,16 @@ if __name__ == "__main__":
     parser.add_argument("--prepost-move", choices=["yes", "no"],
                         help="D11: 盘前盘后是否有非财报消息面异动")
     parser.add_argument("--sector-breakout", choices=["yes", "no"],
-                        help="B8: 所属板块当日是否突破")
+                        help="B8: 所属板块当日是否突破(显式回答,优先于自动判定)")
+    parser.add_argument("--sector", help="B8: 指定行业名(如 半导体),自动查当日板块涨幅")
+    parser.add_argument("--sector-chg-pct", type=float, default=3.0,
+                        help="B8 板块突破阈值%%(默认3,当日板块涨幅≥此值视为突破日)")
+    parser.add_argument("--smallcap-usd", type=float, default=2_000_000_000,
+                        help="D10 小市值阈值,美元(默认20亿;HK按7.8折算)")
     parser.add_argument("--earnings-days", type=int,
                         help="手动指定距下次财报天数(跳过日历查询)")
-    parser.add_argument("--no-heat", action="store_true", help="跳过热度榜(D10转人工)")
+    parser.add_argument("--no-heat", action="store_true",
+                        help="跳过热度榜与市值查询(D10转人工)")
     parser.add_argument("--now", help="覆盖当前市场当地时间,格式 'YYYY-MM-DD HH:MM'")
     parser.add_argument("--demo", action="store_true", help="离线合成数据自检")
     args = parser.parse_args()

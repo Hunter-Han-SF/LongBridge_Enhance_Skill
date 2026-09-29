@@ -19,7 +19,7 @@ description: |
 license: MIT
 metadata:
   author: community
-  version: "0.5.1"
+  version: "0.5.2"
   risk_level: read_only
   requires_login: false
   default_install: true
@@ -618,9 +618,10 @@ python scripts/decision/check_entry_rules.py --demo     # 离线自检,无需登
 - 每条规则三态输出:❌触发 / ✅未触发 / ❓需人工;结论 = ❌不买 | ✅结构符合 | ⏸️观望
 - 自动判定:收盘新低/新高、缩量、RSI(6)、斐波那契61.8%、趋势线/颈线、支撑压力
   聚类(强=触及≥2次)、吞没/锤子/W底/旗形/均线回踩、顶底背离、财报距离、
-  开盘后前30分钟、热度榜命中、止损距离 vs 承受力(--max-stop-pct,默认8%)
-- 需人工(可用参数消解): D6板块昨日跌幅排名 / D8刚止损 / D9熟悉度 /
-  D11盘前盘后异动 / B8板块当日是否突破
+  盘前30分钟(9:00-9:30,时区+休市日历)、热度榜命中、小市值(static 总股本×现价)、
+  板块当日涨幅(industry-rank,--sector 指名或领涨股反查)、止损距离 vs 承受力(--max-stop-pct,默认8%)
+- 需人工(可用参数消解): D6板块昨日跌幅排名 / D8刚止损 / D9熟悉度 / D11盘前盘后异动;
+  B8 板块半边默认自动(--sector 指名/领涨股反查,--sector-breakout 手动优先)
 - ⚠️ 形态识别为算法近似(pivot/聚类),非精确图形匹配;纪律参考非投资建议
 
 #### 单标的异动综合打分

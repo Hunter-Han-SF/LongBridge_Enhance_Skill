@@ -284,18 +284,28 @@ class TestGateAndVerdict(unittest.TestCase):
 
 
 class TestD12OpenWindow(unittest.TestCase):
-    def test_in_window_triggered(self):
-        r = run([100] * 60, now=__import__("datetime").datetime(2026, 9, 29, 9, 45),
-                market="HK")
-        self.assertEqual(r["rules"]["D12"]["status"], "triggered")
+    """D12 语义(v0.5.2 确认): 盘前 30 分钟(9:00-9:30)不买,非开盘后 30 分钟。"""
 
-    def test_outside_window_clear(self):
-        r = run([100] * 60, now=__import__("datetime").datetime(2026, 9, 29, 11, 0),
-                market="HK")
+    def test_in_premarket_window_triggered(self):
+        from datetime import datetime as dt
+        r = run([100] * 60, now=dt(2026, 9, 29, 9, 15), market="HK")
+        self.assertEqual(r["rules"]["D12"]["status"], "triggered")
+        self.assertIn("盘前30分钟", r["rules"]["D12"]["evidence"])
+
+    def test_after_window_clear(self):
+        from datetime import datetime as dt
+        # 9:45 属于开盘后,按确认后的语义不在禁买窗口
+        r = run([100] * 60, now=dt(2026, 9, 29, 9, 45), market="HK")
         self.assertEqual(r["rules"]["D12"]["status"], "clear")
-        r2 = run([100] * 60, now=__import__("datetime").datetime(2026, 9, 29, 9, 45, 30),
-                 market="HK")
-        self.assertEqual(r2["rules"]["D12"]["status"], "triggered")
+        r2 = run([100] * 60, now=dt(2026, 9, 29, 11, 0), market="US")
+        self.assertEqual(r2["rules"]["D12"]["status"], "clear")
+
+    def test_holiday_clear(self):
+        from datetime import datetime as dt
+        r = run([100] * 60, now=dt(2026, 11, 26, 9, 15), market="US",
+                closed_dates={"2026-11-26"})
+        self.assertEqual(r["rules"]["D12"]["status"], "clear")
+        self.assertIn("休市日", r["rules"]["D12"]["evidence"])
 
     def test_no_time_manual(self):
         r = run([100] * 60)
@@ -543,6 +553,104 @@ class TestBlindSpotSetups(unittest.TestCase):
                 + [103.2, 104.0, 104.8])
         r = run(path)
         self.assertEqual(r["rules"]["U3"]["status"], "triggered")
+
+
+class TestV052Upgrades(unittest.TestCase):
+    """v0.5.2 第四档补齐: D10 小市值自动、B8 板块涨幅自动、CLI 数据层。"""
+
+    def test_d10_smallcap_gate(self):
+        path = [100] * 40 + ramp_to(99.5, 88.0, 5)  # 近5日累计大跌(5日窗全覆盖)
+        # 小市值 + 热度 + 大跌 → 触发
+        r = run(path, in_heat=True, smallcap=True)
+        self.assertEqual(r["rules"]["D10"]["status"], "triggered")
+        self.assertIn("小市值", r["rules"]["D10"]["evidence"])
+        # 大市值 + 热度 + 大跌 → 明确放行
+        r2 = run(path, in_heat=True, smallcap=False)
+        self.assertEqual(r2["rules"]["D10"]["status"], "clear")
+        self.assertIn("大市值", r2["rules"]["D10"]["evidence"])
+        # 市值未知 → 维持旧行为(触发+提示自行确认)
+        r3 = run(path, in_heat=True, smallcap=None)
+        self.assertEqual(r3["rules"]["D10"]["status"], "triggered")
+        self.assertIn("市值未知", r3["rules"]["D10"]["evidence"])
+
+    def test_b8_sector_detail_in_evidence(self):
+        path = [100.0, 99.0, 98.0, 99.0, 100.0] * 8 + [99.0, 100.0, 101.0, 100.0]
+        bars = gen(path)
+        bars[-1] = cer._bar(100.0, 104.0, h=104.2, lo=99.8, vol=3_000_000)
+        r = cer.check_rules(cer.build_features(bars), {
+            "sector_breakout": "yes", "sector_detail": "行业「半导体」今日 4.2%,阈值 3%"})
+        self.assertIn("半导体", r["rules"]["B8"]["evidence"])
+
+    def test_auto_sector_breakout_paths(self):
+        orig = cer.get_industry_rank
+        try:
+            rank = [{"name": "板块涨幅榜", "lists": [
+                {"name": "海运港口-运营商", "chg": "0.1544",
+                 "leading_ticker": "SGLY", "leading_name": "Singularity"},
+                {"name": "半导体", "chg": "0.021",
+                 "leading_ticker": "NVDA", "leading_name": "英伟达"},
+            ]}]
+            cer.get_industry_rank = lambda market="US": rank
+            # ① --sector 指名,涨幅超阈值 → yes
+            ans, note = cer._auto_sector_breakout("GOOG.US", "US", "半导体", 0.03)
+            self.assertEqual(ans, "no")
+            self.assertIn("半导体", note)
+            ans2, _ = cer._auto_sector_breakout("GOOG.US", "US", "海运", 0.03)
+            self.assertEqual(ans2, "yes")
+            # ② 领涨股反查
+            ans3, note3 = cer._auto_sector_breakout("SGLY.US", "US", None, 0.03)
+            self.assertEqual(ans3, "yes")
+            # ③ 无法映射 → None
+            ans4, note4 = cer._auto_sector_breakout("GOOG.US", "US", None, 0.03)
+            self.assertIsNone(ans4)
+            self.assertIn("--sector", note4)
+            # ④ 指名但榜单没有 → None
+            ans5, _ = cer._auto_sector_breakout("GOOG.US", "US", "航天", 0.03)
+            self.assertIsNone(ans5)
+            # ⑤ 数据源挂 → None
+            cer.get_industry_rank = lambda market="US": (_ for _ in ()).throw(RuntimeError)
+            ans6, _ = cer._auto_sector_breakout("GOOG.US", "US", "半导体", 0.03)
+            self.assertIsNone(ans6)
+        finally:
+            cer.get_industry_rank = orig
+
+    def test_is_small_cap(self):
+        orig_run, orig_price = cer.run_cli, cer.get_underlying_price
+        try:
+            # US: 10亿股 × $50 = $500亿 → 非小市值(阈值 20亿)
+            cer.run_cli = lambda *a, **k: [{"symbol": "X.US", "total_shares": "1e9"}]
+            cer.get_underlying_price = lambda s: 50.0
+            self.assertFalse(cer._is_small_cap("X.US", 2e9))
+            # US: 1000万股 × $5 = $5000万 → 小市值
+            cer.run_cli = lambda *a, **k: [{"symbol": "Y.US", "total_shares": "10000000"}]
+            cer.get_underlying_price = lambda s: 5.0
+            self.assertTrue(cer._is_small_cap("Y.US", 2e9))
+            # HK: 20亿股 × HK$10 = HK$200亿 ≈ $25.6亿 → 非小市值
+            cer.run_cli = lambda *a, **k: [{"symbol": "Z.HK", "total_shares": "2e9"}]
+            cer.get_underlying_price = lambda s: 10.0
+            self.assertFalse(cer._is_small_cap("Z.HK", 2e9))
+            # 查询失败 → None
+            cer.run_cli = lambda *a, **k: (_ for _ in ()).throw(RuntimeError)
+            self.assertIsNone(cer._is_small_cap("X.US", 2e9))
+        finally:
+            cer.run_cli = orig_run
+            cer.get_underlying_price = orig_price
+
+    def test_closed_dates_parse(self):
+        orig = cer.get_finance_calendar
+        try:
+            cer.get_finance_calendar = lambda **k: [
+                {"date": "2026-11-26", "infos": [
+                    {"content": "感恩节", "ext": {"holiday_date": "2026-11-26",
+                                                 "holiday_type": "full_day"}}]},
+                {"date": "2026-12-25", "infos": [{"content": "圣诞", "ext": {}}]},
+            ]
+            got = cer._closed_dates("US")
+            self.assertEqual(got, {"2026-11-26", "2026-12-25"})
+            cer.get_finance_calendar = lambda **k: (_ for _ in ()).throw(RuntimeError)
+            self.assertEqual(cer._closed_dates("US"), set())
+        finally:
+            cer.get_finance_calendar = orig
 
 
 if __name__ == "__main__":

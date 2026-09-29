@@ -10,7 +10,7 @@
 > ⑦ 基本面(估值分位/分析师共识/财务健康/股息质量/多股对比/业务分部/行业排行/财务共识/公司行动/经营回顾/公司档案
 > + 内部人交易/13F机构持仓/基金持仓/机构股东)
 > ⑧ 日内微观(VWAP/盘口失衡/逐笔主动买卖/量价分布Volume Profile) ⑨ 买卖决策(仪表盘+入场纪律28条军规) ⑩ 选股器(预设策略/自定义条件)
-> —— 全部基于 Longbridge CLI 数据本地计算,含 127 项单元测试。
+> —— 全部基于 Longbridge CLI 数据本地计算,含 133 项单元测试。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -96,7 +96,8 @@
   下跌12不买(D1-D12) + 上涨6不买(U1-U6) + 高胜率买点10条(B0-B9,B0 为最低
   1:1 盈亏比闸门)。每条规则输出「触发/未触发/需人工」+ 证据(新低新高、缩量、
   RSI(6) 极值与背离、斐波那契61.8%、趋势线/颈线、支撑压力聚类、吞没/锤子/W底/
-  旗形、5/10日线首次回踩、财报距离、开盘后前30分钟、热度榜、止损距离vs承受力);
+  旗形、5/10日线首次回踩、财报距离、盘前30分钟(含休市日历)、热度榜+小市值、
+  板块当日涨幅(--sector)、止损距离vs承受力);
   人工项(刚止损/熟悉度/板块排名等)用 CLI 参数回答后转为自动判定。
 
 ### 🔍 模块⑩:选股器
@@ -183,7 +184,7 @@ python scripts/decision/analyze_buy_sell.py AAPL.US        # 六维多空对照
 python scripts/decision/check_entry_rules.py AAPL.US       # 28条军规入场检查
 ```
 
-跑单元测试(127 项,mock CLI 无网络依赖):
+跑单元测试(133 项,mock CLI 无网络依赖):
 
 ```bash
 python -m unittest discover -s tests -v

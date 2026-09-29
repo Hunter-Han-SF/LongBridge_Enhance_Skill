@@ -490,7 +490,7 @@ finance-calendar 六类别同构(`{date, list:[{date, count, infos[]}]}`):
   - **ahpremium_rate<0 = H股折价**(如 -0.266 = H 比 A 便宜 26.6%)
   - 仅 A+H 双市场标的;非双市场返回空 klines
 
-## 模块⑨补充:入场纪律检查器 check_entry_rules.py(28条军规,v0.5.0/v0.5.1)
+## 模块⑨补充:入场纪律检查器 check_entry_rules.py(28条军规,v0.5.0-v0.5.2)
 
 数据源:`kline --adjust forward`(260根) + finance-calendar(财报距离) +
 heat-rank(D10,**返回键名是 `lists` 复数**)。规则引擎为纯函数(合成K线可离线测试)。
@@ -516,9 +516,18 @@ heat-rank(D10,**返回键名是 `lists` 复数**)。规则引擎为纯函数(合
 - **B2**:突破棒之后至少要有一根回踩棒,突破当天不能自称「回踩不破」(v0.5.1)
 - **结论汇总**:manual 清单含 B 规则(如 B8 待确认板块),潜在买点待确认时
   结论为「观望(潜在买点待确认)」而非「未出现任何买点」(v0.5.1)
-- **D12 时区**:HK 按 UTC+8,US 尝试 zoneinfo(America/New_York),失败退 UTC-5
-  并按人工处理;**周末直接 clear**(法定节假日未覆盖);原文「开盘前半小时」
-  按开盘后前 30 分钟纪律执行
+- **D12 时区与语义**:HK 按 UTC+8,US 尝试 zoneinfo(America/New_York),失败退 UTC-5
+  并按人工处理;**周末与 closed-calendar 休市日直接 clear**(港股台风临时停市
+  不在日历内);**语义经用户确认(2026-09-29):「开盘前半小时不买」= 盘前
+  30 分钟(当地 9:00-9:30),不是开盘后的前 30 分钟**
+- **D10 小市值**(v0.5.2):static 的 total_shares × 现价,阈值 --smallcap-usd
+  默认 20 亿美元(HK 按 7.8 折算);小市值是该规则必要条件,大市值+热度+大跌
+  判 clear;市值查询失败退回「触发+提示自行确认」
+- **B8 板块半边**(v0.5.2):industry-rank 当日板块涨幅 ≥ --sector-chg-pct
+  (默认 3%)视为板块突破日。⚠️ 实测 CLI **无「个股→所属行业」映射命令**
+  (industry-peers 只吃 BK 码,quote/static/anomaly/industry-valuation 均无
+  行业字段),映射走两条路:--sector <行业名> 指名 / 该股为某行业 leading_ticker
+  时反查;都不中则人工
 - **人工项**:D6/D8/D9/D11 与 B8 的板块半边无数据源,CLI 参数回答后消解;
   D7 财报距离可被 --earnings-days 覆盖(日历查询失败时)
 - 离线自检:`python scripts/decision/check_entry_rules.py --demo`(无需登录)
