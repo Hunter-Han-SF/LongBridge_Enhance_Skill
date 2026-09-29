@@ -26,6 +26,7 @@ from common import (  # noqa: E402
     print_display_table,
     print_error,
     print_json,
+    to_float,
 )
 
 
@@ -42,7 +43,7 @@ def get_chain(
     if near_atm is not None and rows:
         lo = near_atm * (1 - atm_range)
         hi = near_atm * (1 + atm_range)
-        rows = [r for r in rows if lo <= r.get("strike", 0) <= hi]
+        rows = [r for r in rows if lo <= (to_float(r.get("strike")) or 0) <= hi]
 
     if output_json:
         print_json({"symbol": symbol, "expiry": expiry, "data": rows})

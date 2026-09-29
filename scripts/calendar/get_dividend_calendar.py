@@ -107,7 +107,7 @@ def fetch_dividend_calendar(
     print()
     rows = [{
         "symbol": e["symbol"],
-        "name": e["name"][:12],
+        "name": (e.get("name") or "")[:12],
         "除息日": e["ex_date"],
         "每股分红": f"{e['amount']} {e['currency']}" if e["amount"] else "",
         "类型": "常规" if e["type"] == "regular" else ("特别" if e["type"] == "special" else e["type"]),

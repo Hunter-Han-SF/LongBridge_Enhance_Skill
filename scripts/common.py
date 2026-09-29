@@ -525,7 +525,7 @@ def calc_hv(closes: list[float], annualize: int = 252) -> float | None:
     log_rets = []
     for i in range(1, len(closes)):
         prev, cur = closes[i - 1], closes[i]
-        if prev > 0 and cur > 0:
+        if prev and cur and prev > 0 and cur > 0:  # None/非正收盘价跳过(脏数据防线)
             log_rets.append(math.log(cur / prev))
     if len(log_rets) < 2:
         return None

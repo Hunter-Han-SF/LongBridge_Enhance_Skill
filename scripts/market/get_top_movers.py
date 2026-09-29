@@ -75,7 +75,8 @@ def fetch_top_movers(
         ev["price"] = stock.get("last_done")
         ev["change"] = stock.get("change")
         ev["summary"] = _extract_summary(ev)
-        ev["summary_short"] = (ev["summary"][:60] + "...") if len(ev["summary"]) > 60 else ev["summary"]
+        summary = ev.get("summary") or ""
+        ev["summary_short"] = (summary[:60] + "...") if len(summary) > 60 else summary
 
     result = {
         "market": market or "ALL",

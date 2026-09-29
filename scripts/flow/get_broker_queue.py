@@ -60,7 +60,8 @@ def fetch_broker_queue(symbol: str, levels: int = 10, output_json: bool = False)
                 "方向": side_label,
                 "档位": level.get("position", ""),
                 "经纪商家数": len(names),
-                "队列": ", ".join(dict.fromkeys(names))[:60],  # 去重保序,截断
+                "队列": ", ".join(n for n in dict.fromkeys(names)
+                                 if isinstance(n, str))[:60],  # 去重保序,截断
             })
             weight = 2 if (side == "bids" and level.get("position") == 1) else 1
             for n in dict.fromkeys(names):

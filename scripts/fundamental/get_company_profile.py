@@ -75,7 +75,7 @@ def fetch_company_profile(symbol: str, execs_count: int = 10,
         rows = [{
             "姓名": e["name"],
             "职务": str(e["title"])[:24],
-            "背景": e["biography"][:40],
+            "背景": (e.get("biography") or "")[:40],
         } for e in exec_rows[:execs_count]]
         print_display_table(rows, columns=["姓名", "职务", "背景"])
     else:

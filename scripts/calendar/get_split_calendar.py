@@ -96,10 +96,10 @@ def fetch_split_calendar(
     print()
     rows = [{
         "symbol": e["symbol"],
-        "name": e["name"][:12],
+        "name": (e.get("name") or "")[:12],
         "生效日": e["date"],
         "比例": e["ratio"],
-        "内容": e["content"][:20],
+        "内容": (e.get("content") or "")[:20],
     } for e in events]
     print_display_table(rows, columns=["symbol", "name", "生效日", "比例", "内容"])
     return result

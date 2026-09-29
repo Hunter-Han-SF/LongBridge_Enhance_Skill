@@ -138,7 +138,7 @@ def fetch_earnings_calendar(
     # 精简表格(只显示关键列)
     rows = [{
         "symbol": e["symbol"],
-        "name": e["name"][:12],
+        "name": (e.get("name") or "")[:12],
         "发布时间": e["date"],
         "盘前/后": e["date_type"],
         "预测EPS": e["estimate_eps"],

@@ -76,7 +76,7 @@ def fetch_macro_calendar(
     print(f"  日期范围: {result['date_range']}")
     print()
     rows = [{
-        "指标": e["name"][:28],
+        "指标": (e.get("name") or "")[:28],
         "时间": e["date"],
         "前值": str(e["previous"])[:10],
         "预测": str(e["estimate"])[:10],

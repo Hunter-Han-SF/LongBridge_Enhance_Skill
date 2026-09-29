@@ -109,15 +109,18 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
     print(f"{symbol} 盘口压力(买 {len(bids)} 档 / 卖 {len(asks)} 档)")
     print(f"  买盘总量: {total_bid:,.0f}   卖盘总量: {total_ask:,.0f}   "
           f"量比: {ratio:.2f}" if ratio else "  盘口单边为空")
-    print(f"  失衡率: {imbalance:+.2f}(-1 全卖盘 ~ +1 全买盘)")
+    print(f"  失衡率: {imbalance:+.2f}(-1 全卖盘 ~ +1 全买盘)"
+          if imbalance is not None else "  失衡率: N/A(盘口单边为空)")
     if spread is not None:
         print(f"  买卖价差: {spread}({spread_pct:.3f}%)")
     if center:
         print(f"  挂量加权中枢: {center}")
     if bid_wall:
-        print(f"  最大买单墙: {bid_wall['price']} × {to_float(bid_wall['volume']):,.0f}(隐形支撑)")
+        print(f"  最大买单墙: {bid_wall.get('price')} × "
+              f"{(to_float(bid_wall.get('volume')) or 0):,.0f}(隐形支撑)")
     if ask_wall:
-        print(f"  最大卖单墙: {ask_wall['price']} × {to_float(ask_wall['volume']):,.0f}(隐形阻力)")
+        print(f"  最大卖单墙: {ask_wall.get('price')} × "
+              f"{(to_float(ask_wall.get('volume')) or 0):,.0f}(隐形阻力)")
     print(f"  判断: {verdict}")
     if bids:
         print()

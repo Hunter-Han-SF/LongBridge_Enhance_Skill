@@ -74,10 +74,10 @@ def fetch_ipo_calendar(
     print()
     rows = [{
         "symbol": e["symbol"],
-        "name": e["name"][:14],
+        "name": (e.get("name") or "")[:14],
         "上市日": e["date"],
-        "行业": e["industry"][:12],
-        "内容": e["content"][:24],
+        "行业": (e.get("industry") or "")[:12],
+        "内容": (e.get("content") or "")[:24],
     } for e in events]
     print_display_table(rows, columns=["symbol", "name", "上市日", "行业", "内容"])
     return result

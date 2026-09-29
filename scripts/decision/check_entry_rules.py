@@ -197,6 +197,9 @@ def pct(x: float) -> str:
 
 def build_features(bars: list[dict]) -> dict:
     """bars: 按时间升序的 [{open,close,high,low,volume}],至少 30 根。"""
+    # 脏数据防线(与 analyze 入口同款):任一 OHLC 缺失/为 None 整根剔除
+    bars = [b for b in bars
+            if all(b.get(k) is not None for k in ("open", "close", "high", "low"))]
     c = [float(b["close"]) for b in bars]
     o = [float(b["open"]) for b in bars]
     h = [float(b["high"]) for b in bars]
@@ -277,7 +280,7 @@ def build_features(bars: list[dict]) -> dict:
         "n": n, "o": o, "c": c, "h": h, "l": l, "v": v,
         "last": last, "vol_ma5": vol_ma5, "ma5": ma5, "ma10": ma10,
         "ma20": ma20, "ma60": ma60, "rsi6": r6,
-        "rsi6_last": r6[-1], "atr": atr14, "atr_pct": atr14 / last,
+        "rsi6_last": r6[-1], "atr": atr14, "atr_pct": atr14 / last if last else 0.0,
         "pivots": pivots, "levels": levels, "supports": supports,
         "resistances": resistances, "support": sup, "resistance": res,
         "stop": stop, "target": target, "stop_dist": stop_dist, "rr": rr,
@@ -996,6 +999,10 @@ def render(symbol: str, result: dict, price, generated: str) -> None:
 
 def analyze(symbol: str, args) -> dict:
     bars = get_kline_adjusted(symbol, count=260)
+    # 脏数据防线:任一 OHLC 缺失/为 None 的 K 线整根剔除(与 v0.5.3 对
+    # calc_indicators 的处理同款),避免 float(None) 与指标错位
+    bars = [b for b in bars
+            if all(b.get(k) is not None for k in ("open", "close", "high", "low"))]
     if len(bars) < 30:
         raise RuntimeError(f"K线不足 30 根(实际 {len(bars)}),无法检查")
     f = build_features(bars)

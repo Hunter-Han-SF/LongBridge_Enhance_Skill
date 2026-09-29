@@ -86,7 +86,8 @@ def fetch_constituent(index_symbol: str, limit: int = 20, sort: str = "change",
         "涨跌%": s.get("chg_pct", ""),
         "成交额": _fmt_big(s.get("turnover")),
         "资金流入": _fmt_big(s.get("inflow")),
-        "标签": ",".join(s.get("tags", []) or [])[:12],
+        "标签": ",".join(t for t in (s.get("tags") or [])
+                          if isinstance(t, str))[:12],
     } for s in stocks]
     print_display_table(rows, columns=["symbol", "名称", "现价", "涨跌%", "成交额", "资金流入", "标签"])
     return result
