@@ -335,7 +335,7 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
     lows_p = f["piv_lows"]
     if len(lows_p) >= 2:
         a, b = lows_p[-2], lows_p[-1]
-        if b["price"] > a["price"] and b["idx"] > a["idx"]:  # 上行趋势线(低点抬高)
+        if b["price"] > a["price"]:  # 上行趋势线(低点抬高;pivot 按 idx 升序生成)
             _, line = _line_through(a["idx"], a["price"], b["idx"], b["price"])
             if cross_line_below_recently(c, line):
                 breaks.append(f"上行趋势线(现值 {line(n - 1):.2f})")
@@ -571,11 +571,18 @@ def _check_b2(f: dict) -> dict:
     if not (a["idx"] < b["idx"] and b["price"] < a["price"] * 0.98):
         return _r("none", "近期高点未走低,无下降趋势线")
     slope, line = _line_through(a["idx"], a["price"], b["idx"], b["price"])
-    # i ≤ n-2: 突破后至少要有一根回踩棒——突破当天不能自称「回踩不破」
+    # i ≤ n-2: 突破后至少要有一根回踩棒——突破当天不能自称「回踩不破」;
+    # 且必须有真实回踩动作(突破后出现过低于突破收盘的高点回撤)与回踩缩量
     for i in range(max(1, n - 8), n - 1):
         if c[i] > line(i) and c[i - 1] <= line(i - 1) and v[i] >= 1.2 * (vol5[i] or v[i]):
-            if all(c[j] >= line(j) * 0.998 for j in range(i, n)):
-                return _r("matched", f"放量突破下降趋势线(斜率{slope:.3f})后回踩,"
+            after = list(range(i + 1, n))
+            if not after:
+                continue
+            holds = all(c[j] >= line(j) * 0.998 for j in after)
+            pulled = min(c[j] for j in after) < c[i]  # 单边拉升不算「回踩」
+            shrink = max(v[j] for j in after) <= v[i]  # 回踩段不超突破量
+            if holds and pulled and shrink:
+                return _r("matched", f"放量突破下降趋势线(斜率{slope:.3f})后缩量回踩,"
                           "收盘未跌回线下")
     return _r("none", "未检出趋势线突破回踩结构")
 
@@ -586,7 +593,9 @@ def _check_b3(f: dict) -> dict:
     vol5 = f["vol_ma5"]
     for s in range(max(0, n - 20), n - 8):
         e = s
-        while e + 1 < n and c[e + 1] > c[e]:
+        # 旗杆允许杆内单日小幅洗盘(单根 ≥-0.2% 的小阴/十字不切断旗杆;
+        # 容差再宽会把缓跌的旗面也吞进杆里),整体上推由 8% 门槛把关
+        while e + 1 < n and c[e + 1] > c[e] * 0.998:
             e += 1
         pole_len = e - s + 1
         if pole_len < 3 or c[e] / c[s] - 1 < 0.08:
@@ -660,7 +669,8 @@ def _check_b5(f: dict) -> dict:
     held = c[-1] >= deepest
     body = abs(c[-1] - o[-1])
     lower = min(c[-1], o[-1]) - l[-1]
-    strong_buy = c[-1] > o[-1] or lower >= 0.5 * body
+    # max(body,ε) 守卫: 完全无实体且无下影的平十字星 0>=0 会误判「买盘明显」
+    strong_buy = c[-1] > o[-1] or (lower > 0 and lower >= 0.5 * max(body, 1e-9))
     if held and strong_buy:
         which = "10日" if deepest == ma10[-1] else "5日"
         return _r("matched", f"多头排列首次回踩{which}线不破,"
@@ -798,8 +808,25 @@ def _check_open_window(opts: dict) -> dict:
     return _r("manual", f"市场 {market} 开盘时段未内置,请自行判断")
 
 
+def _et_utc_offset(d: datetime) -> int:
+    """美东 UTC 偏移(纯算法,不依赖 zoneinfo/py3.9+): 夏令时 3月第二个周日
+    2:00 起 -4,11月第一个周日 2:00 止回落 -5。"""
+    def nth_weekday(year: int, month: int, weekday: int, n: int) -> int:
+        # 该月第 n 个 weekday 的日期(weekday: 周一=0…周日=6)
+        d0 = datetime(year, month, 1)
+        first_wd = d0.weekday()
+        return 1 + (weekday - first_wd) % 7 + 7 * (n - 1)
+
+    y = d.year
+    dst_start = datetime(y, 3, nth_weekday(y, 3, 6, 2), 2)   # 3月第2个周日
+    dst_end = datetime(y, 11, nth_weekday(y, 11, 6, 1), 2)   # 11月第1个周日
+    return -4 if dst_start <= d < dst_end else -5
+
+
 def _market_local_now(symbol: str) -> datetime | None:
-    """尽力取市场当地时间(HK=UTC+8;US 用 zoneinfo,失败退 UTC-5)。"""
+    """尽力取市场当地时间。HK=UTC+8(固定);US 优先 zoneinfo(带 tzdata 时
+    最准),不可用时退纯算法夏令时规则——避免 py3.8 无 zoneinfo 时固定 UTC-5
+    导致夏令时期间窗口错位 1 小时。"""
     now = datetime.utcnow()
     if symbol.upper().endswith(".HK"):
         from datetime import timedelta
@@ -809,7 +836,7 @@ def _market_local_now(symbol: str) -> datetime | None:
         return datetime.now(ZoneInfo("America/New_York")).replace(tzinfo=None)
     except Exception:
         from datetime import timedelta
-        return now + timedelta(hours=-5)
+        return now + timedelta(hours=_et_utc_offset(now))
 
 
 # ---------------------------------------------------------------------------

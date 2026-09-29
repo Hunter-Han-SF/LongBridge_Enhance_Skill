@@ -190,6 +190,8 @@ def _dim_event(symbol: str, bulls: list, bears: list) -> tuple[float | None, str
         market = symbol.rsplit(".", 1)[-1] if "." in symbol else "US"
         buckets = get_finance_calendar(category="report", market=market, symbol=symbol, count=20)
         today = datetime.now().strftime("%Y-%m-%d")
+        # 取「最近一次」未来财报(日历返回乱序时不能只拿第一个命中的)
+        best_days = None
         for b in buckets:
             for info in b.get("infos", []):
                 d = str(info.get("date", "")).replace(".", "-")[:10]
@@ -197,11 +199,13 @@ def _dim_event(symbol: str, bulls: list, bears: list) -> tuple[float | None, str
                     days = (datetime.strptime(d, "%Y-%m-%d") - datetime.strptime(today, "%Y-%m-%d")).days
                 except ValueError:
                     continue
-                if days >= 0:
-                    if days <= 7:
-                        bears.append(f"事件: {days} 天后发财报(波动风险)")
-                        return 30.0, f"{days} 天后财报"
-                    return 90.0, f"下次财报还有 {days} 天"
+                if days >= 0 and (best_days is None or days < best_days):
+                    best_days = days
+        if best_days is not None:
+            if best_days <= 7:
+                bears.append(f"事件: {best_days} 天后发财报(波动风险)")
+                return 30.0, f"{best_days} 天后财报"
+            return 90.0, f"下次财报还有 {best_days} 天"
         return 70.0, "日历中无近期财报"
     except Exception as e:
         return None, f"数据失败({str(e)[:30]})"

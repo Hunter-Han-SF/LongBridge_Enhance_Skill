@@ -123,6 +123,12 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
         print_display_table([{"档位": r.get("position"), "价格": r.get("price"),
                               "挂量": r.get("volume")} for r in bids[:5]],
                             columns=["档位", "价格", "挂量"])
+    if asks:
+        print()
+        print("卖档:")
+        print_display_table([{"档位": r.get("position"), "价格": r.get("price"),
+                              "挂量": r.get("volume")} for r in asks[:5]],
+                            columns=["档位", "价格", "挂量"])
     return result
 
 

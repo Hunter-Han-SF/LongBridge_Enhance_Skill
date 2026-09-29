@@ -160,12 +160,24 @@ class TestBuySetups(unittest.TestCase):
                  94, 93, 92, 91, 90, 89, 88, 87, 86, 85,             # 下跌段2
                  86, 87, 88, 89, 90,                                 # 反弹到 90(pivot高)
                  89, 88, 87, 86, 85, 84.5, 84, 84, 84, 84] +         # 下跌段3
-                [87.0, 87.5, 88.0])                                  # 放量突破并站稳
+                [87.0, 86.6, 87.2])                                  # 放量突破→真回踩→企稳
         bars = gen(path)
-        for i in (len(bars) - 3, len(bars) - 2, len(bars) - 1):
-            bars[i]["volume"] = 2_500_000  # 突破放量
+        bars[-3]["volume"] = 2_500_000  # 仅突破棒放量,回踩缩量
         r = run(bars)
         self.assertEqual(r["rules"]["B2"]["status"], "matched")
+        self.assertIn("缩量回踩", r["rules"]["B2"]["evidence"])
+
+    def test_b2_continuous_rise_is_not_pullback(self):
+        """v0.5.3: 突破后单边拉升不构成「回踩」,不能匹配 B2。"""
+        path = ([100, 99, 98, 97, 96, 95, 94, 93, 92, 91,
+                 92, 93, 94, 95,
+                 94, 93, 92, 91, 90, 89, 88, 87, 86, 85,
+                 86, 87, 88, 89, 90,
+                 89, 88, 87, 86, 85, 84.5, 84, 84, 84, 84] + [87.0, 87.5, 88.0])
+        bars = gen(path)
+        bars[-3]["volume"] = 2_500_000
+        r = run(bars)
+        self.assertEqual(r["rules"]["B2"]["status"], "none")
 
     def test_b4_w_bottom_neckline(self):
         path = ([100, 98, 96, 94, 92, 90, 88, 86.5,                 # 下跌

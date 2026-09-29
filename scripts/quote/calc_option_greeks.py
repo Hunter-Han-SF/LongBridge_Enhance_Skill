@@ -77,7 +77,7 @@ def calc_portfolio_greeks(legs: list[dict], rate: float = 0.045) -> dict:
         if not greeks:
             raise ValueError(f"无法计算 {ul} {expiry} {strike} {ot} 的 Greeks(可能缺 IV 或到期日已过期)")
 
-        weighted = {k: greeks[k] * sign * qty for k in totals}
+        weighted = {k: greeks[k] * sign * qty * 100 for k in totals}
         for k in totals:
             totals[k] += weighted[k]
 

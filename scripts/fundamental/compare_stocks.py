@@ -31,6 +31,9 @@ from common import (  # noqa: E402
 )
 
 # 对比维度: (key, 中文名, lower_better=True 表示数值越低越好)
+# 估值倍数(pe/pb/ps)为负 = 亏损/净资产为负,数值越小越"便宜"的排序会把
+# 负值错排成最便宜 → 排名与最优标记只计入正值,负值不参与该维度
+_VALUATION_KEYS = {"pe", "pb", "ps"}
 _METRICS = [
     ("pe", "PE", True),
     ("pb", "PB", True),
@@ -64,18 +67,21 @@ def fetch_compare(symbols: list[str], currency: str = "USD",
     for r in rows:
         r["symbol"] = counter_id_to_symbol(r.get("counter_id", "")) or r.get("counter_id", "")
 
-    # 同组内排名:第 1 名 = 该维度最优(估值类越低越好,质量类越高越好)
+    # 同组内排名:第 1 名 = 该维度最优(估值类越低越好,质量类越高越好;
+    # 估值倍数为负不参与——负 PE 不是"更便宜"而是亏损)
     ranks: dict[str, dict[str, int]] = {}
     for key, label, lower_better in _METRICS:
         vals = [(r.get("symbol"), to_float(r.get(key))) for r in rows]
-        vals = [(s, v) for s, v in vals if v is not None]
+        vals = [(s, v) for s, v in vals
+                if v is not None and (v > 0 if key in _VALUATION_KEYS else True)]
         for i, (s, _) in enumerate(sorted(vals, key=lambda x: x[1],
                                           reverse=not lower_better)):
             ranks.setdefault(s, {})[key] = i + 1
 
     def _best(key: str, lower_better: bool) -> str | None:
         pairs = [(r.get("symbol"), to_float(r.get(key))) for r in rows]
-        pairs = [(s, v) for s, v in pairs if v is not None]
+        pairs = [(s, v) for s, v in pairs
+                 if v is not None and (v > 0 if key in _VALUATION_KEYS else True)]
         if not pairs:
             return None
         return (min if lower_better else max)(pairs, key=lambda x: x[1])[0]

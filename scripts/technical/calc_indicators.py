@@ -47,16 +47,18 @@ MA_PERIODS = (5, 10, 20, 60, 120, 250)
 def compute_all(symbol: str, count: int = 300) -> dict:
     """拉取前复权 K 线并计算全套指标。返回结构化 dict(供其他脚本复用)。"""
     klines = get_kline_adjusted(symbol, count=count)
-    closes = [to_float(k.get("close")) for k in klines]
-    highs = [to_float(k.get("high")) for k in klines]
-    lows = [to_float(k.get("low")) for k in klines]
-    vols = [to_float(k.get("volume")) for k in klines]
-    if not closes or any(c is None for c in closes[-30:]):
+    # 同位过滤: 任一基础字段缺失则整根剔除——四列各自独立过滤会造成时序错位,
+    # 完全不过滤则 None 会打进指标计算
+    rows = [(to_float(k.get("close")), to_float(k.get("high")),
+             to_float(k.get("low")), to_float(k.get("volume")))
+            for k in klines]
+    rows = [r for r in rows if all(x is not None for x in r)]
+    closes = [r[0] for r in rows]
+    highs = [r[1] for r in rows]
+    lows = [r[2] for r in rows]
+    vols = [r[3] for r in rows]
+    if not closes or len(closes) < 30:
         raise ValueError(f"K 线数据不足,无法计算指标({symbol})")
-    closes = [c for c in closes if c is not None]
-    highs = [h for h in highs if h is not None]
-    lows = [l for l in lows if l is not None]
-    vols = [v for v in vols if v is not None]
 
     price = closes[-1]
 
@@ -196,7 +198,9 @@ def show_indicators(symbol: str, count: int = 300, output_json: bool = False) ->
         {"指标": "BOLL(20,2)", "值": f"上轨 {b['upper']:.2f} / 中轨 {b['mid']:.2f} / 下轨 {b['lower']:.2f}"},
         {"指标": "BOLL 带宽", "值": f"{b['bandwidth']:.1f}%" if b["bandwidth"] else "N/A"},
         {"指标": "%B(带内位置)", "值": f"{b['percent_b']:.2f}(0=下轨,0.5=中轨,1=上轨)"},
-        {"指标": "ATR(14)", "值": f"{ind['atr14']:.2f}({ind['atr_pct']:.2f}%/日)"},
+        {"指标": "ATR(14)", "值": (f"{ind['atr14']:.2f}({ind['atr_pct']:.2f}%/日)"
+                                  if ind["atr14"] is not None and ind["atr_pct"] is not None
+                                  else "N/A")},
     ]
     print_display_table(rows, columns=["指标", "值"])
     print()

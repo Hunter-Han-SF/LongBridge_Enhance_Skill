@@ -19,7 +19,7 @@ description: |
 license: MIT
 metadata:
   author: community
-  version: "0.5.2"
+  version: "0.5.3"
   risk_level: read_only
   requires_login: false
   default_install: true

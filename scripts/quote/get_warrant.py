@@ -87,7 +87,12 @@ def _list_mode(symbol: str, sort: str, count: int, enrich: int,
         rows = [r for r in rows if r["方向"] == want]
 
     key_map = {"leverage": "杠杆", "expiry": "到期日", "price": "现价"}
-    rows.sort(key=lambda r: (to_float(r[key_map[sort]]) or 0), reverse=(sort != "expiry"))
+    if sort == "expiry":
+        # 到期日是 ISO 日期字符串,字典序即时间序;to_float 会得到 0 使排序失效
+        rows.sort(key=lambda r: str(r["到期日"]))
+    else:
+        rows.sort(key=lambda r: (to_float(r[key_map[sort]]) or 0),
+                  reverse=(sort != "expiry"))
     total = len(rows)
     shown = rows[:count]
 

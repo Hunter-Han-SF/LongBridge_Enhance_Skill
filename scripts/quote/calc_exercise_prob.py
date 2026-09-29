@@ -61,6 +61,30 @@ def exercise_prob(
         raise ValueError(f"chain 中无 {strike} 行权价的有效 IV")
 
     T = days_to_years(expiry)
+    if T <= 0:
+        # 到期日当天/已过期: 概率退化为价内外判定,σ√T=0 不能进 BS 公式
+        itm = (price > strike) if cp == "C" else (price < strike)
+        p = 100.0 if itm else 0.0
+        result = {
+            "occ_symbol": build_occ_code(*parse_ul(underlying), expiry, strike, option_type),
+            "underlying": underlying,
+            "expiry": expiry,
+            "strike": strike,
+            "type": "CALL" if cp == "C" else "PUT",
+            "underlying_price": price,
+            "iv_pct": round(iv * 100, 2),
+            "days_to_expiry": 0,
+            "exercise_prob_bs": p,
+            "exercise_prob_delta": p,
+            "method_note": "到期日已到/过期,按价内外直接判定(0/100%),无分布意义",
+        }
+        if output_json:
+            print_json(result)
+            return result
+        print(f"行权概率: {result['occ_symbol']}")
+        print(f"  ⚠️ {result['method_note']}")
+        return result
+
     # BS d2
     d1 = (math.log(price / strike) + (rate + 0.5 * iv ** 2) * T) / (iv * math.sqrt(T))
     d2 = d1 - iv * math.sqrt(T)

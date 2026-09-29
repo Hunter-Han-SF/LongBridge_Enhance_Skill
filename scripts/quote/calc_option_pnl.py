@@ -153,11 +153,15 @@ def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
         "cost_per_share": round(total_cost / 100, 4),
         "net_credit": total_cost < 0,  # 净收入(卖方策略)
         "break_even_points": break_evens,
-        "max_profit": round(max_profit, 2) if not is_profit_capped else f"{round(max_profit,2)} (有限)",
-        "max_loss": round(max_loss, 2) if not is_loss_capped else f"{round(max_loss,2)} (有限)",
+        # 未封顶方向的数值只是 ±30% 扫描边界值,不代表真实极值,必须标注
+        "max_profit": (f"{round(max_profit, 2)} (有限)" if is_profit_capped
+                       else f"{round(max_profit, 2)} (±30%扫描区间内,该方向未封顶)"),
+        "max_loss": (f"{round(max_loss, 2)} (有限)" if is_loss_capped
+                     else f"{round(max_loss, 2)} (±30%扫描区间内,该方向未封顶)"),
         "legs_detail": leg_costs,
         "curve_points": len(curve),
-        "note": "到期损益(基于各腿 last price 估算成本,不含时间价值/组合摆盘价)",
+        "note": "到期损益(基于各腿 last price 估算成本,不含时间价值/组合摆盘价;"
+                "最大盈亏为现价±30%扫描区间内的值,未封顶方向实际可更大)",
     }
 
     if output_json:

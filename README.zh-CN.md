@@ -10,7 +10,7 @@
 > ⑦ 基本面(估值分位/分析师共识/财务健康/股息质量/多股对比/业务分部/行业排行/财务共识/公司行动/经营回顾/公司档案
 > + 内部人交易/13F机构持仓/基金持仓/机构股东)
 > ⑧ 日内微观(VWAP/盘口失衡/逐笔主动买卖/量价分布Volume Profile) ⑨ 买卖决策(仪表盘+入场纪律28条军规) ⑩ 选股器(预设策略/自定义条件)
-> —— 全部基于 Longbridge CLI 数据本地计算,含 133 项单元测试。
+> —— 全部基于 Longbridge CLI 数据本地计算,含 141 项单元测试。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -184,7 +184,7 @@ python scripts/decision/analyze_buy_sell.py AAPL.US        # 六维多空对照
 python scripts/decision/check_entry_rules.py AAPL.US       # 28条军规入场检查
 ```
 
-跑单元测试(133 项,mock CLI 无网络依赖):
+跑单元测试(141 项,mock CLI 无网络依赖):
 
 ```bash
 python -m unittest discover -s tests -v
