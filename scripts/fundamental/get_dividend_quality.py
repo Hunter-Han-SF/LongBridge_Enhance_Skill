@@ -80,7 +80,9 @@ def analyze(symbol: str, output_json: bool = False, quiet: bool = False) -> dict
         ey, em = _year(d.get("ex_date")), _month(d.get("ex_date"))
         if not (ey and em):
             continue
-        if (ey == cur_year) or (ey == cur_year - 1 and em >= (this_month or 12)):
+        # 前一年取同月之后(严格大于):>= 会把去年同月也算进,窗口变 13 个月,
+        # 季付股数进 5 期、年付股翻倍,TTM 股息率高估
+        if (ey == cur_year) or (ey == cur_year - 1 and em > (this_month or 12)):
             ttm_total += amt
     ttm_yield = ttm_total / price * 100 if price else None
 

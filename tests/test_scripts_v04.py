@@ -178,8 +178,8 @@ class TestMacroDataScript(unittest.TestCase):
         by_period = {h["period"]: h for h in r["history"]}
         self.assertEqual(by_period["2026-07-01"]["vs_forecast"], "待发布")
         self.assertEqual(by_period["2026-06-01"]["vs_forecast"], "符合")
-        self.assertEqual(by_period["2026-05-01"]["vs_forecast"], "超预期")
-        self.assertEqual(r["beat_rate"], 0.5)  # 1 超预期 / 2 已发布
+        self.assertEqual(by_period["2026-05-01"]["vs_forecast"], "高于预期")
+        self.assertEqual(r["beat_rate"], 0.5)  # 1 高于预期 / 2 已发布
 
     @mock.patch.object(common, "run_cli", side_effect=dispatch)
     def test_empty_history_raises(self, _m):

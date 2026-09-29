@@ -44,8 +44,7 @@ def analyze(symbol: str, date: str | None = None, output_json: bool = False) -> 
     vwap_trend = None
     if len(rows) >= 60:
         vwap_30m_ago = to_float(rows[-30].get("avg_price"))
-        vwap_open = to_float(rows[0].get("avg_price"))
-        if vwap_30m_ago and vwap_open:
+        if vwap_30m_ago:
             vwap_trend = "上行" if vwap > vwap_30m_ago else ("下行" if vwap < vwap_30m_ago else "走平")
 
     # 价格在 VWAP 上方的时间占比(当日强弱持续性)

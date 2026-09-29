@@ -69,7 +69,8 @@ def _save_history(symbol: str, data: list[dict]) -> None:
 
 
 def get_current_atm_iv(symbol: str) -> tuple[float | None, dict | None]:
-    """取当前 ATM IV(流动性最好的行权价的 call+put IV 均值)。返回 (iv, 元信息)。"""
+    """取当前 ATM IV(离现价最近且有有效 IV 的行权价,call+put IV 均值)。
+    返回 (iv, 元信息)。"""
     expirations = get_option_expirations(symbol)
     if not expirations:
         return None, None
@@ -80,12 +81,22 @@ def get_current_atm_iv(symbol: str) -> tuple[float | None, dict | None]:
     if not chain:
         return None, None
 
-    # 用流动性最好的行权价作为 ATM 近似
-    best, best_vol = None, -1
-    for r in chain:
-        vol = (to_float(r.get("call_vol")) or 0) + (to_float(r.get("put_vol")) or 0)
-        if vol > best_vol:
-            best_vol, best = vol, r
+    # ATM = 离现价最近且有有效 IV 的行权价(炒作期成交量最大的是深度 OTM,
+    # 微笑偏斜下会把 ATM IV 带偏);现价拿不到时回退流动性最好
+    price = get_underlying_price(symbol)
+    best = None
+    if price:
+        def _has_iv(r):
+            civ, piv = to_float(r.get("call_iv")), to_float(r.get("put_iv"))
+            return (civ is not None and civ > 0) or (piv is not None and piv > 0)
+        pool = [r for r in chain if _has_iv(r)] or chain
+        best = min(pool, key=lambda r: abs((to_float(r.get("strike")) or 0) - price))
+    else:
+        best_vol = -1
+        for r in chain:
+            vol = (to_float(r.get("call_vol")) or 0) + (to_float(r.get("put_vol")) or 0)
+            if vol > best_vol:
+                best_vol, best = vol, r
     if not best:
         return None, None
     civ = to_float(best.get("call_iv"))

@@ -322,8 +322,10 @@ def max_drawdown(closes: list[float]) -> float:
 
 
 def daily_returns(closes: list[float]) -> list[float]:
-    """日收益率序列(比输入少一个元素)。"""
-    return [closes[i] / closes[i - 1] - 1 for i in range(1, len(closes)) if closes[i - 1]]
+    """日收益率序列(比输入少一个元素;无效价 0/None 按 0 收益占位,保持长度,
+    下游按日期对齐的用法才不会错位)。"""
+    return [(closes[i] / closes[i - 1] - 1) if (closes[i - 1] and closes[i]) else 0.0
+            for i in range(1, len(closes))]
 
 
 def beta(asset_rets: list[float], market_rets: list[float]) -> float | None:

@@ -600,6 +600,8 @@ def bs_price(S: float, K: float, T: float, r: float, sigma: float, cp: str = "C"
         sigma: 波动率(小数,如 0.23)
         cp: 'C' Call / 'P' Put
     """
+    if S <= 0 or K <= 0:
+        return 0.0  # 脏输入防护:S/K 非正无法定义价格,避免 log/除零崩溃
     if T <= 0 or sigma <= 0:
         intrinsic = max(S - K, 0) if cp == "C" else max(K - S, 0)
         return intrinsic
@@ -617,6 +619,9 @@ def bs_greeks(S: float, K: float, T: float, r: float, sigma: float, cp: str = "C
         {delta, gamma, theta, vega, rho}(theta/vega 已换算为常用单位:
         theta 为每日,vega 为每 1% 波动率变化)
     """
+    if S <= 0 or K <= 0:
+        # 脏输入防护:S/K 非正无法定义 Greeks,返回全 0 退化值(与 T≤0 分支同样式)
+        return {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
     if T <= 0 or sigma <= 0:
         delta = 1.0 if (cp == "C" and S > K) else (0.0 if cp == "C" else (-1.0 if S < K else 0.0))
         return {"delta": delta, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}

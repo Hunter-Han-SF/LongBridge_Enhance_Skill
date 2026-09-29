@@ -15,7 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
@@ -34,12 +34,52 @@ _STAGES = [
 ]
 
 
-def _days_until(ts) -> str:
+class _EtRuleTz(tzinfo):
+    """美东时区(zoneinfo/tzdata 不可用时的纯算法兜底):
+    夏令时 3月第2个周日 2:00 起 -4,11月第1个周日 2:00 止回落 -5。"""
+
+    def utcoffset(self, dt):
+        if dt is None:
+            return None
+        naive = dt.replace(tzinfo=None)
+
+        def _nth_wd(month, weekday, n):
+            first = datetime(naive.year, month, 1).weekday()
+            return 1 + (weekday - first) % 7 + 7 * (n - 1)
+
+        dst = (datetime(naive.year, 3, _nth_wd(3, 6, 2), 2) <= naive
+               < datetime(naive.year, 11, _nth_wd(11, 6, 1), 2))
+        return timedelta(hours=-4 if dst else -5)
+
+    def dst(self, dt):
+        return timedelta(0)
+
+    def tzname(self, dt):
+        return "US/Eastern"
+
+
+def _market_tz(market: str):
+    """IPO 市场代码 → 当地时区。上市日时间戳是当地午夜(实测 HK ipo_date
+    =香港 0 点),按 UTC 解析会提前一天。HK 固定 UTC+8;US 美东(zoneinfo
+    优先,无 tzdata 时退纯算法);其余市场维持 UTC 旧行为。"""
+    m = str(market).lower()
+    if m == "hk":
+        return timezone(timedelta(hours=8))
+    if m == "us":
+        try:
+            from zoneinfo import ZoneInfo
+            return ZoneInfo("America/New_York")
+        except Exception:
+            return _EtRuleTz()
+    return timezone.utc
+
+
+def _days_until(ts, tz) -> str:
     f = to_float(ts)
     if not f:
         return ""
-    d = datetime.fromtimestamp(f, tz=timezone.utc).date()
-    delta = (d - datetime.now(timezone.utc).date()).days
+    d = datetime.fromtimestamp(f, tz=tz).date()
+    delta = (d - datetime.now(tz).date()).days
     return f"{delta:+d}天" if delta != 0 else "今天"
 
 
@@ -52,8 +92,9 @@ def fetch_ipo_listings(stage: str = "wait-listing", output_json: bool = False) -
     for market, items in data.items():
         if not items:
             continue
+        tz = _market_tz(market)
         for it in items:
-            it["days_to_ipo"] = _days_until(it.get("ipo_date"))
+            it["days_to_ipo"] = _days_until(it.get("ipo_date"), tz)
         result["markets"][market] = items
 
     if not result["markets"]:
@@ -66,6 +107,7 @@ def fetch_ipo_listings(stage: str = "wait-listing", output_json: bool = False) -
     stage_label = {"subscriptions": "认购中", "wait-listing": "待上市(暗盘)",
                    "listed": "已上市"}.get(stage.replace("us-", ""), stage)
     for market, items in result["markets"].items():
+        tz = _market_tz(market)
         print(f"{market.upper()} {stage_label} IPO({len(items)} 只)")
         print()
         rows = [{
@@ -74,7 +116,7 @@ def fetch_ipo_listings(stage: str = "wait-listing", output_json: bool = False) -
             "发行价": it.get("issue_price", ""),
             "币种": it.get("currency", ""),
             "上市日": datetime.fromtimestamp(to_float(it.get("ipo_date")) or 0,
-                                            tz=timezone.utc).strftime("%Y-%m-%d")
+                                            tz=tz).strftime("%Y-%m-%d")
                     if to_float(it.get("ipo_date")) else "",
             "倒计时": it.get("days_to_ipo", ""),
             "简介": str(it.get("description", ""))[:20],

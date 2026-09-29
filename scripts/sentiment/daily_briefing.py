@@ -40,6 +40,17 @@ def _section(title: str) -> str:
     return f"\n{'─' * 50}\n  {title}\n{'─' * 50}"
 
 
+def _temp_emoji(t: float | None) -> str:
+    """温度档位表情。0 度是最冷端,必须判偏冷;真值判断会把 0 吞进「温和」。"""
+    if t is None:
+        return "🌡️温和"
+    if t >= 60:
+        return "🔥偏热"
+    if t < 40:
+        return "❄️偏冷"
+    return "🌡️温和"
+
+
 def generate_briefing(market: str = "US", include_pc: bool = True, output_json: bool = False) -> dict:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     briefing = {"market": market, "generated_at": now, "sections": {}}
@@ -52,7 +63,7 @@ def generate_briefing(market: str = "US", include_pc: bool = True, output_json: 
         briefing["sections"]["market_temp"] = temp
         lines.append(_section("🌡️ 市场温度"))
         t = to_float(temp.get("temperature"))
-        emoji = "🔥偏热" if t and t >= 60 else ("❄️偏冷" if t and t < 40 else "🌡️温和")
+        emoji = _temp_emoji(t)
         lines.append(f"  温度: {t}/100 {emoji}")
         lines.append(f"  估值分位: {temp.get('valuation')}  情绪: {temp.get('sentiment')}")
         lines.append(f"  {temp.get('description','')}")

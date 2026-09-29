@@ -386,12 +386,12 @@ python scripts/sentiment/get_heat_rank.py --key hot_all-us [--count 20] [--json]
 ```
 - 综合热度/热度上升/热门交易/热议/关注度,各市场(US/HK/CN/SG)
 
-#### 宏观经济指标(发现 + 历史 + 超逊预期统计)
+#### 宏观经济指标(发现 + 历史 + 高于/低于预期统计)
 ```bash
 python scripts/sentiment/get_macro_data.py --keyword CPI --country US             # 找指标
 python scripts/sentiment/get_macro_data.py --code 30771936 --count 12 [--json]    # 查历史
 ```
-- 历史模式每期算 actual vs forecast 偏差,统计超/逊预期率
+- 历史模式每期算 actual vs forecast 偏差,统计高于/低于预期率
 - 与 get_macro_calendar.py 互补:那个按日期看即将发布,本脚本按指标看历史
 
 ---
@@ -822,7 +822,7 @@ longbridge-pro/
     │   ├── get_ipo_listings.py / get_ipo_detail.py
     ├── sentiment/             # ⑤ 市场情绪
     │   ├── get_market_temp.py / get_heat_rank.py / daily_briefing.py
-    │   └── get_macro_data.py           # 宏观指标(发现+历史+超逊预期)
+    │   └── get_macro_data.py           # 宏观指标(发现+历史+高于/低于预期)
     ├── technical/             # ⑥ 技术面
     │   ├── indicators.py               # 指标数学库(纯函数,可复用)
     │   ├── calc_indicators.py          # 全套指标 + 信号检测

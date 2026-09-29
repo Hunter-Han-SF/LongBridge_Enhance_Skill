@@ -58,7 +58,9 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
     if bids and asks:
         num = sum(p * v for p, v in zip(_px(bids), bid_vols) if p) + \
               sum(p * v for p, v in zip(_px(asks), ask_vols) if p)
-        den = sum(bid_vols) + sum(ask_vols)
+        # 分子分母同口径:都只累加价格可解析的档位(价格缺失的档不进加权)
+        den = sum(v for p, v in zip(_px(bids), bid_vols) if p) + \
+              sum(v for p, v in zip(_px(asks), ask_vols) if p)
         center = num / den if den else None
 
     # 买卖价差

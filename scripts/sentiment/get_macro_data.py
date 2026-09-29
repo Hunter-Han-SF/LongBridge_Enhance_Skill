@@ -1,4 +1,4 @@
-"""宏观经济指标数据(指标发现 + 历史发布记录 + 逊预期/超预期统计)。
+"""宏观经济指标数据(指标发现 + 历史发布记录 + 高于/低于预期统计)。
 
 对应 Longbridge CLI: macrodata [--keyword] / macrodata <CODE> --start --end
 与 get_macro_calendar.py 互补:那个按日期看即将发布,本脚本按指标看历史。
@@ -7,7 +7,7 @@
   1. 列指标: python get_macro_data.py --keyword CPI --country US
   2. 查历史: python get_macro_data.py --code <indicator_code> --count 24
 
-加工: 每期计算 actual vs forecast 的偏离(surprise),统计超/逊预期比例。
+加工: 每期计算 actual vs forecast 的偏离(surprise),统计高于/低于预期比例。
 
 用法:
     python get_macro_data.py                                    # 全部指标(第1页)
@@ -68,7 +68,7 @@ def _history_mode(code: str, count: int, start: str | None, end: str | None,
     if is_empty(rows):
         raise ValueError(f"无历史数据(code={code})。确认 code 来自列表模式输出。")
 
-    # surprise = actual - forecast;超/逊预期统计
+    # surprise = actual - forecast;高于/低于预期统计
     beats = misses = total = 0
     for r in rows:
         a, f = to_float(r.get("actual_value")), to_float(r.get("forecast_value"))
@@ -77,10 +77,10 @@ def _history_mode(code: str, count: int, start: str | None, end: str | None,
             total += 1
             if a > f:
                 beats += 1
-                r["vs_forecast"] = "超预期"
+                r["vs_forecast"] = "高于预期"
             elif a < f:
                 misses += 1
-                r["vs_forecast"] = "逊预期"
+                r["vs_forecast"] = "低于预期"
             else:
                 r["vs_forecast"] = "符合"
         else:
@@ -105,7 +105,7 @@ def _history_mode(code: str, count: int, start: str | None, end: str | None,
 
     print(f"宏观指标 {code} 历史发布({len(rows)} 期)")
     if total:
-        print(f"  超预期 {beats} 次 / 逊预期 {misses} 次(超预期率 {result['beat_rate']:.0%})")
+        print(f"  高于预期 {beats} 次 / 低于预期 {misses} 次(高于预期率 {result['beat_rate']:.0%})")
     print()
     table = [{
         "period": r.get("period", ""),

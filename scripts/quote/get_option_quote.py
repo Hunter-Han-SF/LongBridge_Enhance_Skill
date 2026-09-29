@@ -94,11 +94,11 @@ def get_quote(
             m = metrics.get(lbr_sym) or {}
             if m.get("delta") is not None:
                 greeks = {
-                    "delta": to_float(m.get("delta")),
-                    "gamma": to_float(m.get("gamma")),
-                    "theta": to_float(m.get("theta")),
-                    "vega": to_float(m.get("vega")),
-                    "rho": to_float(m.get("rho")),
+                    "delta": to_float(m.get("delta")) or 0.0,
+                    "gamma": to_float(m.get("gamma")) or 0.0,
+                    "theta": to_float(m.get("theta")) or 0.0,
+                    "vega": to_float(m.get("vega")) or 0.0,
+                    "rho": to_float(m.get("rho")) or 0.0,
                 }
                 if m.get("iv") and iv is None:
                     iv = m["iv"]

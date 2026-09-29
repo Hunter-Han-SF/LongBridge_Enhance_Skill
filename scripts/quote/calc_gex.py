@@ -73,14 +73,17 @@ def calc_gex(
             # 原生 gamma 缺失时回退 BS(chain IV)
             chain_row = next((r for r in chain
                               if abs((to_float(r.get("strike")) or 0) - strike_s) < 0.001), {})
-            def _gamma(native, iv):
+            def _gamma(native, iv, cp):
                 if native is not None:
                     return native, True
-                iv_val = iv if iv is not None else to_float(chain_row.get("call_iv"))
-                return (bs_greeks(price, strike_s, T, rate, iv_val, "C")["gamma"]
+                # IV 回退按方向取同侧 chain IV(偏斜下 call_iv ≠ put_iv,
+                # put 侧回退用 call_iv 会失真)
+                iv_val = iv if iv is not None else to_float(
+                    chain_row.get("call_iv" if cp == "C" else "put_iv"))
+                return (bs_greeks(price, strike_s, T, rate, iv_val, cp)["gamma"]
                         if iv_val and iv_val > 0 else 0.0), False
-            call_gamma, ok1 = _gamma(v["call_gamma"], v["call_iv"])
-            put_gamma, ok2 = _gamma(v["put_gamma"], v["put_iv"])
+            call_gamma, ok1 = _gamma(v["call_gamma"], v["call_iv"], "C")
+            put_gamma, ok2 = _gamma(v["put_gamma"], v["put_iv"], "P")
             native_gamma_used += int(ok1) + int(ok2)
 
             call_gex = call_gamma * call_oi * 100 * price * price * 0.01

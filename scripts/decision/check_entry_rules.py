@@ -228,7 +228,7 @@ def build_features(bars: list[dict]) -> dict:
     # 止损/目标与盈亏比(B0/D5/U4 共用)
     stop = sup["price"] if sup else None
     target = res["price"] if res else None
-    stop_dist = (last - stop) / last if stop else None
+    stop_dist = (last - stop) / last if (stop and last) else None
     rr = round((target - last) / (last - stop), 2) if stop and target and last > stop else None
 
     # 趋势背景
@@ -598,7 +598,7 @@ def _check_b3(f: dict) -> dict:
         while e + 1 < n and c[e + 1] > c[e] * 0.998:
             e += 1
         pole_len = e - s + 1
-        if pole_len < 3 or c[e] / c[s] - 1 < 0.08:
+        if pole_len < 3 or not c[s] or c[e] / c[s] - 1 < 0.08:
             continue
         flag = list(range(e + 1, n - 1))  # 旗面不含最后突破棒
         if not 3 <= len(flag) <= 8:
@@ -743,7 +743,7 @@ def _check_b8(f: dict, opts: dict) -> dict:
         level = max(prior) if prior else max(h[max(0, b - 20):b])
         body = c[b] - o[b]
         upper = h[b] - max(c[b], o[b])
-        if v[b] >= EXPAND_VOL * (vol5[b] or v[b]) and body > 0 and \
+        if c[b] and v[b] >= EXPAND_VOL * (vol5[b] or v[b]) and body > 0 and \
            body / c[b] >= 0.03 and upper <= 0.3 * body and c[b] > level:
             ok = True
             break
