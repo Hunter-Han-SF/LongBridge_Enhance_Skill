@@ -44,6 +44,14 @@ from indicators import (  # noqa: E402
 MA_PERIODS = (5, 10, 20, 60, 120, 250)
 
 
+def _ma_position(price: float, ma: float | None) -> str:
+    """均线相对位置标签。ma 为 None(历史不足算不出)时必须 N/A——
+    裸 else 会把「算不出」误标成「价格在均线下方」。"""
+    if ma is None:
+        return "N/A"
+    return "上方 🟢" if price > ma else "下方 🔴"
+
+
 def compute_all(symbol: str, count: int = 300) -> dict:
     """拉取前复权 K 线并计算全套指标。返回结构化 dict(供其他脚本复用)。"""
     klines = get_kline_adjusted(symbol, count=count)
@@ -177,7 +185,7 @@ def show_indicators(symbol: str, count: int = 300, output_json: bool = False) ->
     print()
     print("【均线】")
     ma_rows = [{"均线": k.upper(), "值": round(v, 2) if v else "N/A",
-                "价格位置": "上方 🟢" if (v and ind["price"] > v) else "下方 🔴"}
+                "价格位置": _ma_position(ind["price"], v)}
                for k, v in ind["ma"].items()]
     print_display_table(ma_rows, columns=["均线", "值", "价格位置"])
     print()

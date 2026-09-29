@@ -103,7 +103,8 @@ def analyze(symbol: str, output_json: bool = False, quiet: bool = False) -> dict
     g = lambda k: items.get(k, {}).get("value")  # noqa: E731
     yoy = lambda k: items.get(k, {}).get("yoy_pct")  # noqa: E731
 
-    # 加工指标(注意用 is not None 判存在——真实零值如负债=0 不能当缺失)
+    # 加工指标: 分子用 is not None 判存在(真实零值如负债=0 不能当缺失);
+    # 分母(total_assets/net_profit)刻意保留真值判断——None 与 0 都须跳过,兼防除零
     debt_ratio = None
     if g("total_liabilities") is not None and g("total_assets"):
         debt_ratio = g("total_liabilities") / g("total_assets") * 100

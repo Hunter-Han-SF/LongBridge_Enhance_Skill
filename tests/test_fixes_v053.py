@@ -191,5 +191,14 @@ class TestEarningsNearest(unittest.TestCase):
             dash.get_finance_calendar = orig
 
 
+class TestMaPositionNone(unittest.TestCase):
+    """MA 为 None(历史不足)时价格位置必须 N/A,不能误标「下方 🔴」。"""
+
+    def test_none_above_below(self):
+        self.assertEqual(ci._ma_position(100.0, None), "N/A")
+        self.assertEqual(ci._ma_position(100.0, 95.0), "上方 🟢")
+        self.assertEqual(ci._ma_position(100.0, 105.0), "下方 🔴")
+
+
 if __name__ == "__main__":
     unittest.main()
