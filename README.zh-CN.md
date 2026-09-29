@@ -9,8 +9,8 @@
 > ⑤ 市场情绪(+宏观指标历史) ⑥ 技术面(MA/MACD/RSI/KDJ/BOLL/ATR/OBV + 综合评分 + 相对强度/Beta + 服务端quant)
 > ⑦ 基本面(估值分位/分析师共识/财务健康/股息质量/多股对比/业务分部/行业排行/财务共识/公司行动/经营回顾/公司档案
 > + 内部人交易/13F机构持仓/基金持仓/机构股东)
-> ⑧ 日内微观(VWAP/盘口失衡/逐笔主动买卖/量价分布Volume Profile) ⑨ 买卖决策仪表盘 ⑩ 选股器(预设策略/自定义条件)
-> —— 全部基于 Longbridge CLI 数据本地计算,含 77 项单元测试。
+> ⑧ 日内微观(VWAP/盘口失衡/逐笔主动买卖/量价分布Volume Profile) ⑨ 买卖决策(仪表盘+入场纪律28条军规) ⑩ 选股器(预设策略/自定义条件)
+> —— 全部基于 Longbridge CLI 数据本地计算,含 110 项单元测试。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -89,9 +89,15 @@
 - **主动买卖比** — 逐笔方向统计 + 大单检测 + 尾盘情绪
 - **量价分布 Volume Profile**(近5日) — POC(最强支撑/阻力)+ Value Area 70% 区间
 
-### 🎯 模块⑨:买卖决策仪表盘
+### 🎯 模块⑨:买卖决策仪表盘 + 入场纪律检查器
 - **六维聚合** — 技术 30% + 估值 15% + 资金 20% + 期权 10% + 分析师 15% + 事件风险 10%
 - 输出多空因素对照 + 综合信号(看多/偏多/中性/偏空/看空)
+- **入场纪律检查器(28条军规)** — `check_entry_rules.py` 把纪律清单变成可执行判定:
+  下跌12不买(D1-D12) + 上涨6不买(U1-U6) + 高胜率买点10条(B0-B9,B0 为最低
+  1:1 盈亏比闸门)。每条规则输出「触发/未触发/需人工」+ 证据(新低新高、缩量、
+  RSI(6) 极值与背离、斐波那契61.8%、趋势线/颈线、支撑压力聚类、吞没/锤子/W底/
+  旗形、5/10日线首次回踩、财报距离、开盘后前30分钟、热度榜、止损距离vs承受力);
+  人工项(刚止损/熟悉度/板块排名等)用 CLI 参数回答后转为自动判定。
 
 ### 🔍 模块⑩:选股器
 - **预设策略** — 低估值/高盈利高成长/今日大涨等 17 个官方策略一键执行
@@ -171,12 +177,13 @@ python scripts/fundamental/get_insider_trades.py TSLA.US  # 内部人交易
 python scripts/intraday/get_vwap_analysis.py AAPL.US       # VWAP
 python scripts/intraday/get_trade_stats.py 700.HK          # 量价分布(POC/VA)
 
-# === 一键每日简报 / 买卖仪表盘 ===
+# === 一键每日简报 / 买卖仪表盘 / 入场纪律 ===
 python scripts/sentiment/daily_briefing.py --market US
 python scripts/decision/analyze_buy_sell.py AAPL.US        # 六维多空对照
+python scripts/decision/check_entry_rules.py AAPL.US       # 28条军规入场检查
 ```
 
-跑单元测试(77 项,mock CLI 无网络依赖):
+跑单元测试(110 项,mock CLI 无网络依赖):
 
 ```bash
 python -m unittest discover -s tests -v

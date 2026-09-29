@@ -12,8 +12,8 @@
 > business segments / industry rank / consensus detail / corp actions / operating reviews / company profiles
 > + insider trades / 13F institutional holdings / fund holders / shareholders)
 > ⑧ Intraday microstructure (VWAP / order-book imbalance / tick order flow / volume profile)
-> ⑨ Buy/sell decision dashboard ⑩ Stock screener (preset strategies / custom filters)
-> — all computed locally from Longbridge CLI data, with 77 unit tests.
+> ⑨ Buy/sell decisions (dashboard + 28-rule entry discipline checker) ⑩ Stock screener (preset strategies / custom filters)
+> — all computed locally from Longbridge CLI data, with 110 unit tests.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -96,10 +96,18 @@ The official `longbridge` skill series gives you **raw data** (option chains, qu
 - **Tick order flow** — active buy/sell ratio (volume & notional), large-trade detection, closing mood
 - **Volume Profile** (5-day) — POC (strongest S/R) + 70% Value Area (VAH/VAL) + position judgment
 
-### 🎯 Module ⑨: Buy/sell decision dashboard
+### 🎯 Module ⑨: Buy/sell decision dashboard + entry discipline checker
 - **Six-dimension aggregate** — technicals 30% + valuation 15% + capital flow 20% + options 10% + analysts 15% + event risk 10%
 - Outputs bull vs bear factor lists and a composite signal; failed dimensions auto-de-weight; non-US symbols get a neutral options score
 - Insider/13F/fund-holder signals available as an independent 7th perspective
+- **Entry discipline checker (28 rules)** — `check_entry_rules.py` encodes a personal trading
+  checklist: 12 no-buy rules in downtrends (D1–D12), 6 no-buy rules in uptrends (U1–U6),
+  and 10 high-win-rate setups (B0–B9, with B0 as a minimum 1:1 reward/risk gate).
+  Every rule reports triggered / clear / needs-manual with evidence (new lows, volume dry-up,
+  RSI(6) extremes & divergence, Fibonacci 61.8%, trendline/neckline breaks, S/R clustering,
+  engulfing/hammer/W-bottom/flag detection, MA5/MA10 first pullback, earnings proximity,
+  first-30-min window, heat-rank hits, stop distance vs tolerance). Manual items
+  (recent stop-out, familiarity, sector ranking …) resolve via CLI flags.
 
 ### 🔍 Module ⑩: Stock screener
 - **Preset strategies** — 17 official strategies (low valuation / high growth / today's gainers …) run by ID
@@ -171,12 +179,13 @@ python scripts/fundamental/get_insider_trades.py TSLA.US        # insider trades
 python scripts/intraday/get_vwap_analysis.py AAPL.US            # VWAP
 python scripts/intraday/get_trade_stats.py 700.HK               # volume profile (POC/VA)
 
-# === One-click daily briefing / buy-sell dashboard ===
+# === One-click daily briefing / buy-sell dashboard / entry discipline ===
 python scripts/sentiment/daily_briefing.py --market US
 python scripts/decision/analyze_buy_sell.py AAPL.US             # six-dimension bull/bear view
+python scripts/decision/check_entry_rules.py AAPL.US            # 28-rule entry checklist
 ```
 
-Run the unit tests (77 cases, mocked CLI — no network needed):
+Run the unit tests (110 cases, mocked CLI — no network needed):
 
 ```bash
 python -m unittest discover -s tests -v

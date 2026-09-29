@@ -19,7 +19,7 @@ description: |
 license: MIT
 metadata:
   author: community
-  version: "0.4.1"
+  version: "0.5.0"
   risk_level: read_only
   requires_login: false
   default_install: true
@@ -31,7 +31,7 @@ metadata:
 
 长桥多维度数据增强 skill。在官方 longbridge 系列基础上加工原始接口,提供更深的分析能力。
 覆盖十大模块:① 期权分析(含港股涡轮) ② 异动追踪 ③ 主力资金流 ④ 事件日历 ⑤ 市场情绪
-⑥ 技术面 ⑦ 基本面 ⑧ 日内微观 ⑨ 买卖决策仪表盘 ⑩ 选股器。
+⑥ 技术面 ⑦ 基本面 ⑧ 日内微观 ⑨ 买卖决策(仪表盘+入场纪律28条军规) ⑩ 选股器。
 
 > **语言规则**:根据用户输入语言自动回复。
 > **安全提示**:本 skill 只读,无任何交易功能。
@@ -55,7 +55,9 @@ earnings calendar,market temperature,expected move,risk reversal,order flow,
 内部人交易,insider,高管买卖,13F,机构持仓,基金持仓,机构股东,股东变动,
 指数成分,成分股,板块轮动,AH溢价,量价分布,筹码分布,volume profile,POC,
 宏观指标,CPI,PMI,拆股,合股,休市,新股,IPO申购,暗盘,基石投资者,
-经纪商队列,多股对比,同行对比,业务分部,营收拆分,行业排行,公司行动,经营回顾
+经纪商队列,多股对比,同行对比,业务分部,营收拆分,行业排行,公司行动,经营回顾,
+入场纪律,入场检查,不买,买点,军规,能不能买,盈亏比,止损承受,顶背离,底背离,
+锤子线,吞没,W底,双底,旗形,颈线,缩量,放量突破,回踩
 ```
 
 ## 能力边界(重要)
@@ -107,7 +109,7 @@ python scripts/check_env.py
 ├── technical/   # ⑥ 技术面(指标库/综合评分/相对强度/服务端quant)
 ├── fundamental/ # ⑦ 基本面(估值/评级/财务/股息/对比/分部/行业/共识/公司档案/信号源)
 ├── intraday/    # ⑧ 日内微观(VWAP/盘口/逐笔/量价分布)
-├── decision/    # ⑨ 买卖决策仪表盘
+├── decision/    # ⑨ 买卖决策(六维仪表盘 + 入场纪律28条军规)
 └── screener/    # ⑩ 选股器(预设策略/自定义条件)
 ```
 运行示例:
@@ -115,6 +117,7 @@ python scripts/check_env.py
 python scripts/market/get_anomaly.py --market US
 python scripts/flow/get_capital_flow.py AAPL.US
 python scripts/decision/analyze_buy_sell.py AAPL.US
+python scripts/decision/check_entry_rules.py AAPL.US
 ```
 
 ## 命令速查
@@ -602,6 +605,24 @@ python scripts/decision/analyze_buy_sell.py AAPL.US [--json]
 - 输出:六维得分 + 多头/空头因素对照 + 综合信号(看多/偏多/中性/偏空/看空)
 - 信号补充:内部人交易/13F变动/基金持仓可作第 7 维独立参考(get_insider_trades 等)
 
+#### 入场纪律检查器(28条军规)
+```bash
+python scripts/decision/check_entry_rules.py AAPL.US [--json]
+python scripts/decision/check_entry_rules.py 0700.HK --max-stop-pct 6 --lookback 60
+python scripts/decision/check_entry_rules.py TSLA.US --recent-stopout yes --familiar no \
+    --sector-top-decline no --prepost-move no --sector-breakout yes
+python scripts/decision/check_entry_rules.py --demo     # 离线自检,无需登录
+```
+- 把纪律清单变成可执行判定:**下跌12不买(D1-D12) + 上涨6不买(U1-U6) +
+  高胜率买点10条(B0-B9,含盈亏比闸门 B0 最低 1:1)**
+- 每条规则三态输出:❌触发 / ✅未触发 / ❓需人工;结论 = ❌不买 | ✅结构符合 | ⏸️观望
+- 自动判定:收盘新低/新高、缩量、RSI(6)、斐波那契61.8%、趋势线/颈线、支撑压力
+  聚类(强=触及≥2次)、吞没/锤子/W底/旗形/均线回踩、顶底背离、财报距离、
+  开盘后前30分钟、热度榜命中、止损距离 vs 承受力(--max-stop-pct,默认8%)
+- 需人工(可用参数消解): D6板块昨日跌幅排名 / D8刚止损 / D9熟悉度 /
+  D11盘前盘后异动 / B8板块当日是否突破
+- ⚠️ 形态识别为算法近似(pivot/聚类),非精确图形匹配;纪律参考非投资建议
+
 #### 单标的异动综合打分
 ```bash
 python scripts/market/calc_anomaly_score.py AAPL.US [--market US] [--json]
@@ -742,6 +763,19 @@ python scripts/flow/get_broker_queue.py 700.HK
 python scripts/intraday/get_trade_stats.py 700.HK
 ```
 
+### 工作流 12:入场前纪律检查(该不该买,先过军规)
+```bash
+# 1. 28条军规逐条检查:哪些"不买"被触发、哪些买点结构成立
+python scripts/decision/check_entry_rules.py AAPL.US
+# 2. 按个人风险参数收紧止损承受力/回看窗口
+python scripts/decision/check_entry_rules.py AAPL.US --max-stop-pct 5 --lookback 40
+# 3. 人工项确认后复跑(板块排名/止损史/熟悉度/盘前盘后/板块突破)
+python scripts/decision/check_entry_rules.py AAPL.US --sector-top-decline no \
+    --recent-stopout no --familiar yes --prepost-move no --sector-breakout yes
+# 4. 与六维仪表盘互补:军规定"能不能买",仪表盘看"偏多还是偏空"
+python scripts/decision/analyze_buy_sell.py AAPL.US
+```
+
 ## 与官方 skill 的关系
 
 - **官方 `longbridge` 系列**(derivatives/fundamentals/market-data 等):prompt-only,基础查询
@@ -814,7 +848,8 @@ longbridge-pro/
     │   ├── get_trade_flow.py           # 逐笔主动买卖比 + 大单
     │   └── get_trade_stats.py          # 量价分布(POC/Value Area)
     ├── decision/              # ⑨ 买卖决策
-    │   └── analyze_buy_sell.py         # 六维聚合仪表盘(旗舰)
+    │   ├── analyze_buy_sell.py         # 六维聚合仪表盘(旗舰)
+    │   └── check_entry_rules.py        # 入场纪律检查器(28条军规)
     └── screener/              # ⑩ 选股器
         └── run_screener.py             # 预设策略/自定义条件/指标发现
 ```
