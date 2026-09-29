@@ -13,7 +13,7 @@
 > + insider trades / 13F institutional holdings / fund holders / shareholders)
 > ⑧ Intraday microstructure (VWAP / order-book imbalance / tick order flow / volume profile)
 > ⑨ Buy/sell decisions (dashboard + 28-rule entry discipline checker) ⑩ Stock screener (preset strategies / custom filters)
-> — all computed locally from Longbridge CLI data, with 110 unit tests.
+> — all computed locally from Longbridge CLI data, with 127 unit tests.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -185,7 +185,7 @@ python scripts/decision/analyze_buy_sell.py AAPL.US             # six-dimension 
 python scripts/decision/check_entry_rules.py AAPL.US            # 28-rule entry checklist
 ```
 
-Run the unit tests (110 cases, mocked CLI — no network needed):
+Run the unit tests (127 cases, mocked CLI — no network needed):
 
 ```bash
 python -m unittest discover -s tests -v

@@ -252,11 +252,15 @@ class TestGateAndVerdict(unittest.TestCase):
         self.assertIn(r["verdict"], ("⏸️ 观望", "❌ 不买"))
 
     def test_manual_rules_listed_in_verdict(self):
-        r = run([100] * 80)
+        # 有结构的震荡序列(非退化平盘): 无新低新高、有支撑压力、RSI 中性
+        path = [100 + ((i % 9) - 4) * 0.7 for i in range(80)]
+        path[-1] = 99.5
+        r = run(path)
         for k in ("D6", "D8", "D9", "D11"):
             self.assertEqual(r["rules"][k]["status"], "manual")
-        self.assertTrue(any("待人工确认" in x for x in r["verdict_reasons"])
-                        or r["verdict"] == "❌ 不买")
+        self.assertEqual(r["triggered"], [])
+        self.assertEqual(r["verdict"], "⏸️ 观望")
+        self.assertTrue(any("待人工确认" in x for x in r["verdict_reasons"]))
 
     def test_manual_answers_resolve(self):
         bars = [cer._bar(99, 100) for _ in range(60)]
@@ -320,6 +324,225 @@ class TestEngineRobustness(unittest.TestCase):
         self.assertEqual(highs[0]["price"], 14.0)
         lows = [p for p in piv if p["kind"] == "low"]
         self.assertEqual(lows[0]["price"], 8.0)
+
+
+# ===========================================================================
+# v0.5.1 修复回归(外部代码审查确认的 10+1 项缺陷)
+# ===========================================================================
+
+class TestV051Fixes(unittest.TestCase):
+    """每条用例对应一项已确认并修复的缺陷。"""
+
+    def setUp(self):
+        self._keys = cer.get_heat_rank_keys
+        self._rank = cer.get_heat_rank
+
+    def tearDown(self):
+        cer.get_heat_rank_keys = self._keys
+        cer.get_heat_rank = self._rank
+
+    def test_d10_heat_rank_lists_key(self):
+        """get_heat_rank 返回键名是 lists(复数),读错键会让热度榜永远未命中。"""
+        cer.get_heat_rank_keys = lambda m: [{"key": "k"}]
+        cer.get_heat_rank = lambda key, count=20: {"lists": [{"symbol": "AAPL.US"}]}
+        self.assertTrue(cer._in_heat_rank("AAPL.US"))
+        cer.get_heat_rank = lambda key, count=20: {"lists": [{"symbol": "TSLA.US"}]}
+        self.assertFalse(cer._in_heat_rank("AAPL.US"))
+        cer.get_heat_rank = lambda key, count=20: (_ for _ in ()).throw(RuntimeError)
+        self.assertIsNone(cer._in_heat_rank("AAPL.US"))
+
+    def test_b8_manual_visible_in_verdict(self):
+        """B8 待确认板块时不能被结论吞没成「未出现任何买点」。"""
+        path = [100.0, 99.0, 98.0, 99.0, 100.0] * 8 + [99.0, 100.0, 101.0, 100.0]
+        bars = gen(path)
+        bars[-1] = cer._bar(100.0, 104.0, h=104.2, lo=99.8, vol=3_000_000)
+        opts = {"sector_breakout": None, "sector_top_decline": "no",
+                "recent_stopout": "no", "familiar": "yes", "prepost_move": "no",
+                "earnings_days": 30, "in_heat": False}
+        r = cer.check_rules(cer.build_features(bars), opts)
+        self.assertEqual(r["rules"]["B8"]["status"], "manual")
+        self.assertIn("B8", r["manual"])
+        self.assertIn("潜在买点", "".join(r["verdict_reasons"]))
+        # 回答「板块当日突破」后转为 matched
+        r2 = cer.check_rules(cer.build_features(gen(path) + [
+            cer._bar(100.0, 104.0, h=104.2, lo=99.8, vol=3_000_000)]),
+            dict(opts, sector_breakout="yes"))
+        self.assertEqual(r2["rules"]["B8"]["status"], "matched")
+
+    def test_b5_ma10_pullback_matched(self):
+        """经典 10 日线回踩(下影穿 5 日线、收盘站上 10 日线)必须成立。"""
+        path = [50 * (1.01 ** i) for i in range(55)]
+        bars = gen(path)
+        c = [b["close"] for b in bars]
+        ma5 = sma_series(c, 5)[-1]
+        ma10 = sma_series(c, 10)[-1]
+        close = (ma5 + ma10) / 2  # 收盘介于两线之间(5 日线下方)
+        # 特征层的 MA10 含新 bar,须按含新收盘的口径定下影低点
+        ma10f = sma_series(c + [close], 10)[-1]
+        open_ = close * 1.004  # 跳空小实体阴线,避免大实体吞掉下影
+        bars.append({"open": open_, "close": close, "high": open_ * 1.001,
+                     "low": ma10f * 0.998, "volume": 1_000_000})
+        self.assertLess(close, ma5)
+        r = cer.check_rules(cer.build_features(bars))
+        self.assertEqual(r["rules"]["B5"]["status"], "matched")
+        self.assertIn("10日", r["rules"]["B5"]["evidence"])
+
+    def test_b5_break_below_ma10_is_none(self):
+        path = [50 * (1.01 ** i) for i in range(55)]
+        bars = gen(path)
+        c = [b["close"] for b in bars]
+        ma10 = sma_series(c, 10)[-1]
+        bars.append({"open": path[-1], "close": ma10 * 0.99,
+                     "high": path[-1] * 1.002, "low": ma10 * 0.997,
+                     "volume": 1_000_000})
+        r = cer.check_rules(cer.build_features(bars))
+        self.assertEqual(r["rules"]["B5"]["status"], "none")
+
+    def test_strong_support_retest_not_dropped(self):
+        """近期刚被回踩测试的历史强支撑(touches≥2)不能被结构位过滤整簇丢弃。"""
+        path = ([100.0, 102.0, 100.5, 101.5] * 5
+                + [102.0, 106.0, 112.0, 118.0]
+                + ramp_to(117.9, 100.4, 14)
+                + [101.0, 102.0, 103.0, 103.5])
+        f = cer.build_features(gen(path))
+        self.assertTrue(f["supports"], "回踩强支撑后 supports 不应为空")
+        r = cer.check_rules(f)
+        self.assertEqual(r["rules"]["D5"]["status"], "clear")
+
+    def test_b6_requires_today_volume(self):
+        """B6 的「放量」必须校验当日量:无量吞没不成立。"""
+        path = [100] * 20 + ramp_to(99.5, 82.0, 25)
+        base = gen(path)
+        prev = base[-1]["close"]
+        p_open, p_close = prev * 1.001, prev * 0.992
+        for vol, expect in ((1, "none"), (2_200_000, "matched")):
+            bars = list(base)
+            bars.append({"open": p_open, "close": p_close, "high": prev * 1.004,
+                         "low": prev * 0.985, "volume": 500_000})
+            bars.append({"open": p_close * 0.998, "close": p_open * 1.01,
+                         "high": p_open * 1.011, "low": p_close * 0.997,
+                         "volume": vol})
+            r = cer.check_rules(cer.build_features(bars))
+            self.assertEqual(r["rules"]["B6"]["status"], expect,
+                             f"今日量 {vol} 应为 {expect}")
+
+    def test_rsi_flat_series_neutral(self):
+        """横盘无波动 RSI 应为中性 50,而不是 100(否则误报 U5 超买)。"""
+        self.assertEqual(cer.rsi_series([100.0] * 20, 6)[-1], 50.0)
+        r = run(gen([100.0] * 60))
+        self.assertEqual(r["rules"]["U5"]["status"], "clear")
+
+    def test_b2_needs_post_breakout_bar(self):
+        """突破趋势线当天不能自称「回踩不破」——必须至少有一根后续棒。"""
+        path = ([100, 99, 98, 97, 96, 95, 94, 93, 92, 91, 92, 93, 94, 95,
+                 94, 93, 92, 91, 90, 89, 88, 87, 86, 85, 86, 87, 88, 89, 90,
+                 89, 88, 87, 86, 85, 84.5, 84, 84, 84, 84] + [87.5])
+        bars = gen(path)
+        bars[-1]["volume"] = 2_500_000  # 突破棒即最新一根,无回踩棒
+        r = cer.check_rules(cer.build_features(bars))
+        self.assertEqual(r["rules"]["B2"]["status"], "none")
+
+    def test_d12_weekend_clear(self):
+        from datetime import datetime as dt
+        self.assertEqual(cer._check_open_window(
+            {"now": dt(2026, 10, 3, 9, 45), "market": "US"})["status"], "clear")
+        self.assertEqual(cer._check_open_window(
+            {"now": dt(2026, 10, 4, 9, 45), "market": "HK"})["status"], "clear")
+
+    def test_d3_second_break_detected(self):
+        """跌破→反抽→二次跌破:穿越式检测应捕捉(c[n-4] 硬比较会漏)。"""
+        path = ramp_to(50, 100, 60) + [68.0, 72.0, 68.5]
+        r = run(path)
+        self.assertEqual(r["rules"]["D3"]["status"], "triggered")
+        self.assertIn("61.8%", r["rules"]["D3"]["evidence"])
+
+    def test_divergence_stale_ignored(self):
+        """陈年背离(第二 pivot 超过 25 根)不作数。"""
+        fresh = (ramp_to(50, 86, 14) + ramp_to(85.5, 79, 3) + ramp_to(79.3, 88.5, 4)
+                 + ramp_to(88.2, 81.5, 3) + ramp_to(81.7, 89.4, 4)
+                 + ramp_to(89.2, 83, 3) + ramp_to(83.2, 90.2, 4)
+                 + ramp_to(90.0, 84.5, 3))
+        f1 = cer.build_features(gen(fresh))
+        self.assertIsNotNone(f1["bearish_div"], "正向对照应检出顶背离")
+        f2 = cer.build_features(gen(fresh + [84.5] * 42))
+        self.assertIsNone(f2["bearish_div"], "陈年背离应被时效窗口过滤")
+
+    def test_d2_strong_support_break_near_res(self):
+        """刚跌破强支撑(被跌破的位在现价上方,须扫全量 levels)且紧邻压力。"""
+        path = ([100] * 5 + ramp_to(99.5, 90, 6) + ramp_to(90.5, 93, 4)
+                + ramp_to(92.5, 90.5, 5) + ramp_to(91, 95, 4)
+                + [92.0, 90.0, 89.5])
+        r = run(path)
+        self.assertEqual(r["rules"]["D2"]["status"], "triggered")
+        self.assertEqual(r["rules"]["D3"]["status"], "triggered")
+        self.assertIn("颈线", r["rules"]["D3"]["evidence"])
+
+
+class TestBlindSpotSetups(unittest.TestCase):
+    """v0.5.0 审查指出的测试盲区: B3/B9 买点与 D4/U1/U3 不买规则。"""
+
+    def test_b3_bull_flag(self):
+        path = ([100.0] * 30 + [102.0, 105.0, 108.0, 111.0]     # 旗杆 +8.8%
+                + [110.5, 110.0, 109.5, 109.0] + [113.0])       # 旗面缩量 + 放量破旗面
+        bars = gen(path)
+        for i in range(30, 34):
+            bars[i]["volume"] = 1_500_000      # 杆放量
+        for i in range(34, 38):
+            bars[i]["volume"] = 500_000        # 面缩量
+        bars[-1]["volume"] = 2_500_000         # 突破棒
+        r = cer.check_rules(cer.build_features(bars))
+        self.assertEqual(r["rules"]["B3"]["status"], "matched")
+
+    def test_b9_fib_oversold_div_stop(self):
+        """主升段回撤守 61.8% + RSI6 超卖 + 底背离 + 止跌形态,四者齐备。"""
+        bars = gen(ramp_to(50, 100, 40))
+        prev = 100.0
+
+        def app(c, lo, vol=1_000_000):
+            nonlocal prev
+            bars.append({"open": prev, "close": c, "high": max(prev, c) * 1.004,
+                         "low": lo, "volume": vol})
+            prev = c
+
+        for k in range(1, 13):                       # 第一段下跌 12×-2% → RSI≈10
+            c = 99.5 * 0.98 ** k
+            app(c, min(prev, c) * 0.996 - 0.25)
+        b1 = prev
+        for c in (b1 * 1.012, b1 * 1.012 ** 2):      # 弱反弹
+            app(c, prev * 1.001)
+        for _ in range(4):                           # 第二段 4×-1.5% → 更低低点,RSI≈15
+            app(prev * 0.985, min(prev, prev * 0.985) * 0.996 - 0.2)
+        b2 = prev
+        for i in range(3):                           # 三根十字平底(低点略抬)
+            app(b2 + 0.01 * i, b2 * 1.0005 + 0.01 * i)
+        bars.append({"open": prev, "close": b2 + 0.05, "high": b2 + 0.06,
+                     "low": b2 - 0.5, "volume": 2_200_000})   # 小实体长下影锤子
+        r = cer.check_rules(cer.build_features(bars))
+        self.assertEqual(r["rules"]["B9"]["status"], "matched")
+
+    def test_d4_shrink_rebound(self):
+        bars = gen([100] * 20 + ramp_to(99.5, 80.0, 25))
+        prev = bars[-1]["close"]
+        bars.append({"open": prev, "close": prev * 1.008, "high": prev * 1.012,
+                     "low": prev * 0.998, "volume": 400_000})
+        r = cer.check_rules(cer.build_features(bars))
+        self.assertEqual(r["rules"]["D4"]["status"], "triggered")
+
+    def test_u1_shrink_new_high(self):
+        bars = gen(ramp_to(50, 99.4, 59))
+        bars.append({"open": 99.4, "close": 99.8, "high": 99.9, "low": 99.3,
+                     "volume": 400_000})
+        r = cer.check_rules(cer.build_features(bars))
+        self.assertEqual(r["rules"]["U1"]["status"], "triggered")
+
+    def test_u3_breakout_near_strong_res(self):
+        path = (ramp_to(100, 106.5, 9) + ramp_to(106.3, 102, 7)
+                + ramp_to(102.2, 106.5, 7) + ramp_to(106.3, 101.5, 8)
+                + ramp_to(101.7, 104.3, 5) + ramp_to(104.1, 102, 4)
+                + ramp_to(102.2, 104.3, 4) + ramp_to(104.1, 102.2, 3)
+                + [103.2, 104.0, 104.8])
+        r = run(path)
+        self.assertEqual(r["rules"]["U3"]["status"], "triggered")
 
 
 if __name__ == "__main__":

@@ -97,7 +97,8 @@ def rolling_mean(vals: list[float], n: int) -> list[float | None]:
 
 
 def rsi_series(closes: list[float], n: int = 14) -> list[float | None]:
-    """Wilder RSI 序列(前 n 根为 None)。"""
+    """Wilder RSI 序列(前 n 根为 None)。横盘无波动(gain=loss=0)返回中性 50,
+    与 indicators.rsi 口径一致——否则停牌/横盘会被误判 RSI=100 严重超买。"""
     out: list[float | None] = [None] * len(closes)
     gain = loss = 0.0
     for i in range(1, len(closes)):
@@ -108,11 +109,13 @@ def rsi_series(closes: list[float], n: int = 14) -> list[float | None]:
             loss += d
             if i == n:
                 gain, loss = gain / n, loss / n
-                out[i] = 100.0 if loss == 0 else 100 - 100 / (1 + gain / loss)
+                out[i] = (100.0 if gain > 0 else 50.0) if loss == 0 \
+                    else 100 - 100 / (1 + gain / loss)
         else:
             gain = (gain * (n - 1) + g) / n
             loss = (loss * (n - 1) + d) / n
-            out[i] = 100.0 if loss == 0 else 100 - 100 / (1 + gain / loss)
+            out[i] = (100.0 if gain > 0 else 50.0) if loss == 0 \
+                else 100 - 100 / (1 + gain / loss)
     return out
 
 
@@ -166,6 +169,13 @@ def cross_above_recently(closes: list[float], level: float, m: int = 5) -> bool:
                for i in range(max(1, len(closes) - m), len(closes)))
 
 
+def cross_line_below_recently(closes: list[float], line, m: int = 3) -> bool:
+    """对逐根变化的趋势线值做「近 m 根内自上而下穿越」检测(捕捉二次跌破)。"""
+    n = len(closes)
+    return any(closes[i - 1] >= line(i - 1) and closes[i] < line(i)
+               for i in range(max(1, n - m), n))
+
+
 def _line_through(i1: float, p1: float, i2: float, p2: float):
     slope = (p2 - p1) / (i2 - i1) if i2 != i1 else 0.0
 
@@ -200,10 +210,11 @@ def build_features(bars: list[dict]) -> dict:
 
     pivots = find_pivots(h, l)
     levels = cluster_levels(pivots, last, atr14)
-    # 只保留「经过测试」的结构位: 剔除最近 7 根内才形成的 pivot——
-    # 突破棒/破位棒自己刚创出的极值不是有效压力/支撑(B1 突破后的上方空间
-    # 不应被突破棒自身高点封顶)
-    levels = [x for x in levels if x["last_idx"] <= n - 7]
+    # 剔除「最近 7 根内才首次出现的单一极值」——突破棒/破位棒自己刚创出的
+    # 极值不是有效压力/支撑(B1 突破后的上方空间不应被突破棒自身高点封顶)。
+    # 但被触碰 ≥2 次的结构位(含刚被回踩测试的历史强支撑)必须保留:
+    # 回踩强支撑企稳正是 B1 类最优买点,不能因最近一次触碰把它整簇丢掉
+    levels = [x for x in levels if x["touches"] >= 2 or x["last_idx"] <= n - 7]
     supports = sorted([x for x in levels if x["price"] < last * 0.999],
                       key=lambda x: -x["price"])
     resistances = sorted([x for x in levels if x["price"] > last * 1.001],
@@ -239,13 +250,14 @@ def build_features(bars: list[dict]) -> dict:
                "f382": h[hi_i] - 0.382 * rng, "f50": h[hi_i] - 0.5 * rng,
                "f618": h[hi_i] - 0.618 * rng}
 
-    # 背离(基于 pivot 与 RSI6)
+    # 背离(基于 pivot 与 RSI6)。时效约束: 第二个 pivot 必须在近 25 根内
+    # (陈年背离不作数),且两 pivot 跨度 ≤40 根(跨季度的 pivots 不构成背离)
     def _div(piv_kind: str, bearish: bool) -> dict | None:
         pts = [p for p in pivots if p["kind"] == piv_kind and r6[p["idx"]] is not None]
         if len(pts) < 2:
             return None
         a, b = pts[-2], pts[-1]
-        if b["idx"] - a["idx"] < 4:
+        if b["idx"] - a["idx"] < 4 or b["idx"] - a["idx"] > 40 or b["idx"] < n - 25:
             return None
         if bearish:
             ok = b["price"] > a["price"] and r6[b["idx"]] < r6[a["idx"]] - 2
@@ -298,30 +310,37 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
                  f"最新收盘 {last:.2f} vs 近{lb}日最低收盘 {prior_min:.2f}")
 
     # D2: 刚跌破强支撑 + 上方压力距离 ≤4%
-    strong_sups = [s for s in f["supports"] if s["touches"] >= 2] or f["supports"]
-    broke_sup = any(cross_below_recently(c, s["price"]) for s in strong_sups)
+    # 注意「被跌破的支撑」此刻位于现价上方(归入 levels/resistances 一侧),
+    # 必须扫全量 levels,不能只扫 supports
+    broken = [x for x in f["levels"]
+              if x["price"] > last and cross_below_recently(c, x["price"])]
+    broke_strong = [x for x in broken if x["touches"] >= 2]
     res = f["resistance"]
     near_res = res is not None and (res["price"] - last) / last <= NEAR_RES_PCT
-    if broke_sup and near_res:
-        R["D2"] = _r("triggered", f"近{BROKE_BARS}日跌破强支撑,上方压力 {res['price']:.2f}"
-                     f"(距现价 {pct((res['price'] - last) / last)})")
-    elif broke_sup:
+    if broke_strong and near_res:
+        R["D2"] = _r("triggered", f"近{BROKE_BARS}日跌破强支撑 "
+                     f"{broke_strong[0]['price']:.2f}(触及{broke_strong[0]['touches']}次),"
+                     f"上方压力 {res['price']:.2f}(距现价 {pct((res['price'] - last) / last)})")
+    elif broke_strong:
         R["D2"] = _r("clear", "跌破强支撑但上方压力尚远")
     else:
         R["D2"] = _r("clear", "近几日未跌破强支撑")
 
     # D3: 刚跌破 上行趋势线 / 斐波那契61.8% / 结构颈线
+    # (均用穿越式检测: 近 3 根内发生自上而下交叉即算,含「跌破→反抽→二次跌破」)
     breaks = []
     lows_p = f["piv_lows"]
     if len(lows_p) >= 2:
         a, b = lows_p[-2], lows_p[-1]
         if b["price"] > a["price"] and b["idx"] > a["idx"]:  # 上行趋势线(低点抬高)
             _, line = _line_through(a["idx"], a["price"], b["idx"], b["price"])
-            if last < line(n - 1) and c[n - 4] >= line(n - 4):
+            if cross_line_below_recently(c, line):
                 breaks.append(f"上行趋势线(现值 {line(n - 1):.2f})")
-    if f["fib"] and last < f["fib"]["f618"] and c[n - 4] >= f["fib"]["f618"]:
+    if f["fib"] and cross_below_recently(c, f["fib"]["f618"]):
         breaks.append(f"斐波那契61.8%({f['fib']['f618']:.2f})")
-    neck = [s for s in strong_sups if cross_below_recently(c, s["price"])]
+    # 颈线/强支撑跌破: 同 D2,被跌破的位在现价上方,须扫全量 levels
+    neck = [x for x in f["levels"]
+            if x["price"] > last and x["touches"] >= 2 and cross_below_recently(c, x["price"])]
     if neck:
         breaks.append(f"结构颈线/强支撑 {neck[0]['price']:.2f}")
     R["D3"] = _r("triggered" if breaks else "clear",
@@ -474,10 +493,13 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
     R["B8"] = _check_b8(f, opts)
     R["B9"] = _check_b9(f)
 
-    triggered = [k for k in list(RULE_NAMES)[:18] if R[k]["status"] == "triggered"]
-    manual = [k for k in list(RULE_NAMES)[:18] if R[k]["status"] == "manual"]
+    # B 规则的 manual(如 B8 待确认板块)也要进人工清单,不能被结论吞没;
+    # B0 闸门的 manual 不阻断、单列在 gate 里,不重复计入
+    triggered = [k for k in RULE_NAMES if R[k]["status"] == "triggered"]
+    manual = [k for k in RULE_NAMES if R[k]["status"] == "manual" and k != "B0"]
     matched = [k for k in R if k.startswith("B") and k != "B0"
                and R[k]["status"] == "matched"]
+    b_pending = [k for k in manual if k.startswith("B")]
     gate_fail = R["B0"]["status"] == "fail"
 
     reasons = [f"{k} {RULE_NAMES[k]}({R[k]['evidence'][:40]})" for k in triggered]
@@ -488,6 +510,10 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
     elif matched:
         verdict = "✅ 结构符合(纪律通过)"
         v_reasons = [f"{k} {RULE_NAMES[k]}" for k in matched]
+    elif b_pending:
+        verdict = "⏸️ 观望(潜在买点待确认)"
+        v_reasons = [f"潜在买点待确认: {','.join(b_pending)}"
+                     "(回答对应 CLI 参数后复跑)"]
     else:
         verdict, v_reasons = "⏸️ 观望", ["未出现任何高胜率买点结构"]
     if manual and verdict != "❌ 不买":
@@ -536,7 +562,8 @@ def _check_b2(f: dict) -> dict:
     if not (a["idx"] < b["idx"] and b["price"] < a["price"] * 0.98):
         return _r("none", "近期高点未走低,无下降趋势线")
     slope, line = _line_through(a["idx"], a["price"], b["idx"], b["price"])
-    for i in range(max(1, n - 8), n):
+    # i ≤ n-2: 突破后至少要有一根回踩棒——突破当天不能自称「回踩不破」
+    for i in range(max(1, n - 8), n - 1):
         if c[i] > line(i) and c[i - 1] <= line(i - 1) and v[i] >= 1.2 * (vol5[i] or v[i]):
             if all(c[j] >= line(j) * 0.998 for j in range(i, n)):
                 return _r("matched", f"放量突破下降趋势线(斜率{slope:.3f})后回踩,"
@@ -618,12 +645,15 @@ def _check_b5(f: dict) -> dict:
     touched = [m for m in (ma5[-1], ma10[-1]) if l[-1] <= m]
     if not touched:
         return _r("none", "未回踩到 5/10 日线")
-    held = all(c[-1] >= m for m in touched)
+    # 守住「触及的最深一根」均线即可: 经典 10 日线回踩会同时下穿 5 日线,
+    # 若要求收在 5 日线上方,10 日线回踩结构永远无法成立
+    deepest = touched[-1]
+    held = c[-1] >= deepest
     body = abs(c[-1] - o[-1])
     lower = min(c[-1], o[-1]) - l[-1]
     strong_buy = c[-1] > o[-1] or lower >= 0.5 * body
     if held and strong_buy:
-        which = "5日" if touched[0] == ma5[-1] else "10日"
+        which = "10日" if deepest == ma10[-1] else "5日"
         return _r("matched", f"多头排列首次回踩{which}线不破,"
                   f"{'收阳' if c[-1] > o[-1] else '下影抵抗'}")
     return _r("none", "回踩均线但收盘未守住")
@@ -646,10 +676,12 @@ def _check_b6(f: dict) -> dict:
     avg_body = sum(abs(c[i] - o[i]) for i in range(max(0, n - 11), n - 1)) / 10
     upper = f["h"][-1] - max(c[-1], o[-1])
     engulf = o[-1] <= c[p] and c[-1] >= o[p]
-    if engulf and body >= 1.5 * max(avg_body, 1e-9) and upper <= 0.3 * max(body, 1e-9):
+    vol_ok = vol5[-1] is not None and v[-1] >= 1.2 * vol5[-1]  # 「放量」落到实处
+    if engulf and body >= 1.5 * max(avg_body, 1e-9) and \
+       upper <= 0.3 * max(body, 1e-9) and vol_ok:
         return _r("matched", f"放量吞没大阳(实体约为均体 {body / max(avg_body, 1e-9):.1f} 倍,"
-                  "上影短)")
-    return _r("none", "当日无有效看涨吞没")
+                  f"量比 {v[-1] / vol5[-1]:.1f},上影短)")
+    return _r("none", "当日无有效放量看涨吞没")
 
 
 def _check_b7(f: dict) -> dict:
@@ -731,11 +763,15 @@ def _check_b9(f: dict) -> dict:
 
 
 def _check_open_window(opts: dict) -> dict:
-    """D12: 当前是否处于市场开盘后前 30 分钟(按当地时钟)。"""
+    """D12: 当前是否处于市场开盘后前 30 分钟(按当地时钟,排除周末)。"""
     now: datetime | None = opts.get("now")
     market = (opts.get("market") or "US").upper()
     if now is None:
         return _r("manual", "无法获取当前时间,开盘后前30分钟请自行遵守")
+    wd = now.weekday()
+    if wd >= 5:
+        return _r("clear", f"{'周六' if wd == 5 else '周日'}休市,"
+                 "不适用开盘时窗(法定节假日未覆盖,请自行留意)")
     hour, minute = now.hour, now.minute
     if market == "HK":
         window = (9, 30), (10, 0)
@@ -798,7 +834,8 @@ def _in_heat_rank(symbol: str) -> bool | None:
             return None
         data = get_heat_rank(keys[0].get("key") if isinstance(keys[0], dict) else keys[0],
                              count=20)
-        items = data.get("list") or data.get("items") or []
+        # get_heat_rank 返回 {bmp, updated_at, lists:[...]}(键名是复数 lists)
+        items = data.get("lists") or data.get("list") or data.get("items") or []
         for it in items:
             s = str(it.get("symbol") or it.get("counter_id") or "")
             if s and s.upper().split(".")[0] == symbol.upper().split(".")[0]:
