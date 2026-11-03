@@ -1,4 +1,4 @@
-"""获取主力资金流向(大/中/小单分布 + 分钟级净流入时序)。
+"""获取大中小单资金流向(大/中/小单分布 + 分钟级净流入时序)。
 
 对应 Longbridge CLI: capital <SYMBOL> / capital <SYMBOL> --flow
 官方 skill 无此加工分析。
@@ -38,11 +38,14 @@ from common import (  # noqa: E402
 )
 
 
-def _fmt_money(v) -> str:
+def _fmt_money(v, unit_verified: bool) -> str:
     """金额可读化: 万 / 亿。"""
     f = to_float(v)
     if f is None:
-        return str(v)
+        return "N/A"
+    if not unit_verified:
+        amount = f"{f:.6g}" if 0 < abs(f) < 0.01 else f"{f:,.2f}"
+        return f"{amount}（来源单位）"
     a = abs(f)
     if a >= 1e8:
         return f"{f/1e8:.2f}亿"
@@ -51,13 +54,15 @@ def _fmt_money(v) -> str:
     return f"{f:.2f}"
 
 
-def _direction_label(net_large: float) -> str:
-    """根据大单净额判断主力方向。"""
+def _direction_label(net_large: float | None) -> str:
+    """根据大单净额描述资金方向。"""
+    if net_large is None:
+        return "大单方向资料不足"
     if net_large > 0:
-        return "主力净流入 🟢(机构买入)"
+        return "大单净流入 🟢"
     if net_large < 0:
-        return "主力净流出 🔴(机构卖出)"
-    return "主力持平 ⚪"
+        return "大单净流出 🔴"
+    return "大单持平 ⚪"
 
 
 def _ts_to_hm(ts) -> str:
@@ -66,9 +71,9 @@ def _ts_to_hm(ts) -> str:
         return ""
     try:
         # 形如 2026-08-07T13:30:00Z
-        return datetime.fromisoformat(ts.replace("Z", "+00:00")).strftime("%H:%M")
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).strftime("%H:%M")
     except (ValueError, TypeError):
-        return str(ts)[:5]
+        return str(ts)
 
 
 def fetch_capital_flow(
@@ -86,10 +91,11 @@ def _snapshot_mode(symbol: str, output_json: bool) -> dict:
     if is_empty(snap):
         raise ValueError(f"无资金流数据。确认 {symbol} 是当日有交易的活跃标的。")
 
-    net = snap.get("net", {})
-    cap_in = snap.get("capital_in", {})
-    cap_out = snap.get("capital_out", {})
-    net_large = to_float(net.get("large"), 0) or 0
+    net = snap.get("net") or {}
+    cap_in = snap.get("capital_in") or {}
+    cap_out = snap.get("capital_out") or {}
+    net_large = to_float(net.get("large"))
+    unit_verified = snap.get("unit_verified", False)
 
     result = {
         "symbol": symbol,
@@ -99,6 +105,9 @@ def _snapshot_mode(symbol: str, output_json: bool) -> dict:
         "capital_out": cap_out,
         "net": net,
         "direction": _direction_label(net_large),
+        "amount_unit": snap.get("amount_unit", "source_unit"),
+        "unit_verified": unit_verified,
+        "unit_note": snap.get("unit_note"),
     }
 
     if output_json:
@@ -106,22 +115,26 @@ def _snapshot_mode(symbol: str, output_json: bool) -> dict:
         return result
 
     print(f"{symbol} 当日资金流向(快照,{snap.get('timestamp','')})")
-    print(f"  主力方向: {_direction_label(net_large)}")
+    print(f"  {_direction_label(net_large)}")
+    if result["unit_note"]:
+        print(f"  {result['unit_note']}")
     print()
-    # 分布表:流入/流出/净额并排
-    rows = []
-    for size, label in [("large", "大单"), ("medium", "中单"), ("small", "小单")]:
-        rows.append({
-            "类型": label,
-            "流入": _fmt_money((cap_in or {}).get(size)),
-            "流出": _fmt_money((cap_out or {}).get(size)),
-            "净额": _fmt_money(net.get(size)),
-        })
+    labels = {"large": "大单", "medium": "中单", "small": "小单"}
+    rows = [{
+        "类型": label,
+        "流入": _fmt_money(cap_in.get(size), unit_verified),
+        "流出": _fmt_money(cap_out.get(size), unit_verified),
+        "净额": _fmt_money(net.get(size), unit_verified),
+    } for size, label in labels.items()]
+    totals = []
+    for side in (cap_in, cap_out):
+        amounts = [to_float(side.get(size)) for size in labels]
+        totals.append(sum(amounts) if all(v is not None for v in amounts) else None)
     rows.append({
         "类型": "合计",
-        "流入": _fmt_money(sum(to_float((cap_in or {}).get(s), 0) or 0 for s in ("large", "medium", "small"))),
-        "流出": _fmt_money(sum(to_float((cap_out or {}).get(s), 0) or 0 for s in ("large", "medium", "small"))),
-        "净额": _fmt_money(net.get("total")),
+        "流入": _fmt_money(totals[0], unit_verified),
+        "流出": _fmt_money(totals[1], unit_verified),
+        "净额": _fmt_money(net.get("total"), unit_verified),
     })
     print_display_table(rows, columns=["类型", "流入", "流出", "净额"])
     return result
@@ -132,24 +145,36 @@ def _flow_mode(symbol: str, output_json: bool) -> dict:
     if is_empty(series):
         raise ValueError(f"无分钟资金流数据。确认 {symbol} 当日有交易。")
 
-    # series 的 inflow 已是"当日累计净流入"(common 层换算,勿重复累加),
-    # minute_delta 是相邻分钟增量
+    last = series[-1]
+    flow_mode = last.get("flow_mode", "unknown")
+    unit_verified = last.get("unit_verified", False)
+    deltas = []
     for row in series:
-        row["time_str"] = _ts_to_hm(row.get("time"))
-        row["delta_fmt"] = _fmt_money(row.get("minute_delta"))
-        row["cum_fmt"] = _fmt_money(row.get("inflow"))
+        row["time_str"] = _ts_to_hm(row.get("time") or row.get("timestamp"))
+        row["raw_fmt"] = _fmt_money(row.get("inflow"), unit_verified)
+        delta = to_float(row.get("minute_delta")) if flow_mode != "unknown" else None
+        row["delta_fmt"] = _fmt_money(delta, unit_verified)
+        row["cum_fmt"] = _fmt_money(row.get("cumulative_inflow"), unit_verified)
+        if delta is not None:
+            deltas.append((delta, row["time_str"]))
 
-    # 找峰值(最大单分钟净流入/净流出,基于分钟增量)
-    peak = max(series, key=lambda r: to_float(r.get("minute_delta"), 0) or 0)
-    trough = min(series, key=lambda r: to_float(r.get("minute_delta"), 0) or 0)
+    def extreme(points, choose):
+        if not points:
+            return None
+        delta, time = choose(points, key=lambda point: point[0])
+        return {"time": time, "minute_delta": delta}
 
     result = {
         "symbol": symbol,
         "mode": "flow",
+        "flow_mode": flow_mode,
+        "amount_unit": last.get("amount_unit", "source_unit"),
+        "unit_verified": unit_verified,
         "points": len(series),
-        "final_cumulative": series[-1]["inflow"],
-        "peak_inflow": {"time": peak["time_str"], "minute_delta": peak["minute_delta"]},
-        "max_outflow": {"time": trough["time_str"], "minute_delta": trough["minute_delta"]},
+        "final_cumulative": last.get("cumulative_inflow") if flow_mode == "cumulative" else None,
+        "observed_sum": last.get("observed_sum") if flow_mode == "incremental" else None,
+        "peak_inflow": extreme([p for p in deltas if p[0] > 0], max),
+        "max_outflow": extreme([p for p in deltas if p[0] < 0], min),
         "series": series,
     }
 
@@ -157,14 +182,22 @@ def _flow_mode(symbol: str, output_json: bool) -> dict:
         print_json(result)
         return result
 
-    print(f"{symbol} 当日分钟资金净流入({len(series)} 个点)")
-    print(f"  累计净流入: {_fmt_money(series[-1]['inflow'])}")
-    print(f"  最大单分钟流入: {peak['time_str']} {_fmt_money(peak['minute_delta'])}")
-    print(f"  最大单分钟流出: {trough['time_str']} {_fmt_money(trough['minute_delta'])}")
+    print(f"{symbol} 日内资金流({len(series)} 个点)")
+    if flow_mode == "unknown":
+        print("  来源序列口径未核实，仅展示来源值。")
+    elif flow_mode == "cumulative":
+        print(f"  当日累计净流入: {_fmt_money(result['final_cumulative'], unit_verified)}")
+    else:
+        print(f"  已返回样本净流入合计: {_fmt_money(result['observed_sum'], unit_verified)}")
+    for key, label in (("peak_inflow", "最大流入"), ("max_outflow", "最大流出")):
+        peak = result[key]
+        if peak is not None:
+            print(f"  {label}: {peak['time']} {_fmt_money(peak['minute_delta'], unit_verified)}")
     print()
-    # 只显示关键节点(每 30 分钟采样 + 首5分钟)
-    sampled = _sample_series(series)
-    print_display_table(sampled, columns=["time_str", "delta_fmt", "cum_fmt"])
+    columns = {"unknown": ["time_str", "raw_fmt"],
+               "cumulative": ["time_str", "delta_fmt", "cum_fmt"],
+               "incremental": ["time_str", "delta_fmt"]}
+    print_display_table(_sample_series(series), columns=columns[flow_mode])
     return result
 
 
@@ -181,7 +214,7 @@ def _sample_series(series: list[dict]) -> list[dict]:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="主力资金流向(大中小单分布/分钟流)")
+    parser = argparse.ArgumentParser(description="大中小单资金流向(大中小单分布/分钟流)")
     parser.add_argument("symbol", help="标的代码,如 AAPL.US / 700.HK")
     parser.add_argument("--flow", action="store_true", help="分钟级资金流时序(默认快照)")
     parser.add_argument("--json", action="store_true", dest="output_json", help="输出 JSON 格式")

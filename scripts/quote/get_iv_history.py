@@ -19,14 +19,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
-from datetime import datetime
+from datetime import date
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
 from common import (  # noqa: E402
+    days_to_years,
     get_option_chain,
+    market_now,
     get_option_expirations,
     get_underlying_price,
     print_error,
@@ -55,7 +58,8 @@ def _load_history(symbol: str) -> list[dict]:
         return []
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            return data if isinstance(data, list) else []
     except (json.JSONDecodeError, OSError):
         return []
 
@@ -68,45 +72,77 @@ def _save_history(symbol: str, data: list[dict]) -> None:
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def get_current_atm_iv(symbol: str) -> tuple[float | None, dict | None]:
-    """取当前 ATM IV(离现价最近且有有效 IV 的行权价,call+put IV 均值)。
-    返回 (iv, 元信息)。"""
-    expirations = get_option_expirations(symbol)
-    if not expirations:
-        return None, None
-    # 取最近的月度到期日
-    monthly = [e for e in expirations if 15 <= int(e[8:10]) <= 21] or expirations
-    expiry = monthly[0]
-    chain = get_option_chain(symbol, expiry)
-    if not chain:
-        return None, None
+IV_TENOR_DAYS = 30
 
-    # ATM = 离现价最近且有有效 IV 的行权价(炒作期成交量最大的是深度 OTM,
-    # 微笑偏斜下会把 ATM IV 带偏);现价拿不到时回退流动性最好
-    price = get_underlying_price(symbol)
-    best = None
-    if price:
-        def _has_iv(r):
-            civ, piv = to_float(r.get("call_iv")), to_float(r.get("put_iv"))
-            return (civ is not None and civ > 0) or (piv is not None and piv > 0)
-        pool = [r for r in chain if _has_iv(r)] or chain
-        best = min(pool, key=lambda r: abs((to_float(r.get("strike")) or 0) - price))
-    else:
-        best_vol = -1
-        for r in chain:
-            vol = (to_float(r.get("call_vol")) or 0) + (to_float(r.get("put_vol")) or 0)
-            if vol > best_vol:
-                best_vol, best = vol, r
-    if not best:
+
+def get_current_atm_iv(symbol: str) -> tuple[float | None, dict | None]:
+    """按期限插值总方差，返回恒定 30 日 ATM IV。"""
+    spot = get_underlying_price(symbol)
+    if not spot or spot <= 0:
         return None, None
-    civ = to_float(best.get("call_iv"))
-    piv = to_float(best.get("put_iv"))
-    vals = [v for v in (civ, piv) if v and v > 0]
-    if not vals:
+    expirations = get_option_expirations(symbol)
+    terms = [(days_to_years(expiry) * 365, expiry) for expiry in expirations]
+
+    def sample(expiry: str):
+        candidates = []
+        for row in get_option_chain(symbol, expiry):
+            if row.get("standard") is False:
+                continue
+            strike = to_float(row.get("strike"))
+            vols = [to_float(row.get(key)) for key in ("call_iv", "put_iv")]
+            vols = [vol for vol in vols if vol and vol > 0]
+            if strike and strike > 0 and vols:
+                candidates.append((strike, sum(vols) / len(vols)))
+        return min(candidates, key=lambda item: abs(item[0] - spot), default=None)
+
+    def nearest(terms):
+        for days, expiry in terms:
+            point = sample(expiry)
+            if point:
+                strike, vol = point
+                return {"expiry": expiry, "days": days, "strike": strike, "iv": vol}
+        return None
+
+    left = nearest(sorted(((t, e) for t, e in terms if 0 < t <= IV_TENOR_DAYS), reverse=True))
+    if left is None:
         return None, None
-    iv = sum(vals) / len(vals)
-    return iv, {"expiry": expiry, "strike": to_float(best.get("strike")),
-                "call_iv": civ, "put_iv": piv}
+    if math.isclose(left["days"], IV_TENOR_DAYS, rel_tol=0, abs_tol=1e-9):
+        return left["iv"], {"tenor_days": IV_TENOR_DAYS, "source_expiries": [left]}
+    right = nearest(sorted((t, e) for t, e in terms if t > IV_TENOR_DAYS))
+    if right is None:
+        return None, None
+    t0, t1 = left["days"], right["days"]
+    w = (IV_TENOR_DAYS - t0) / (t1 - t0)
+    variance = (1 - w) * left["iv"] ** 2 * t0 + w * right["iv"] ** 2 * t1
+    return math.sqrt(variance / IV_TENOR_DAYS), {
+        "tenor_days": IV_TENOR_DAYS, "source_expiries": [left, right]
+    }
+
+
+def _record_date(record: dict) -> date | None:
+    if not isinstance(record, dict):
+        return None
+    raw_date = record.get("date")
+    try:
+        parsed = date.fromisoformat(raw_date)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.isoformat() == raw_date else None
+
+
+def comparable_iv_series(history: list[dict]) -> list[dict]:
+    """按观测日保留恒定期限样本，重复日期取最后一条有效记录。"""
+    if not isinstance(history, list):
+        return []
+    series = {}
+    for record in history:
+        day = _record_date(record)
+        if day is None or record.get("tenor_days") != IV_TENOR_DAYS:
+            continue
+        iv = to_float(record.get("atm_iv_pct"))
+        if iv is not None and iv > 0:
+            series[day] = dict(record, atm_iv_pct=iv)
+    return [series[day] for day in sorted(series)]
 
 
 def iv_history(
@@ -115,7 +151,8 @@ def iv_history(
     output_json: bool = False,
     quiet: bool = False,
 ) -> dict:
-    today = datetime.now().strftime("%Y-%m-%d")
+    observed_at = market_now(symbol)
+    today = observed_at.date().isoformat()
     history = _load_history(symbol)
 
     # 追加今天
@@ -124,10 +161,12 @@ def iv_history(
         current_iv, meta = get_current_atm_iv(symbol)
         if current_iv is not None:
             # 避免同一天重复追加(覆盖当天)
-            history = [h for h in history if h.get("date") != today]
+            history = [h for h in history if not isinstance(h, dict) or h.get("date") != today]
             history.append({"date": today, "atm_iv_pct": round(current_iv * 100, 2),
-                            "expiry": meta.get("expiry"), "strike": meta.get("strike")})
-            history.sort(key=lambda x: x["date"])
+                            "tenor_days": meta["tenor_days"],
+                            "source_expiries": meta["source_expiries"],
+                            "observed_at": observed_at.isoformat(), "quote_freshness": "unknown"})
+            history.sort(key=lambda x: _record_date(x) or date.min)
             _save_history(symbol, history)
             appended = True
 
@@ -137,14 +176,20 @@ def iv_history(
             "请多运行几次(建议每日)积累序列后再计算 IV Rank/Percentile。"
         )
 
+    dates = sorted(day for row in history for day in [_record_date(row)] if day is not None)
+    comparable = comparable_iv_series(history)
     result = {
         "symbol": symbol,
         "data_points": len(history),
-        "date_range": f"{history[0]['date']} ~ {history[-1]['date']}",
+        "date_range": f"{dates[0]} ~ {dates[-1]}" if dates else None,
+        "comparable_points": len(comparable),
+        "other_records": len(history) - len(comparable),
+        "observed_at": observed_at.isoformat() if appended else None,
+        "quote_freshness": "unknown",
         "appended_today": appended,
         "history_file": _history_path(symbol),
         "series": history,
-        "note": "Longbridge 不提供历史 IV,本序列靠本地累积。建议每日运行。",
+        "note": "Longbridge 不提供历史 IV,新样本为恒定30日 ATM IV，旧样本保留但不可直接比较。观测时间为采集时间，行情新鲜度未知。",
     }
 
     if output_json:
@@ -158,12 +203,14 @@ def iv_history(
     print(f"  区间: {result['date_range']}")
     print(f"  {'✓ 已追加今天数据' if appended else '(未追加,--no-append)'}")
     print(f"  文件: {_history_path(symbol)}")
-    ivs = [s["atm_iv_pct"] for s in history]
-    print(f"  IV 区间: {min(ivs)}% ~ {max(ivs)}%  均值 {round(sum(ivs)/len(ivs),2)}%")
-    print()
-    for s in history[-30:]:  # 最多显示最近 30 个
-        bar = "█" * int(s["atm_iv_pct"])
-        print(f"  {s['date']}  {s['atm_iv_pct']:>6}%  {bar}")
+    print(f"  可比恒定30日样本 {len(comparable)} 条，其他记录 {result['other_records']} 条")
+    if appended:
+        print(f"  观测时间: {result['observed_at']}，行情新鲜度未知")
+    if comparable:
+        ivs = [row["atm_iv_pct"] for row in comparable]
+        print(f"  恒定30日 IV 区间: {min(ivs)}% ~ {max(ivs)}%  均值 {round(sum(ivs)/len(ivs), 2)}%")
+        for row in comparable[-30:]:
+            print(f"  {row['date']}  {row['atm_iv_pct']:>6}%")
     return result
 
 

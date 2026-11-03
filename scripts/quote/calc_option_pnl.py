@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -67,7 +68,8 @@ def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
     sign_map = {"BUY": 1, "SELL": -1}
 
     leg_costs = []
-    total_cost = 0.0
+    raw_costs = []
+    payoff_legs = []
     for leg in legs:
         strike = float(leg["strike"])
         ot = str(leg["type"]).upper()
@@ -76,12 +78,18 @@ def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
         action = leg.get("action", "BUY").upper()
         qty = float(leg.get("quantity", 1))
         sign = sign_map[action]
+        if not math.isfinite(qty) or qty <= 0:
+            raise ValueError("组合腿数量必须为有限正数")
+        if not is_stock and (ot not in ("CALL", "C", "PUT", "P")
+                             or not math.isfinite(strike) or strike <= 0):
+            raise ValueError("期权腿需要有效的类型和行权价")
+        payoff_legs.append((strike, "STOCK" if is_stock else cp, sign * qty * 100))
 
         if is_stock:
             # 正股腿:成本与到期价值都直接用正股价(每手 100 股)
             last = price
             cost = last * sign * qty * 100
-            total_cost += cost
+            raw_costs.append(cost)
             leg_costs.append({"leg": f"{action} {qty}× 正股 @{last:.2f}",
                               "last": last, "cost": round(cost, 2)})
             continue
@@ -89,6 +97,8 @@ def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
         last_key = "call_last" if cp == "C" else "put_last"
         last = None
         for r in chain:
+            if r.get("standard") is False:
+                continue
             s = to_float(r.get("strike"))
             if s is not None and abs(s - strike) < 0.001:
                 last = to_float(r.get(last_key))
@@ -96,54 +106,42 @@ def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
         if last is None:
             raise ValueError(f"chain 中无 {strike} 行权价的 {last_key}")
         cost = last * sign * qty * 100  # 美股期权每张 100 股
-        total_cost += cost
+        raw_costs.append(cost)
         leg_costs.append({"leg": f"{action} {qty}× {strike} {leg['type']}", "last": last, "cost": round(cost, 2)})
 
-    # 到期损益曲线:在现价 ±30% 范围扫描
-    lo_price = price * 0.7
-    hi_price = price * 1.3
-    # 步长:用更细的 0.1 精确定位盈亏平衡(粗扫描会在拐点处漏掉/偏差)
-    n_points = 400
-    step = (hi_price - lo_price) / n_points
-    curve = []
-    break_evens = []
-    prev_S = None
-    prev_pnl = None
-    S = lo_price
-    while S <= hi_price + 0.01:
-        # 组合到期价值
-        value = 0.0
-        for leg in legs:
-            strike = float(leg["strike"])
-            ot = str(leg["type"]).upper()
-            action = leg.get("action", "BUY").upper()
-            qty = float(leg.get("quantity", 1))
-            sign = sign_map[action]
-            if ot in ("STOCK", "SHARE", "UNDERLYING"):
-                value += S * sign * qty * 100
-            else:
-                cp = "C" if ot in ("CALL", "C") else "P"
-                value += _intrinsic(S, strike, cp) * sign * qty * 100
-        pnl = value - total_cost
-        curve.append({"price": round(S, 2), "pnl": round(pnl, 2)})
-        # 检测过零点 + 线性插值精确定位
-        if prev_pnl is not None and ((prev_pnl < 0 < pnl) or (prev_pnl > 0 > pnl)):
-            # 线性插值: be = prev_S + (0 - prev_pnl) × (S - prev_S) / (pnl - prev_pnl)
-            be = prev_S + (0 - prev_pnl) * (S - prev_S) / (pnl - prev_pnl)
-            break_evens.append(round(be, 2))
-        prev_S = S
-        prev_pnl = pnl
-        S += step
+    total_cost = math.fsum(raw_costs)
 
-    # 最大盈亏(在扫描范围内)
-    pnls = [c["pnl"] for c in curve]
-    max_profit = max(pnls) if pnls else 0
-    max_loss = min(pnls) if pnls else 0
+    def payoff(settlement: float) -> float:
+        return math.fsum(
+            weight * (settlement if cp == "STOCK" else _intrinsic(settlement, strike, cp))
+            for strike, cp, weight in payoff_legs
+        ) - total_cost
 
-    # 判断是否有限
-    # 简单启发:看两端的价格点
-    is_profit_capped = curve[-1]["pnl"] < max_profit * 0.9 and abs(curve[-1]["pnl"]) < abs(max_loss) * 2
-    is_loss_capped = curve[0]["pnl"] > max_loss * 0.9 and curve[-1]["pnl"] > max_loss * 0.9
+    # 到期损益在行权价之间为线性函数，最右区间由正股和 Call 的净头寸决定。
+    knots = sorted({0.0} | {strike for strike, cp, _ in payoff_legs if cp != "STOCK"})
+    values = [payoff(knot) for knot in knots]
+    tail_slope = math.fsum(weight for _, cp, weight in payoff_legs if cp in ("C", "STOCK"))
+    tolerance = 1e-9
+    roots = {k for k, v in zip(knots, values) if abs(v) <= tolerance}
+    flat_ranges = []
+    for a, b, va, vb in zip(knots, knots[1:], values, values[1:]):
+        if abs(va) <= tolerance and abs(vb) <= tolerance:
+            flat_ranges.append([a, b])
+        elif (va < -tolerance and vb > tolerance) or (va > tolerance and vb < -tolerance):
+            roots.add(a - va * (b - a) / (vb - va))
+    if tail_slope and values[-1] * tail_slope < 0 and abs(values[-1]) > tolerance:
+        roots.add(knots[-1] - values[-1] / tail_slope)
+    elif not tail_slope and abs(values[-1]) <= tolerance:
+        flat_ranges.append([knots[-1], None])
+
+    is_profit_capped = tail_slope <= 0
+    is_loss_capped = tail_slope >= 0
+    max_profit = max(values)
+    max_loss = min(values)
+    break_evens = sorted({round(root, 2) for root in roots})
+    curve = [{"price": round(price * (.7 + .6 * i / 400), 2),
+              "pnl": round(payoff(price * (.7 + .6 * i / 400)), 2)}
+             for i in range(401)]
 
     result = {
         "underlying": underlying,
@@ -153,15 +151,13 @@ def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
         "cost_per_share": round(total_cost / 100, 4),
         "net_credit": total_cost < 0,  # 净收入(卖方策略)
         "break_even_points": break_evens,
-        # 未封顶方向的数值只是 ±30% 扫描边界值,不代表真实极值,必须标注
-        "max_profit": (f"{round(max_profit, 2)} (有限)" if is_profit_capped
-                       else f"{round(max_profit, 2)} (±30%扫描区间内,该方向未封顶)"),
-        "max_loss": (f"{round(max_loss, 2)} (有限)" if is_loss_capped
-                     else f"{round(max_loss, 2)} (±30%扫描区间内,该方向未封顶)"),
+        "break_even_ranges": flat_ranges,
+        "max_profit": f"{round(max_profit, 2)} (有限)" if is_profit_capped else "未封顶",
+        "max_loss": f"{round(max_loss, 2)} (有限)" if is_loss_capped else "未封顶",
         "legs_detail": leg_costs,
         "curve_points": len(curve),
         "note": "到期损益(基于各腿 last price 估算成本,不含时间价值/组合摆盘价;"
-                "最大盈亏为现价±30%扫描区间内的值,未封顶方向实际可更大)",
+                "最大盈亏覆盖所有非负结算价)",
     }
 
     if output_json:
@@ -172,6 +168,8 @@ def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
     print(f"  正股现价: {price}")
     print(f"  净成本:   ${total_cost} ({'净支出' if total_cost > 0 else '净收入'})")
     print(f"  盈亏平衡: {break_evens}")
+    if flat_ranges:
+        print(f"  盈亏平衡区间: {flat_ranges}")
     print(f"  最大盈利: {result['max_profit']}")
     print(f"  最大亏损: {result['max_loss']}")
     print(f"  各腿: ")

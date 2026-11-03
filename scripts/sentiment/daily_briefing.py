@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import datetime
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
@@ -28,6 +27,7 @@ from common import (  # noqa: E402
     get_anomaly,
     get_heat_rank,
     get_market_temp,
+    market_now,
     get_option_volume_realtime,
     get_top_movers,
     print_error,
@@ -52,7 +52,7 @@ def _temp_emoji(t: float | None) -> str:
 
 
 def generate_briefing(market: str = "US", include_pc: bool = True, output_json: bool = False) -> dict:
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = market_now(market).isoformat(sep=" ", timespec="minutes")
     briefing = {"market": market, "generated_at": now, "sections": {}}
     lines = [f"📰 {market} 市场每日简报  ({now})"]
     lines.append("=" * 50)

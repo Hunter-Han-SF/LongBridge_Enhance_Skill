@@ -107,6 +107,9 @@ class TestCapitalScoreScaleFree(unittest.TestCase):
 
     def test_zero_net_no_division_error(self):
         score, _ = self._run({"net": {"large": 0}, "capital_in": {}, "capital_out": {}})
+        self.assertIsNone(score)  # missing gross flow cannot establish neutral flow
+        score, _ = self._run({"net": {"large": 0}, "capital_in": {"large": 100},
+                              "capital_out": {"large": 100}})
         self.assertEqual(score, 50.0)
 
 

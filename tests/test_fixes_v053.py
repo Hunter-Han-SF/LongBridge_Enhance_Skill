@@ -52,7 +52,7 @@ class TestPortfolioGreeksMultiplier(unittest.TestCase):
 
 
 class TestAlignedKlineFiltering(unittest.TestCase):
-    """OHLCV 同位过滤: 任一字段缺失整根剔除,四列严格对齐。"""
+    """Missing volume must not remove valid price bars or invent zero volume."""
 
     def test_scattered_none_aligned(self):
         bars = []
@@ -68,7 +68,10 @@ class TestAlignedKlineFiltering(unittest.TestCase):
         try:
             ci.get_kline_adjusted = lambda symbol, count=300: bars
             ind = ci.compute_all("TEST.US", count=40)
-            self.assertEqual(ind["bars"], 36)  # 40 - 4 根含 None
+            self.assertEqual(ind["bars"], 39)  # only the missing close invalidates OHLC
+            self.assertIsNone(ind["obv"]["obv"])
+            self.assertIsNone(ind["mfi14"])
+            self.assertAlmostEqual(ind["volume_ratio"], 1039 / 1036, places=2)
             self.assertIsNotNone(ind["rsi14"])
             self.assertIsInstance(ind["signals"], list)
         finally:

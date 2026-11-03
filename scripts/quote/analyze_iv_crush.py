@@ -21,33 +21,21 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import date, timedelta
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
 from common import (  # noqa: E402
     get_finance_calendar,
-    get_underlying_price,
+    market_date,
     print_error,
     print_json,
-    to_float,
 )
 
 
-def _load_iv_history(symbol: str) -> list[dict]:
-    """加载本地 IV 历史(复用 get_iv_history 的存储格式)。"""
-    from pathlib import Path
-    hist_dir = Path.home() / ".lbr_iv_history"
-    safe = symbol.replace(".", "_").replace("/", "_")
-    path = hist_dir / f"{safe}.json"
-    if not path.is_file():
-        return []
-    import json
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return []
+from get_iv_history import (  # noqa: E402
+    _load_history as _load_iv_history, comparable_iv_series, get_current_atm_iv,
+)
 
 
 def _counter_code(counter_id: str) -> str:
@@ -57,7 +45,7 @@ def _counter_code(counter_id: str) -> str:
 
 
 def find_next_earnings(symbol: str, lookforward_days: int = 120) -> dict | None:
-    """从财报日历找最近一次财报(已公布或未来)。
+    """优先选窗口内最近的待发布财报，再回退到最近的历史日期。
 
     ⚠️ Longbridge 的 finance-calendar report 在传 --symbol 单标的过滤时,
        默认返回最近一次财报(通常是刚发布的),传 --start 反而查不到。
@@ -69,6 +57,9 @@ def find_next_earnings(symbol: str, lookforward_days: int = 120) -> dict | None:
     buckets = get_finance_calendar(
         category="report", market=market, symbol=symbol, count=50,
     )
+    today = market_date(symbol)
+    end = today + timedelta(days=lookforward_days)
+    events = []
     for b in buckets:
         for info in b.get("infos", []):
             cid = info.get("counter_id", "")
@@ -78,22 +69,31 @@ def find_next_earnings(symbol: str, lookforward_days: int = 120) -> dict | None:
             ext = info.get("ext") or {}
             kv_list = info.get("data_kv", []) if isinstance(info.get("data_kv"), list) else []
             kv = {k.get("type"): k.get("value_raw", "") for k in kv_list if isinstance(k, dict)}
-            return {
+            raw_date = info.get("date", "")
+            try:
+                event_date = date.fromisoformat(raw_date[:10])
+            except (ValueError, TypeError):
+                continue
+            if event_date > end:
+                continue
+            events.append({
                 "date": info.get("date", ""),
                 "date_type": info.get("date_type", ""),
                 "published": bool(kv.get("actual_eps") or kv.get("actual_revenue")),
                 "estimate_eps": kv.get("estimate_eps", ""),
                 "actual_eps": kv.get("actual_eps", ""),
                 "content": info.get("content", ""),
-            }
-    return None
+            })
+    future = [event for event in events if event["date"][:10] >= today.isoformat()
+              and not event["published"]]
+    past = [event for event in events if event["date"][:10] <= today.isoformat()]
+    return (min(future, key=lambda e: e["date"]) if future else
+            max(past, key=lambda e: e["date"], default=None))
 
 
 def _get_current_iv(symbol: str) -> float | None:
     """取当前 ATM IV(复用 get_iv_history 的逻辑)。"""
     try:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from get_iv_history import get_current_atm_iv  # noqa: E402
         iv, _ = get_current_atm_iv(symbol)
         return iv
     except Exception:
@@ -106,42 +106,25 @@ def analyze_iv_crush(symbol: str, output_json: bool = False) -> dict:
     # 2. 当前 IV
     current_iv = _get_current_iv(symbol)
     # 3. 历史 IV
-    history = _load_iv_history(symbol)
+    history = sorted(comparable_iv_series(_load_iv_history(symbol)), key=lambda h: h["date"])
 
-    # 分析历史 IV 的财报效应:找历史中 IV 峰值后的回落幅度
-    # ⚠️ (iv, 历史记录) 必须成对遍历,不能先过滤出 IV 列表再按下标回查 history
-    #    (否则存在无效记录时日期会错位)
+    # 仅比较相邻自然日的同期限观测，避免将缺日或旧期限样本当作单日变化。
     crush_examples = []
-    if len(history) >= 10:
-        pairs = [(h, to_float(h.get("atm_iv_pct"))) for h in history]
-        pairs = [(h, v) for h, v in pairs if v and v > 0]
-        # 找 IV 突然下降的日子(可能是财报后)
-        for i in range(5, len(pairs)):
-            h_prev, iv_prev = pairs[i - 1]
-            h_cur, iv_cur = pairs[i]
-            if iv_prev > 0 and iv_cur < iv_prev * 0.8:  # 跌超 20%
-                crush_examples.append({
-                    "date": h_cur.get("date"),
-                    "before_iv": iv_prev,
-                    "after_iv": iv_cur,
-                    "drop_pct": round((1 - iv_cur / iv_prev) * 100, 1),
-                })
+    for previous, current in zip(history, history[1:]):
+        gap = date.fromisoformat(current["date"]) - date.fromisoformat(previous["date"])
+        before, after = previous["atm_iv_pct"], current["atm_iv_pct"]
+        if gap.days == 1 and after < before * .8:
+            crush_examples.append({
+                "date": current["date"], "before_iv": before, "after_iv": after,
+                "drop_pct": round((1 - after / before) * 100, 1),
+            })
 
-    # 当前 IV 分位
     iv_percentile = None
     iv_rank_label = ""
-    if history and current_iv:
-        ivs = [to_float(h.get("atm_iv_pct")) for h in history]
-        ivs = [v for v in ivs if v and v > 0]
-        if ivs:
-            below = sum(1 for v in ivs if v < current_iv * 100)
-            iv_percentile = round(below / len(ivs) * 100, 1)
-            if iv_percentile > 70:
-                iv_rank_label = "偏高(财报前常见,卖方机会)"
-            elif iv_percentile < 30:
-                iv_rank_label = "偏低"
-            else:
-                iv_rank_label = "中位"
+    if current_iv and history:
+        ivs = [h["atm_iv_pct"] for h in history]
+        iv_percentile = round(sum(v < current_iv * 100 for v in ivs) / len(ivs) * 100, 1)
+        iv_rank_label = "分位较高" if iv_percentile > 70 else "分位较低" if iv_percentile < 30 else "中位"
 
     result = {
         "symbol": symbol,
@@ -151,8 +134,7 @@ def analyze_iv_crush(symbol: str, output_json: bool = False) -> dict:
         "next_earnings": earnings,
         "history_points": len(history),
         "historical_crush_examples": crush_examples[-3:] if crush_examples else [],
-        "note": "IV Crush 分析需 get_iv_history 累积数据。历史 crush 示例依赖 IV 序列,"
-                "数据不足时该字段为空。",
+        "note": "使用本地恒定30日 ATM IV。历史急降样例未关联财报，限相邻自然日。",
     }
 
     if output_json:
@@ -180,21 +162,17 @@ def analyze_iv_crush(symbol: str, output_json: bool = False) -> dict:
 
     print()
     if crush_examples:
-        print(f"历史 IV Crush 示例(IV 单日跌幅 >20% 的日子,共 {len(crush_examples)} 次):")
+        print(f"历史 IV 急降样例(相邻自然日 IV 跌幅 >20%,共 {len(crush_examples)} 次):")
         for ex in crush_examples[-3:]:
             print(f"  {ex['date']}: {ex['before_iv']}% → {ex['after_iv']}% (跌 {ex['drop_pct']}%)")
     elif history:
-        print("历史 IV Crush: 数据不足以检测(需更多累积,建议每日运行 get_iv_history)")
+        print("可比样本中无满足条件的 IV 急降")
     else:
-        print("历史 IV Crush: 无本地 IV 历史数据")
+        print("无可比的本地 IV 历史数据")
         print("  → 先运行: python get_iv_history.py " + symbol)
         print("  → 建议配 cron 每日运行,积累 ≥20 天后分析更准")
 
     print()
-    # 策略提示
-    if earnings and not earnings["published"] and iv_percentile and iv_percentile > 60:
-        print("💡 策略参考: 财报待发布 + IV 偏高 → 可考虑财报前卖出期权(卖高 IV),"
-              "赌财报后 IV 回落。但需注意财报方向风险。")
     return result
 
 

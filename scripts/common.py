@@ -11,12 +11,14 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
 import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 # ---------------------------------------------------------------------------
@@ -288,24 +290,59 @@ def check_env(force: bool = False) -> dict[str, Any]:
 
 
 def to_float(v: Any, default: float | None = None) -> float | None:
-    """安全转 float。空值/无效值返回 default。"""
-    if v is None or v == "":
+    """Only finite business numbers are accepted; booleans are not amounts."""
+    if v is None or v == "" or isinstance(v, bool):
         return default
     try:
-        return float(v)
-    except (ValueError, TypeError):
+        value = float(v)
+        return value if math.isfinite(value) else default
+    except (ValueError, TypeError, OverflowError):
         return default
 
 
 def to_int(v: Any, default: int | None = None) -> int | None:
+    if isinstance(v, int) and not isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        try:
+            return int(v)
+        except ValueError:
+            pass
     f = to_float(v, None)
     if f is None:
         return default
     return int(f)
 
 
+_NUMERIC_FIELDS = set("""
+actual actual_value added ahpremium_rate amount apreclose aprice assets aum_usd
+avgprice balance bps buy buy_amount capital_ratio chg count currency_rate
+current_amount current_index delta_pct delta_usd div_yld employees eps estimate
+fall_num finance_fee_rate flat_num forecast_value high hpreclose hprice implied_vol
+importance inflow ipo_max_purchase issue_price last last_done leading_chg
+leading_last_done level leverage_ratio limit low market_value marketcap median
+net_margin neutral neutral_amount pb pbmrq pe percent percent_of_shares pettm
+position position_ratio preclose prev_close prev_shares prev_value_usd prevchg
+prevclose previous_value price price_close ps rank rank_index rank_total ranking
+rise_num roa roe salesgrowthyoy sell sell_amount shares shares_after shares_changed
+stock_num subscribe_value total_amount trades_count value value_usd volume
+weight_pct yoy open close turnover large medium small rate total net
+strike call_iv put_iv call_last put_last call_vol put_vol call_oi put_oi oi iv
+delta gamma theta vega rho call_gamma put_gamma call_delta put_delta
+total_call_volume total_put_volume total_volume total_call_open_interest
+total_put_open_interest total_open_interest put_call_volume_ratio
+put_call_open_interest_ratio nus_amount ny_amount current_shares_short days_to_cover
+change_percentage change emotion strong over under hold no_opinion total_shares
+circulating_shares order_num volume_rate five_day_chg highest_price lowest_price
+forecast_eps_mean forecast_eps_highest forecast_eps_lowest forecast_eps_median
+institution_up institution_down institution_total sales sales_ps net_income
+liabilities leverage liabilities_assets dps div_payout_ratio five_y_avg_dps
+ratio chg_1 chg_5 chg_20 chg_60 one_lot_success win_qty
+""".split())
+
+
 def normalize_records(data: Any) -> list[dict]:
-    """把 CLI 返回的 list[dict] 里的数值字符串转成 float。返回新 list。"""
+    """Convert known numerical fields; preserve identifiers and unknown strings."""
     if not data:
         return []
     if isinstance(data, dict):
@@ -316,24 +353,29 @@ def normalize_records(data: Any) -> list[dict]:
             continue
         new_row = {}
         for k, v in row.items():
-            new_row[k] = _coerce(v)
+            new_row[k] = _coerce(v, k)
         out.append(new_row)
     return out
 
 
-def _coerce(v: Any) -> Any:
-    if isinstance(v, str):
-        # 尝试 float
+def _coerce(v: Any, field: str = "") -> Any:
+    if isinstance(v, dict):
+        return {k: _coerce(val, k) for k, val in v.items()}
+    if isinstance(v, list):
+        return [_coerce(x, field) for x in v]
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
+    if isinstance(v, str) and field in _NUMERIC_FIELDS:
+        # Percentage strings are interpreted by the endpoint-specific adapter.
+        if v.endswith("%"):
+            return v
+        f = to_float(v)
+        if f is None:
+            return None
         try:
-            if "." in v or "e" in v.lower():
-                return float(v)
             return int(v)
         except ValueError:
-            return v
-    if isinstance(v, dict):
-        return {k: _coerce(val) for k, val in v.items()}
-    if isinstance(v, list):
-        return [_coerce(x) for x in v]
+            return f
     return v
 
 
@@ -356,7 +398,15 @@ def is_empty(data: Any) -> bool:
 
 
 def print_json(obj: Any) -> None:
-    print(json.dumps(obj, ensure_ascii=False, default=str, indent=2))
+    def finite(value):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        if isinstance(value, dict):
+            return {k: finite(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [finite(v) for v in value]
+        return value
+    print(json.dumps(finite(obj), ensure_ascii=False, default=str, indent=2, allow_nan=False))
 
 
 def print_error(action: str, error: str, hint: str = "") -> None:
@@ -410,7 +460,7 @@ def get_kline(symbol: str, count: int = 60, period: str = "day") -> list[dict]:
 
 
 def get_option_expirations(underlying: str) -> list[str]:
-    """返回可用到期日列表 ['YYYY-MM-DD', ...](已过滤今天之前的过期日期)。
+    """返回存续标准美股到期日列表，默认按纽约16:00剔除当天已结束合约。
 
     实测 chain 返回的列表头部会带最近已到期的合约(如今天 08-20 仍返回 08-14/17/19),
     默认取 expirations[0] 的脚本会因此用过期数据,必须过滤。
@@ -418,11 +468,19 @@ def get_option_expirations(underlying: str) -> list[str]:
     data = run_cli("option", "chain", underlying)
     if is_empty(data):
         return []
-    from datetime import datetime as _dt
-    today = _dt.now().strftime("%Y-%m-%d")
-    return [row["expiry_date"] for row in data
-            if isinstance(row, dict) and row.get("expiry_date")
-            and row["expiry_date"] >= today]
+    observed = market_now(underlying)
+    today = observed.date().isoformat()
+    valid = set()
+    for row in data:
+        expiry = row.get("expiry_date") if isinstance(row, dict) else None
+        if not isinstance(expiry, str) or expiry < today:
+            continue
+        try:
+            if days_to_years(expiry, now=observed) > 0:
+                valid.add(expiry)
+        except ValueError:
+            continue
+    return sorted(valid)
 
 
 def get_option_chain(underlying: str, expiry: str) -> list[dict]:
@@ -432,7 +490,10 @@ def get_option_chain(underlying: str, expiry: str) -> list[dict]:
     仅返回价格/IV/成交量。需要 OCC 代码时用 build_occ_code() 构造。
     """
     data = run_cli("option", "chain", underlying, "--date", expiry)
-    return normalize_records(data)
+    # All derived option calculations use the standard 100-share deliverable.
+    # An adjusted contract needs its own root/deliverable; never synthesize it.
+    return [r for r in normalize_records(data)
+            if str(r.get("standard", True)).strip().lower() not in {"false", "0", "no"}]
 
 
 def get_option_volume_daily(underlying: str, count: int = 20) -> list[dict]:
@@ -504,8 +565,6 @@ def parse_underlying(symbol: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # Longbridge 的 IV 字段是小数形式(0.214 = 21.4%),与 Futu 的百分比形式不同。
 # 本模块统一用小数形式,输出时再转百分比。
-
-import math
 
 
 def calc_hv(closes: list[float], annualize: int = 252) -> float | None:
@@ -600,16 +659,24 @@ def bs_price(S: float, K: float, T: float, r: float, sigma: float, cp: str = "C"
         sigma: 波动率(小数,如 0.23)
         cp: 'C' Call / 'P' Put
     """
-    if S <= 0 or K <= 0:
-        return 0.0  # 脏输入防护:S/K 非正无法定义价格,避免 log/除零崩溃
-    if T <= 0 or sigma <= 0:
-        intrinsic = max(S - K, 0) if cp == "C" else max(K - S, 0)
-        return intrinsic
+    _validate_bs(S, K, T, r, sigma, cp)
+    if T <= 0:
+        return max(S - K, 0) if cp == "C" else max(K - S, 0)
+    discounted_k = K * math.exp(-r * T)
+    if sigma == 0 or S == 0 or K == 0:
+        return max(S - discounted_k, 0) if cp == "C" else max(discounted_k - S, 0)
     d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
     if cp == "C":
         return S * _norm_cdf(d1) - K * math.exp(-r * T) * _norm_cdf(d2)
     return K * math.exp(-r * T) * _norm_cdf(-d2) - S * _norm_cdf(-d1)
+
+
+def _validate_bs(S, K, T, r, sigma, cp):
+    if any(to_float(v) is None for v in (S, K, T, r, sigma)):
+        raise ValueError("BS parameters must be finite numbers")
+    if S < 0 or K < 0 or sigma < 0 or cp not in ("C", "P"):
+        raise ValueError("BS requires S/K/sigma >= 0 and cp=C/P")
 
 
 def bs_greeks(S: float, K: float, T: float, r: float, sigma: float, cp: str = "C") -> dict:
@@ -619,12 +686,23 @@ def bs_greeks(S: float, K: float, T: float, r: float, sigma: float, cp: str = "C
         {delta, gamma, theta, vega, rho}(theta/vega 已换算为常用单位:
         theta 为每日,vega 为每 1% 波动率变化)
     """
-    if S <= 0 or K <= 0:
-        # 脏输入防护:S/K 非正无法定义 Greeks,返回全 0 退化值(与 T≤0 分支同样式)
-        return {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
-    if T <= 0 or sigma <= 0:
-        delta = 1.0 if (cp == "C" and S > K) else (0.0 if cp == "C" else (-1.0 if S < K else 0.0))
+    _validate_bs(S, K, T, r, sigma, cp)
+    if T <= 0:
+        if S == K:
+            raise ValueError("Greeks are undefined at the expiry payoff kink")
+        call_delta = 1.0 if S > K else 0.0
+        delta = call_delta if cp == "C" else call_delta - 1
         return {"delta": delta, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
+    if sigma == 0 or S == 0 or K == 0:
+        discounted_k = K * math.exp(-r * T)
+        if S == discounted_k:
+            raise ValueError("Greeks are undefined at the deterministic payoff kink")
+        call_delta = 1.0 if S > discounted_k else 0.0
+        delta = call_delta if cp == "C" else call_delta - 1.0
+        # Away from the deterministic kink gamma and vega tend to zero.
+        return {"delta": delta, "gamma": 0.0, "vega": 0.0,
+                "theta": -delta * r * discounted_k / 365,
+                "rho": delta * T * discounted_k / 100}
 
     d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
@@ -650,12 +728,56 @@ def bs_greeks(S: float, K: float, T: float, r: float, sigma: float, cp: str = "C
     return {"delta": delta, "gamma": gamma, "theta": theta, "vega": vega, "rho": rho}
 
 
-def days_to_years(expiry: str, today: str | None = None) -> float:
-    """到期日剩余时间(年)。expiry/today 格式 YYYY-MM-DD。"""
-    from datetime import datetime as _dt
-    t = _dt.strptime(today or _dt.now().strftime("%Y-%m-%d"), "%Y-%m-%d")
-    e = _dt.strptime(expiry, "%Y-%m-%d")
-    return max((e - t).days, 0) / 365.0
+def _market_tz(symbol_or_market: str, instant: datetime):
+    market = symbol_or_market.upper().rsplit(".", 1)[-1]
+    if market in {"HK", "CN", "SH", "SZ", "SG"}:
+        return timezone(timedelta(hours=8))
+    if market != "US":
+        raise ValueError(f"Unsupported market timezone: {market}")
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo("America/New_York")
+    except (ImportError, KeyError):
+        # US DST rules since 2007; transition instants are in UTC, not local.
+        year = instant.year
+        if year < 2007:
+            raise ValueError("Historical US timezone requires an IANA timezone database")
+        march = 1 + (6 - datetime(year, 3, 1).weekday()) % 7 + 7
+        november = 1 + (6 - datetime(year, 11, 1).weekday()) % 7
+        start = datetime(year, 3, march, 7, tzinfo=timezone.utc)
+        end = datetime(year, 11, november, 6, tzinfo=timezone.utc)
+        return timezone(timedelta(hours=-4 if start <= instant < end else -5))
+
+
+def market_now(symbol_or_market: str = "US", now: datetime | None = None) -> datetime:
+    """Market-local aware time; supplied naive datetimes mean market wall time."""
+    if now is not None and now.tzinfo is None:
+        probe = now.replace(tzinfo=timezone.utc)
+        return now.replace(tzinfo=_market_tz(symbol_or_market, probe))
+    instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return instant.astimezone(_market_tz(symbol_or_market, instant))
+
+
+def market_date(symbol_or_market: str = "US", now: datetime | None = None):
+    return market_now(symbol_or_market, now=now).date()
+
+
+def days_to_years(expiry: str, today: str | None = None, *, now: datetime | None = None) -> float:
+    """ACT/365 to regular US equity-option close (16:00 ET).
+
+    Explicit today retains date-only calculations. Early closes and special
+    settlement times require contract/session data and are not inferred here.
+    """
+    e = datetime.strptime(expiry, "%Y-%m-%d")
+    if today is not None:
+        return max((e - datetime.strptime(today, "%Y-%m-%d")).days, 0) / 365.0
+    probe = e.replace(hour=20, tzinfo=timezone.utc)
+    close = e.replace(hour=16, tzinfo=_market_tz("US", probe))
+    current = now if now is not None else market_now("US")
+    if current.tzinfo is None:
+        current = market_now("US", now=current)
+    remaining = (close.astimezone(timezone.utc) - current.astimezone(timezone.utc)).total_seconds()
+    return max(remaining, 0) / (365 * 86400)
 
 
 # ===========================================================================
@@ -748,12 +870,23 @@ def get_top_movers(market: str | None = None, sort: str = "hot", count: int = 20
 
 # ---- 模块③主力资金流 ----
 
+def _capital_settings() -> tuple[float, bool, str]:
+    """No undocumented scale or cumulative convention is inferred."""
+    raw_scale = os.getenv("LBR_CAPITAL_SCALE")
+    scale = to_float(raw_scale) if raw_scale is not None else 1.0
+    if scale is None or scale <= 0:
+        raise ValueError("LBR_CAPITAL_SCALE must be a finite positive multiplier")
+    mode = os.getenv("LBR_CAPITAL_FLOW_MODE", "unknown").lower()
+    if mode not in {"unknown", "cumulative", "incremental"}:
+        raise ValueError("LBR_CAPITAL_FLOW_MODE must be cumulative/incremental/unknown")
+    return scale, raw_scale is not None, mode
+
+
 def get_capital_flow_snapshot(symbol: str) -> dict:
     """获取日内大/中/小单资金分布快照。
 
-    ⚠️ CLI 原始单位是"万"(实测:AAPL 原始值合计×1e4 ≈ 当日成交额的 20%;
-       若按"元"解释则仅 0.002%,不合常理)。本函数统一 ×1e4 换算成
-       当地货币完整单位(美股=美元,港股=港元)。
+    Unit convention is unverified across CLI versions. Values remain in source
+    units unless LBR_CAPITAL_SCALE explicitly configures local-currency scaling.
 
     Returns:
         {symbol, timestamp, capital_in:{large,medium,small},
@@ -765,46 +898,100 @@ def get_capital_flow_snapshot(symbol: str) -> dict:
         return {}
     cap_in = data.get("capital_in", {}) or {}
     cap_out = data.get("capital_out", {}) or {}
-    # 换算单位("万" → 完整货币单位)并算净流入
+    scale, configured, _ = _capital_settings()
     def _conv(d: dict) -> dict:
-        return {k: (to_float(d.get(k), 0) or 0) * 1e4
+        return {k: to_float(d.get(k)) * scale if to_float(d.get(k)) is not None else None
                 for k in ("large", "medium", "small")}
     cap_in_c, cap_out_c = _conv(cap_in), _conv(cap_out)
-    net = {k: round(cap_in_c[k] - cap_out_c[k], 2) for k in ("large", "medium", "small")}
-    net["total"] = round(sum(net.values()), 2)
+    net = {k: cap_in_c[k] - cap_out_c[k]
+           if cap_in_c[k] is not None and cap_out_c[k] is not None else None
+           for k in ("large", "medium", "small")}
+    net["total"] = sum(net.values()) if all(v is not None for v in net.values()) else None
     return {
         "symbol": data.get("symbol", symbol),
         "timestamp": data.get("timestamp"),
         "capital_in": cap_in_c,
         "capital_out": cap_out_c,
         "net": net,
-        "unit_note": "CLI 原始单位为万,已 ×1e4 换算为当地货币完整单位(US=USD / HK=HKD)",
+        "amount_unit": "local_currency" if configured else "source_unit",
+        "unit_verified": configured,
+        "unit_source": "operator_config" if configured else "unverified",
+        "scale": scale,
+        "unit_note": (f"按用户配置 ×{scale:g} 换算当地货币;请自行核实CLI口径"
+                      if configured else "原始数据单位未核实;保留来源数值,不宣称当地货币金额"),
     }
+
+
+def _capital_observation_time(row: dict) -> tuple[str, float] | None:
+    """Comparable time coordinates; never mix date-less clocks with timestamps."""
+    raw = row.get("time") or row.get("timestamp")
+    if raw is None:
+        return None
+    value = to_float(raw)
+    if value is not None:
+        return ("instant", value / 1000 if abs(value) >= 1e11 else value)
+    value = str(raw).strip()
+    try:
+        if len(value) in (5, 8) and value[2:3] == ":":
+            moment = datetime.strptime(value, "%H:%M" if len(value) == 5 else "%H:%M:%S")
+            return ("clock", moment.hour * 3600 + moment.minute * 60 + moment.second)
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if moment.tzinfo is not None:
+            return ("instant", moment.timestamp())
+        return ("local", moment.replace(tzinfo=timezone.utc).timestamp())
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def get_capital_flow_series(symbol: str) -> list[dict]:
     """获取日内分钟级资金净流入时序。
 
-    ⚠️ CLI 的 inflow 字段是"当日累计净流入"而非每分钟增量
-       (实测:391 个点的末值与快照 net.total 完全一致)。
-       本函数 ×1e4 换算为当地货币完整单位(CLI 原始单位为万),
-       并附 minute_delta 字段(相邻分钟的增量)。
+    Cumulative vs incremental semantics conflict across documented/observed
+    versions. Derivatives require explicit LBR_CAPITAL_FLOW_MODE. Unit scaling
+    requires LBR_CAPITAL_SCALE; unknown conventions remain marked unknown.
 
     Returns:
-        [{inflow: 当日累计净流入(完整货币单位), minute_delta: 该分钟增量, time, ...}]
+        inflow preserves the configured source semantics. Cumulative differences
+        are minute_delta only for consecutive observations exactly 60 seconds
+        apart; longer valid intervals are exposed separately as interval_delta.
     """
     data = run_cli("capital", symbol, "--flow")
     if is_empty(data) or not isinstance(data, list):
         return []
     rows = normalize_records(data)
-    prev = 0.0
+    scale, configured, mode = _capital_settings()
+    rows.sort(key=lambda r: _capital_observation_time(r) or ("unknown", 0))
+    prev = None
+    prev_time = None
+    observed_sum = 0.0
+    complete = True
     for r in rows:
         v = to_float(r.get("inflow"))
-        cur = v * 1e4 if v is not None else None
+        cur = v * scale if v is not None else None
         r["inflow"] = cur
-        r["minute_delta"] = round(cur - prev, 2) if cur is not None else None
-        if cur is not None:
-            prev = cur
+        r["flow_mode"] = mode
+        r["amount_unit"] = "local_currency" if configured else "source_unit"
+        r["unit_verified"] = configured
+        cur_time = _capital_observation_time(r)
+        seconds = (cur_time[1] - prev_time[1]
+                   if cur_time is not None and prev_time is not None
+                   and cur_time[0] == prev_time[0] else None)
+        interval = (cur - prev if mode == "cumulative"
+                    and cur is not None and prev is not None
+                    and seconds is not None and seconds > 0 else None)
+        r["interval_seconds"] = seconds if interval is not None else None
+        r["interval_delta"] = interval
+        r["minute_delta"] = (interval if mode == "cumulative" and seconds == 60
+                             else cur if mode == "incremental" else None)
+        r["cumulative_inflow"] = cur if mode == "cumulative" else None
+        r["unit_note"] = "用户配置换算" if configured else "来源单位未核实"
+        if cur is None:
+            complete = False
+        elif complete:
+            observed_sum += cur
+        r["observed_sum"] = observed_sum if mode == "incremental" and complete else None
+        prev = cur
+        prev_time = cur_time
     return rows
 
 
@@ -1064,7 +1251,7 @@ def get_depth(symbol: str) -> dict:
 def get_trades(symbol: str, count: int = 200) -> list[dict]:
     """最近逐笔成交(按时间倒序,最新在前)。
 
-    direction: 'Up'=主动买(买方推动),'Down'=主动卖,'Flat'=平。
+    direction: 'Up'/'Down' 是相对前笔成交价的方向，不能证明真实成交发起方。
     """
     data = run_cli("trades", symbol, "--count", str(min(count, 1000)))
     if is_empty(data) or not isinstance(data, list):
@@ -1144,10 +1331,18 @@ def get_dividend_history(symbol: str) -> list[dict]:
     rows = normalize_records(data.get("list", []))
     import re as _re
     for r in rows:
-        m = _re.search(r"([\d.]+)\s*([A-Za-z]+)", str(r.get("desc", "")))
+        if to_float(r.get("amount")) is not None and r.get("currency"):
+            continue
+        desc = str(r.get("desc", ""))
+        number = r"(\d+(?:,\d{3})*(?:\.\d+)?)"
+        currency = r"(USD|HKD|CNY|RMB|SGD|JPY|EUR|GBP|AUD|CAD)"
+        m = _re.search(number + r"\s*" + currency + r"\b", desc, _re.I)
         if m:
-            r["amount"] = to_float(m.group(1))
-            r["currency"] = m.group(2).upper()
+            r["amount"], r["currency"] = to_float(m.group(1).replace(",", "")), m.group(2).upper()
+        else:
+            m = _re.search(r"\b" + currency + r"\s*" + number, desc, _re.I)
+            if m:
+                r["amount"], r["currency"] = to_float(m.group(2).replace(",", "")), m.group(1).upper()
     return rows
 
 

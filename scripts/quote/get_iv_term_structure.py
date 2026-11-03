@@ -22,7 +22,8 @@ import sys
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
-from common import (  # noqa: E402
+from common import (
+    days_to_years,  # noqa: E402
     find_atm_strike,
     get_option_chain,
     get_option_expirations,
@@ -68,19 +69,12 @@ def analyze(symbol: str, count: int = 8, output_json: bool = False) -> dict:
     if len(rows) < 2:
         raise ValueError("有效到期日不足 2 个,无法画期限结构")
 
-    # 天数(相对第一个到期日逐个算自然日差)
-    from datetime import datetime
-    today = datetime.now()
-    for r in rows:
-        try:
-            d = (datetime.strptime(r["expiry"], "%Y-%m-%d") - today).days
-            r["days"] = max(d, 0)
-        except ValueError:
-            r["days"] = None
+    for row in rows:
+        row["days"] = round(days_to_years(row["expiry"]) * 365, 2)
 
     slope = rows[-1]["atm_iv_pct"] - rows[0]["atm_iv_pct"]
-    shape = ("Backwardation(近月溢价,近期事件驱动,警惕 IV Crush)" if slope < -1 else
-             "Contango(远月更高,正常期限结构)" if slope > 1 else "平坦")
+    shape = ("Backwardation(近端 IV 较高)" if slope < -1 else
+             "Contango(远端 IV 较高)" if slope > 1 else "平坦")
 
     # 事件溢价检测:某中期到期日 IV 比前后邻点都高出 2pp 以上
     event_expiry = None
@@ -97,7 +91,7 @@ def analyze(symbol: str, count: int = 8, output_json: bool = False) -> dict:
         "slope_pp": round(slope, 2),
         "shape": shape,
         "event_premium_expiry": event_expiry,
-        "note": "ATM IV 取 call/put 均值。事件溢价=某到期日显著高于邻点(财报/CPI 等落在该周)。",
+        "note": "ATM IV 取 call/put 均值。中段峰值按邻点识别，需结合事件日历判断原因。",
     }
 
     if output_json:

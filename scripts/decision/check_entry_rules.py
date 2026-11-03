@@ -1,4 +1,4 @@
-"""入场纪律检查器(28 条军规: 下跌12不买 + 上涨6不买 + 高胜率买点10)。
+"""入场纪律检查器(28 条军规: 下跌12不买 + 上涨6不买 + 候选买点形态10)。
 
 把一套纪律清单变成可执行的判定引擎: 对单一标的逐条检查,
 输出「触发/未触发/需人工」三态,并给出最终入场结论。
@@ -6,7 +6,7 @@
 规则分组(编号固定,输出与文档一致):
   下跌过程 12 不买  D1-D12   (D5 与 U4 同引擎: 止损可判定性/承受力)
   上涨过程 6 不买   U1-U6
-  高胜率买点 10 条  B0-B9    (B0 = 盈亏比闸门,最低 1:1)
+  候选买点形态 10 条  B0-B9    (B0 = 盈亏比闸门,最低 1:1)
 
 可自动判定 vs 需人工:
   自动 — 收盘新低/新高、缩量、RSI、斐波那契、趋势线/颈线、支撑压力距离、
@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 from datetime import datetime
@@ -40,12 +41,14 @@ for _p in (os.path.normpath(os.path.join(_HERE, "..")), _HERE,
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import common
 from common import (  # noqa: E402
     get_finance_calendar, get_heat_rank, get_heat_rank_keys, get_industry_rank,
     get_kline_adjusted, get_underlying_price, is_empty, normalize_records,
     print_error, print_json, run_cli, to_float,
 )
 from indicators import atr as _atr  # noqa: E402
+from calc_relative_strength import trading_date  # noqa: E402
 from indicators import sma_series  # noqa: E402
 
 PIVOT_K = 3          # pivot 确认窗口:左右各 3 根
@@ -69,7 +72,7 @@ RULE_NAMES = {
     "D11": "盘前盘后非财报消息面异动",
     "D12": "盘前 30 分钟(9:00-9:30)不买",
     "U1": "缩量创新高",
-    "U2": "创历史新高但远离支撑",
+    "U2": "回看区间新高但远离支撑",
     "U3": "突破压力后紧邻下一强压力",
     "U4": "止损超出承受力(支撑太宽)",
     "U5": "日线严重超买 RSI(6)>90",
@@ -90,14 +93,6 @@ RULE_NAMES = {
 # ---------------------------------------------------------------------------
 # 基础序列工具(纯函数,便于离线测试)
 # ---------------------------------------------------------------------------
-
-def rolling_mean(vals: list[float], n: int) -> list[float | None]:
-    out: list[float | None] = [None] * len(vals)
-    for i in range(len(vals)):
-        if i + 1 >= n:
-            out[i] = sum(vals[i + 1 - n:i + 1]) / n
-    return out
-
 
 def rsi_series(closes: list[float], n: int = 14) -> list[float | None]:
     """Wilder RSI 序列(前 n 根为 None)。横盘无波动(gain=loss=0)返回中性 50,
@@ -195,7 +190,7 @@ def pct(x: float) -> str:
 # 特征提取(纯函数)
 # ---------------------------------------------------------------------------
 
-def build_features(bars: list[dict]) -> dict:
+def build_features(bars: list[dict], symbol: str = "US") -> dict:
     """bars: 按时间升序的 [{open,close,high,low,volume}],至少 30 根。"""
     # 脏数据防线(与 analyze 入口同款):任一 OHLC 缺失/为 None 整根剔除
     bars = [b for b in bars
@@ -204,11 +199,20 @@ def build_features(bars: list[dict]) -> dict:
     o = [float(b["open"]) for b in bars]
     h = [float(b["high"]) for b in bars]
     l = [float(b["low"]) for b in bars]
-    v = [float(b.get("volume") or 0) for b in bars]
+    v = [to_float(b.get("volume")) for b in bars]
+    v = [x if x is not None and math.isfinite(x) and x >= 0 else None for x in v]
+    dates = [trading_date(b.get("time") or b.get("timestamp") or b.get("date"), symbol)
+             for b in bars]
     n = len(c)
     last = c[-1]
 
-    vol_ma5 = rolling_mean(v, 5)
+    vol_ratio = [None] * n
+    for i in range(5, n):
+        previous = v[i - 5:i]
+        if v[i] is not None and None not in previous:
+            base = sum(previous) / 5
+            if base > 0:
+                vol_ratio[i] = v[i] / base
     ma5, ma10 = sma_series(c, 5), sma_series(c, 10)
     ma20, ma60 = sma_series(c, 20), sma_series(c, 60)
     r6 = rsi_series(c, 6)
@@ -231,8 +235,7 @@ def build_features(bars: list[dict]) -> dict:
     # 止损/目标与盈亏比(B0/D5/U4 共用)
     stop = sup["price"] if sup else None
     target = res["price"] if res else None
-    stop_dist = (last - stop) / last if (stop and last) else None
-    rr = round((target - last) / (last - stop), 2) if stop and target and last > stop else None
+    stop_dist, rr = _entry_risk(last, stop, target)
 
     # 趋势背景
     m20_now, m20_prev = ma20[-1], ma20[-8]
@@ -278,7 +281,7 @@ def build_features(bars: list[dict]) -> dict:
 
     return {
         "n": n, "o": o, "c": c, "h": h, "l": l, "v": v,
-        "last": last, "vol_ma5": vol_ma5, "ma5": ma5, "ma10": ma10,
+        "last": last, "dates": dates, "vol_ratio": vol_ratio, "ma5": ma5, "ma10": ma10,
         "ma20": ma20, "ma60": ma60, "rsi6": r6,
         "rsi6_last": r6[-1], "atr": atr14, "atr_pct": atr14 / last if last else 0.0,
         "pivots": pivots, "levels": levels, "supports": supports,
@@ -301,13 +304,25 @@ def _r(status: str, evidence: str) -> dict:
     return {"status": status, "evidence": evidence}
 
 
+def _entry_risk(price: float, stop: float | None, target: float | None) -> tuple:
+    if stop is None or not 0 < stop < price:
+        return None, None
+    risk = price - stop
+    rr = (target - price) / risk if target is not None else None
+    return risk / price, rr
+
+
 def check_rules(f: dict, opts: dict | None = None) -> dict:
     opts = opts or {}
-    lb = int(opts.get("lookback") or 60)
-    max_stop = float(opts.get("max_stop_pct") or 8.0)
+    lb = int(opts.get("lookback", 60))
+    max_stop = float(opts.get("max_stop_pct", 8.0))
+    if lb <= 0:
+        raise ValueError("lookback 必须为正数")
+    if not math.isfinite(max_stop) or not 0 <= max_stop <= 100:
+        raise ValueError("max-stop-pct 必须在 0 到 100 之间")
     n, c, o, h, l, v = f["n"], f["c"], f["o"], f["h"], f["l"], f["v"]
     last = f["last"]
-    vol5 = f["vol_ma5"]
+    ratios = f["vol_ratio"]
     R: dict[str, dict] = {}
 
     # ---- 下跌过程 12 不买 ----
@@ -354,20 +369,30 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
 
     # D4: 缩量反弹(反弹 + 仍处弱势区 + 缩量)
     weak_pos = (f["ma20"][-1] is not None and last < f["ma20"][-1]) or f["dd250"] >= 0.10
-    shrink_now = vol5[-1] is not None and v[-1] < SHRINK_VOL * vol5[-1]
+    shrink_now = ratios[-1] is not None and ratios[-1] < SHRINK_VOL
+    ratio_text = f"{ratios[-1]:.2f}" if ratios[-1] is not None else "不可用"
     rebound = last > c[-2]
-    R["D4"] = _r("triggered" if (rebound and weak_pos and shrink_now) else "clear",
+    R["D4"] = _r("manual" if rebound and weak_pos and ratios[-1] is None else
+                 "triggered" if rebound and weak_pos and shrink_now else "clear",
                  f"今日{'反弹' if rebound else '未反弹'},量比 "
-                 f"{(v[-1] / vol5[-1]) if vol5[-1] else 0:.2f},"
+                 f"{ratio_text},"
                  f"{'处弱势区' if weak_pos else '非弱势区'}")
 
     # D5(与 U4 同引擎): 止损可判定性 / 距离是否在承受力内
-    if f["stop"] is None:
+    price = opts.get("entry_price", last)
+    stop, target = f["stop"], opts.get("target_price")
+    if target is None:
+        target = f["target"]
+    stop_dist, rr = _entry_risk(price, stop, target)
+    if stop is not None and stop_dist is None:
+        stop_ev = f"入场参考价 {price:.2f} 已不高于原止损 {stop:.2f}"
+        stop_status = "triggered"
+    elif stop is None:
         stop_ev = "下方无明确支撑位,无法确定止损"
         stop_status = "triggered"
     else:
-        d = f["stop_dist"] * 100
-        stop_ev = f"建议止损 {f['stop']:.2f}(距现价 {d:.1f}%),承受力上限 {max_stop:.0f}%"
+        d = stop_dist * 100
+        stop_ev = f"建议止损 {stop:.2f}(距入场参考价 {d:.1f}%),承受力上限 {max_stop:g}%"
         stop_status = "triggered" if d > max_stop else "clear"
     R["D5"] = _r(stop_status, stop_ev)
     R["U4"] = _r(stop_status, stop_ev)
@@ -419,7 +444,9 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
     in_heat = opts.get("in_heat")
     smallcap = opts.get("smallcap")  # True/False/None(查询失败)
     d5 = (last - c[-6]) / c[-6] if n > 6 and c[-6] else 0.0
-    if in_heat is None:
+    if d5 > -0.08:
+        R["D10"] = _r("clear", f"近5日涨跌 {pct(d5)},未达到大跌阈值")
+    elif in_heat is None:
         R["D10"] = _r("manual", "热度榜数据不可用;该股是否刚经历大跌且社群热度飙升?"
                       " 市值是否偏小?")
     elif in_heat and d5 <= -0.08 and smallcap is False:
@@ -441,16 +468,16 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
                 else _r("manual", "盘前/盘后是否有非财报消息面的大涨大跌?"
                         " 用 --prepost-move yes/no 回答"))
 
-    # D12: 开盘后前 30 分钟(按市场当地时钟推算;原文「开盘前半小时」按开盘后
-    #      首 30 分钟纪律执行,与 D11 的盘前盘后互不重叠)
+    # D12: 按市场当地时间检查开盘前最后 30 分钟。
     R["D12"] = _check_open_window(opts)
 
     # ---- 上涨过程 6 不买 ----
     prior_max = max(c[max(0, n - lb - 1):-1]) if n > 5 else c[0]
     new_high_lb = last >= prior_max * 0.999
-    R["U1"] = _r("triggered" if (new_high_lb and shrink_now) else "clear",
+    R["U1"] = _r("manual" if new_high_lb and ratios[-1] is None else
+                 "triggered" if new_high_lb and shrink_now else "clear",
                  f"近{lb}日新高: {'是' if new_high_lb else '否'},量比 "
-                 f"{(v[-1] / vol5[-1]) if vol5[-1] else 0:.2f}")
+                 f"{ratio_text}")
 
     new_high_all = last >= max(c[:-1]) * 0.999
     below = [x["price"] for x in f["supports"]] + [m for m in (f["ma20"][-1], f["ma10"][-1])
@@ -480,20 +507,15 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
     R["U6"] = _r("triggered" if (r6 is not None and r6 > 80 and div) else "clear",
                  f"{r6_txt};顶背离: {'有(价升RSI降)' if div else '无'}")
 
-    # ---- 高胜率买点 ----
+    # ---- 候选买点形态 ----
     # B0: 盈亏比闸门
-    if f["rr"] is None:
-        if f["stop"] is None and f["target"] is None:
-            R["B0"] = _r("manual", "无结构位参考,盈亏比无法计算")
-        elif f["stop"] is None:
-            R["B0"] = _r("manual", f"下方无支撑,止损无法定;目标 {f['target']:.2f}")
-        else:
-            R["B0"] = _r("manual", f"止损 {f['stop']:.2f};上方无结构压力"
-                          "(空间最优情形),按自定目标核算盈亏比 ≥1:1")
+    if rr is None:
+        R["B0"] = _r("manual", "缺少有效止损或目标，无法核算最低 1:1 盈亏比"
+                    "；可用 --target-price 指定目标")
     else:
-        R["B0"] = _r("pass" if f["rr"] >= 1.0 else "fail",
-                     f"目标 {f['target']:.2f}(压力) / 止损 {f['stop']:.2f}(支撑)"
-                     f" → 盈亏比 1:{f['rr']:.2f}")
+        R["B0"] = _r("pass" if rr >= 1.0 else "fail",
+                     f"目标 {target:.2f} / 入场 {price:.2f} / 止损 {stop:.2f}"
+                     f" → 盈亏比 {rr:.4g}:1")
 
     R["B1"] = _check_b1(f)
     R["B2"] = _check_b2(f)
@@ -505,20 +527,33 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
     R["B8"] = _check_b8(f, opts)
     R["B9"] = _check_b9(f)
 
-    # B 规则的 manual(如 B8 待确认板块)也要进人工清单,不能被结论吞没;
-    # B0 闸门的 manual 不阻断、单列在 gate 里,不重复计入
+    # B0 与所有未确认的不买纪律阻断最终通过。
     triggered = [k for k in RULE_NAMES if R[k]["status"] == "triggered"]
     manual = [k for k in RULE_NAMES if R[k]["status"] == "manual" and k != "B0"]
     matched = [k for k in R if k.startswith("B") and k != "B0"
                and R[k]["status"] == "matched"]
     b_pending = [k for k in manual if k.startswith("B")]
     gate_fail = R["B0"]["status"] == "fail"
+    required = [k for k in manual if not k.startswith("B")]
+    if R["B0"]["status"] == "manual":
+        required.insert(0, "B0")
+    data_quality = {}
+    if opts.get("quote_available") is False:
+        data_quality["quote"] = "未取得有效实时参考价，当前止损及盈亏比仍待核实"
+    if ratios[-1] is None or v[-1] <= 0:
+        data_quality["volume"] = "最新成交量或前五根均量不足，量能纪律仍待核实"
+    if opts.get("latest_bar_valid") is False:
+        data_quality["latest_bar"] = "最新日K价格数据不完整，形态仍待核实"
+    required.extend(data_quality)
 
     reasons = [f"{k} {RULE_NAMES[k]}({R[k]['evidence'][:40]})" for k in triggered]
     if gate_fail:
         reasons.append(f"B0 {R['B0']['evidence']}")
     if reasons:
         verdict, v_reasons = "❌ 不买", reasons
+    elif matched and required:
+        verdict = "⏸️ 观望(结构符合，纪律待确认)"
+        v_reasons = [f"已匹配结构: {','.join(matched)}", f"必要确认: {','.join(required)}"]
     elif matched:
         verdict = "✅ 结构符合(纪律通过)"
         v_reasons = [f"{k} {RULE_NAMES[k]}" for k in matched]
@@ -527,12 +562,15 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
         v_reasons = [f"潜在买点待确认: {','.join(b_pending)}"
                      "(回答对应 CLI 参数后复跑)"]
     else:
-        verdict, v_reasons = "⏸️ 观望", ["未出现任何高胜率买点结构"]
+        verdict, v_reasons = "⏸️ 观望", ["未出现任何候选买点形态结构"]
+    if data_quality:
+        v_reasons.extend(data_quality.values())
     if manual and verdict != "❌ 不买":
         v_reasons = v_reasons + [f"待人工确认: {','.join(manual)}"]
 
     return {"context": f["context"], "rules": R, "triggered": triggered,
-            "manual": manual, "matched": matched, "gate": R["B0"],
+            "manual": manual, "required_confirmations": required, "data_quality": data_quality, "matched": matched, "gate": R["B0"],
+            "levels": {"support": stop, "resistance": f["target"], "target": target, "rr": rr},
             "verdict": verdict, "verdict_reasons": v_reasons}
 
 
@@ -543,19 +581,19 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
 def _check_b1(f: dict) -> dict:
     """放量突破前高/强压力 → 缩量回踩不破。"""
     n, c, v, h = f["n"], f["c"], f["v"], f["h"]
-    vol5 = f["vol_ma5"]
+    ratios = f["vol_ratio"]
     ph = f["piv_highs"]
     for b in range(max(5, n - 12), n):
         prior = [p["price"] for p in ph if b - 60 <= p["idx"] < b]
         level = max(prior) if prior else max(h[max(0, b - 20):b])
-        if not (v[b] >= EXPAND_VOL * (vol5[b] or v[b]) and c[b] > level):
+        if not (ratios[b] is not None and ratios[b] >= EXPAND_VOL and c[b] > level):
             continue
         after = list(range(b + 1, n))
         if len(after) < 1:
             continue
         holds = all(c[i] >= level * 0.99 for i in after)
         pulled = min(c[i] for i in after) < c[b]
-        shrink = max(v[i] for i in after) < v[b] if after else False
+        shrink = all(v[i] is not None and v[i] < v[b] for i in after)
         near = level <= c[-1] <= c[b] * 1.05
         if holds and pulled and shrink and near:
             return _r("matched", f"第{b}根放量突破 {level:.2f} 后缩量回踩不破,"
@@ -566,7 +604,7 @@ def _check_b1(f: dict) -> dict:
 def _check_b2(f: dict) -> dict:
     """下降趋势线放量突破 → 缩量回踩收盘不跌回线下。"""
     n, c, v = f["n"], f["c"], f["v"]
-    vol5 = f["vol_ma5"]
+    ratios = f["vol_ratio"]
     ph = f["piv_highs"]
     if len(ph) < 2:
         return _r("none", "pivot 不足,无法拟合下降趋势线")
@@ -577,13 +615,13 @@ def _check_b2(f: dict) -> dict:
     # i ≤ n-2: 突破后至少要有一根回踩棒——突破当天不能自称「回踩不破」;
     # 且必须有真实回踩动作(突破后出现过低于突破收盘的高点回撤)与回踩缩量
     for i in range(max(1, n - 8), n - 1):
-        if c[i] > line(i) and c[i - 1] <= line(i - 1) and v[i] >= 1.2 * (vol5[i] or v[i]):
+        if c[i] > line(i) and c[i - 1] <= line(i - 1) and ratios[i] is not None and ratios[i] >= 1.2:
             after = list(range(i + 1, n))
             if not after:
                 continue
             holds = all(c[j] >= line(j) * 0.998 for j in after)
             pulled = min(c[j] for j in after) < c[i]  # 单边拉升不算「回踩」
-            shrink = max(v[j] for j in after) <= v[i]  # 回踩段不超突破量
+            shrink = all(v[j] is not None and v[j] <= v[i] for j in after)  # 回踩段不超突破量
             if holds and pulled and shrink:
                 return _r("matched", f"放量突破下降趋势线(斜率{slope:.3f})后缩量回踩,"
                           "收盘未跌回线下")
@@ -593,7 +631,7 @@ def _check_b2(f: dict) -> dict:
 def _check_b3(f: dict) -> dict:
     """上升旗形: 旗杆(3根+连涨≥8%) → 旗面(3-8根缩量阴跌,不破杆顶) → 放量过旗面。"""
     n, c, v, h = f["n"], f["c"], f["v"], f["h"]
-    vol5 = f["vol_ma5"]
+    ratios = f["vol_ratio"]
     for s in range(max(0, n - 20), n - 8):
         e = s
         # 旗杆允许杆内单日小幅洗盘(单根 ≥-0.2% 的小阴/十字不切断旗杆;
@@ -610,9 +648,11 @@ def _check_b3(f: dict) -> dict:
             continue  # 旗面创了新高,不是旗形
         if c[n - 2] < c[e] - 0.4 * (c[e] - c[s]):
             continue  # 回撤过深
+        if None in v[s:n - 1]:
+            continue
         if sum(v[e + 1:n - 1]) / len(flag) >= 0.85 * sum(v[s:e + 1]) / pole_len:
             continue  # 旗面未缩量
-        if c[-1] > max(h[e + 1:n - 1]) and v[-1] >= 1.2 * (vol5[-1] or v[-1]):
+        if c[-1] > max(h[e + 1:n - 1]) and ratios[-1] is not None and ratios[-1] >= 1.2:
             return _r("matched", f"旗杆{pole_len}根涨{pct(c[e] / c[s] - 1)},旗面"
                       f"{len(flag)}根缩量整理,今放量破旗面")
     return _r("none", "未检出上升旗形结构")
@@ -621,7 +661,7 @@ def _check_b3(f: dict) -> dict:
 def _check_b4(f: dict) -> dict:
     """W底/双底: 颈线放量突破 → 回踩不破颈线。"""
     n, c, v, h = f["n"], f["c"], f["v"], f["h"]
-    vol5 = f["vol_ma5"]
+    ratios = f["vol_ratio"]
     pl = f["piv_lows"]
     pair = None
     for i in range(len(pl) - 1):
@@ -634,7 +674,7 @@ def _check_b4(f: dict) -> dict:
     a, b = pair
     neck = max(h[a["idx"] + 1:b["idx"]])
     for i in range(max(b["idx"] + 2, n - 10), n):
-        if c[i] > neck and v[i] >= 1.4 * (vol5[i] or v[i]):
+        if c[i] > neck and ratios[i] is not None and ratios[i] >= 1.4:
             after = list(range(i + 1, n))
             if not after:
                 continue  # 突破棒就是最新一根,回踩尚未发生
@@ -685,11 +725,11 @@ def _check_b6(f: dict) -> dict:
     """缩量阴线创近期低点 → 放量看涨吞没大阳线(上影短)。"""
     c, o, v = f["c"], f["o"], f["v"]
     n = f["n"]
-    vol5 = f["vol_ma5"]
+    ratios = f["vol_ratio"]
     p = n - 2
     if p < 1:
         return _r("na", "数据不足")
-    shrink = vol5[p] and v[p] < SHRINK_VOL * vol5[p]
+    shrink = ratios[p] is not None and ratios[p] < SHRINK_VOL
     at_low = c[p] <= min(c[max(0, p - 10):p]) * 1.001
     down = c[p] < o[p]
     if not (shrink and at_low and down):
@@ -698,11 +738,11 @@ def _check_b6(f: dict) -> dict:
     avg_body = sum(abs(c[i] - o[i]) for i in range(max(0, n - 11), n - 1)) / 10
     upper = f["h"][-1] - max(c[-1], o[-1])
     engulf = o[-1] <= c[p] and c[-1] >= o[p]
-    vol_ok = vol5[-1] is not None and v[-1] >= 1.2 * vol5[-1]  # 「放量」落到实处
+    vol_ok = ratios[-1] is not None and ratios[-1] >= 1.2  # 「放量」落到实处
     if engulf and body >= 1.5 * max(avg_body, 1e-9) and \
        upper <= 0.3 * max(body, 1e-9) and vol_ok:
         return _r("matched", f"放量吞没大阳(实体约为均体 {body / max(avg_body, 1e-9):.1f} 倍,"
-                  f"量比 {v[-1] / vol5[-1]:.1f},上影短)")
+                  f"量比 {ratios[-1]:.1f},上影短)")
     return _r("none", "当日无有效放量看涨吞没")
 
 
@@ -710,11 +750,11 @@ def _check_b7(f: dict) -> dict:
     """缩量阴线创近期低点 → 标准放量锤子线(下影≥2倍实体,上影极短)。"""
     c, o, v, h, l = f["c"], f["o"], f["v"], f["h"], f["l"]
     n = f["n"]
-    vol5 = f["vol_ma5"]
+    ratios = f["vol_ratio"]
     p = n - 2
     if p < 1:
         return _r("na", "数据不足")
-    shrink = vol5[p] and v[p] < SHRINK_VOL * vol5[p]
+    shrink = ratios[p] is not None and ratios[p] < SHRINK_VOL
     at_low = c[p] <= min(c[max(0, p - 10):p]) * 1.001
     down = c[p] < o[p]
     if not (shrink and at_low and down):
@@ -725,7 +765,7 @@ def _check_b7(f: dict) -> dict:
     lower = min(c[-1], o[-1]) - l[-1]
     upper = h[-1] - max(c[-1], o[-1])
     rng = h[-1] - l[-1]
-    vol_ok = vol5[-1] and v[-1] >= 1.2 * vol5[-1]
+    vol_ok = ratios[-1] is not None and ratios[-1] >= 1.2
     if lower >= 2 * body and upper <= 0.35 * body and rng > 0 and \
        (c[-1] - l[-1]) / rng >= 0.6 and vol_ok:
         return _r("matched", f"标准锤子线(下影 {lower / body:.1f} 倍实体)且放量,"
@@ -737,8 +777,8 @@ def _check_b8(f: dict, opts: dict) -> dict:
     """板块突破日,成分股放量实体大阳突破最近压力(个股半边自动,板块半边人工)。"""
     c, o, v, h = f["c"], f["o"], f["v"], f["h"]
     n = f["n"]
-    vol5 = f["vol_ma5"]
-    ok = False
+    ratios = f["vol_ratio"]
+    breakout = None
     for b in (n - 1, n - 2):
         if b < 5:
             continue
@@ -746,13 +786,20 @@ def _check_b8(f: dict, opts: dict) -> dict:
         level = max(prior) if prior else max(h[max(0, b - 20):b])
         body = c[b] - o[b]
         upper = h[b] - max(c[b], o[b])
-        if c[b] and v[b] >= EXPAND_VOL * (vol5[b] or v[b]) and body > 0 and \
+        if c[b] and ratios[b] is not None and ratios[b] >= EXPAND_VOL and body > 0 and \
            body / c[b] >= 0.03 and upper <= 0.3 * body and c[b] > level:
-            ok = True
+            breakout = b
             break
-    if not ok:
+    if breakout is None:
         return _r("none", "近两日无「放量实体大阳突破最近压力」")
     ans = opts.get("sector_breakout")
+    dates = f.get("dates") or [None] * n
+    breakout_date = dates[breakout]
+    if opts.get("sector_auto") and (
+        breakout_date is None or breakout_date != opts.get("sector_date")
+    ):
+        return _r("manual", f"个股突破日期 {breakout_date or '未知'}，无同日板块证据"
+                  "；可用 --sector-breakout yes/no 回答")
     detail = f"({opts['sector_detail']})" if opts.get("sector_detail") else ""
     if ans == "yes":
         return _r("matched", f"个股放量长阳突破成立,且确认所属板块当日突破{detail}")
@@ -826,39 +873,22 @@ def _et_utc_offset(d: datetime) -> int:
     return -4 if dst_start <= d < dst_end else -5
 
 
-def _market_local_now(symbol: str) -> datetime | None:
-    """尽力取市场当地时间。HK=UTC+8(固定);US 优先 zoneinfo(带 tzdata 时
-    最准),不可用时退纯算法夏令时规则——避免 py3.8 无 zoneinfo 时固定 UTC-5
-    导致夏令时期间窗口错位 1 小时。"""
-    now = datetime.utcnow()
-    if symbol.upper().endswith(".HK"):
-        from datetime import timedelta
-        return now + timedelta(hours=8)
-    try:
-        from zoneinfo import ZoneInfo
-        return datetime.now(ZoneInfo("America/New_York")).replace(tzinfo=None)
-    except Exception:
-        from datetime import timedelta
-        return now + timedelta(hours=_et_utc_offset(now))
-
-
 # ---------------------------------------------------------------------------
 # CLI 数据层
 # ---------------------------------------------------------------------------
 
-def _days_to_earnings(symbol: str) -> int | None:
+def _days_to_earnings(symbol: str, now: datetime | None = None) -> int | None:
     try:
         market = symbol.rsplit(".", 1)[-1] if "." in symbol else "US"
         buckets = get_finance_calendar(category="report", market=market,
                                        symbol=symbol, count=20)
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = now.date() if now is not None else common.market_date(symbol)
         best = None
         for b in buckets or []:
             for info in b.get("infos", []):
                 d = str(info.get("date", "")).replace(".", "-")[:10]
                 try:
-                    days = (datetime.strptime(d, "%Y-%m-%d")
-                            - datetime.strptime(today, "%Y-%m-%d")).days
+                    days = (datetime.strptime(d, "%Y-%m-%d").date() - today).days
                 except ValueError:
                     continue
                 if days >= 0 and (best is None or days < best):
@@ -972,7 +1002,8 @@ _ICON = {"triggered": "❌", "clear": "✅", "manual": "❓", "matched": "🎯",
 def render(symbol: str, result: dict, price, generated: str) -> None:
     R = result["rules"]
     print(f"{'=' * 60}")
-    print(f"  {symbol} 入场纪律检查(28条军规)  现价 {price}  {generated}")
+    source = "实时参考价" if result["price_source"] == "quote" else "最近日K收盘参考价"
+    print(f"  {symbol} 入场纪律检查(28条军规)  {source} {price}  {generated}")
     print(f"{'=' * 60}")
     print(f"\n  趋势背景: {result['context']}\n")
     print("  ◆ 下跌过程 12 不买:")
@@ -983,7 +1014,7 @@ def render(symbol: str, result: dict, price, generated: str) -> None:
     for k in [f"U{i}" for i in range(1, 7)]:
         r = R[k]
         print(f"    {_ICON.get(r['status'], ' ')} [{k}] {RULE_NAMES[k]} — {r['evidence']}")
-    print("  ◆ 高胜率买点:")
+    print("  ◆ 候选买点形态:")
     for k in [f"B{i}" for i in range(0, 10)]:
         r = R[k]
         print(f"    {_ICON.get(r['status'], ' ')} [{k}] {RULE_NAMES[k]} — {r['evidence']}")
@@ -994,20 +1025,34 @@ def render(symbol: str, result: dict, price, generated: str) -> None:
     print(f"\n  ⚠️ 纪律参考非投资建议;形态识别为算法近似,请人工复核。")
     print(f"  人工项回答方式: --sector-top-decline/--recent-stopout/--familiar/")
     print(f"                 --prepost-move/--sector-breakout yes|no;")
+    print(f"  B0 自定目标可用 --target-price。")
     print(f"  B8 板块可 --sector <行业名> 自动查当日涨幅(阈值 --sector-chg-pct)。")
 
 
 def analyze(symbol: str, args) -> dict:
+    market = symbol.rsplit(".", 1)[-1].upper() if "." in symbol else "US"
+    if args.lookback <= 0 or not 0 <= args.max_stop_pct <= 100:
+        raise ValueError("lookback 必须为正数，max-stop-pct 必须在 0 到 100 之间")
+    if args.earnings_days is not None and args.earnings_days < 0:
+        raise ValueError("earnings-days 不能为负数")
+    target = getattr(args, "target_price", None)
+    if target is not None and (not math.isfinite(target) or target <= 0):
+        raise ValueError("target-price 必须为有限正数")
     bars = get_kline_adjusted(symbol, count=260)
+    latest_bar = bars[-1] if bars else None
     # 脏数据防线:任一 OHLC 缺失/为 None 的 K 线整根剔除(与 v0.5.3 对
     # calc_indicators 的处理同款),避免 float(None) 与指标错位
     bars = [b for b in bars
-            if all(b.get(k) is not None for k in ("open", "close", "high", "low"))]
+            if all(to_float(b.get(k)) is not None for k in ("open", "close", "high", "low"))]
     if len(bars) < 30:
         raise RuntimeError(f"K线不足 30 根(实际 {len(bars)}),无法检查")
-    f = build_features(bars)
-    market = symbol.rsplit(".", 1)[-1] if "." in symbol else "US"
+    f = build_features(bars, symbol)
+    quote = to_float(get_underlying_price(symbol))
+    live = quote is not None and math.isfinite(quote) and quote > 0
+    price = quote if live else f["last"]
     opts = {
+        "entry_price": price, "target_price": target, "quote_available": live,
+        "latest_bar_valid": bars[-1] is latest_bar,
         "lookback": args.lookback, "max_stop_pct": args.max_stop_pct,
         "sector_top_decline": args.sector_top_decline,
         "recent_stopout": args.recent_stopout,
@@ -1015,32 +1060,33 @@ def analyze(symbol: str, args) -> dict:
         "sector_breakout": args.sector_breakout,
         "earnings_days": args.earnings_days,
         "in_heat": None if args.no_heat else _in_heat_rank(symbol),
-        "smallcap": None if args.no_heat else _is_small_cap(symbol, args.smallcap_usd),
+        "smallcap": None if args.no_heat else _is_small_cap(symbol, args.smallcap_usd, price),
         "closed_dates": _closed_dates(market),
         "market": market,
     }
     if args.now:
         opts["now"] = datetime.strptime(args.now, "%Y-%m-%d %H:%M")
     else:
-        opts["now"] = _market_local_now(symbol)
+        opts["now"] = common.market_now(market)
     if opts["earnings_days"] is None:
-        opts["earnings_days"] = _days_to_earnings(symbol)
+        opts["earnings_days"] = _days_to_earnings(symbol, opts["now"])
     # B8 板块半边: 用户显式回答优先;否则尝试 industry-rank 自动判定
     if not args.sector_breakout:
         ans, note = _auto_sector_breakout(symbol, market, args.sector,
                                           args.sector_chg_pct / 100.0)
         opts["sector_breakout"] = ans
+        opts["sector_auto"] = True
+        opts["sector_date"] = common.market_date(market)
         if note:
             opts["sector_detail"] = note
 
     result = check_rules(f, opts)
-    price = get_underlying_price(symbol) or f["last"]
     result.update({"symbol": symbol, "price": price,
+                   "price_source": "quote" if live else "last_daily_close",
+                   "last_daily_close": f["last"],
                    "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                   "levels": {"support": f["stop"], "resistance": f["target"],
-                              "rr": f["rr"]},
                    "smallcap": opts["smallcap"],
-                   "disclaimer": "纪律清单参考,非投资建议;形态识别为算法近似。"})
+                   "disclaimer": "纪律清单参考。候选形态为启发式，未校准样本外胜率。"})
     if args.output_json:
         print_json(result)
     else:
@@ -1059,7 +1105,7 @@ def _bar(o, c, h=None, lo=None, vol=1_000_000):
             "volume": vol}
 
 
-def _demo() -> None:
+def _demo(output_json: bool = False) -> None:
     """三个合成场景: 阴跌新低 / 超买疯涨 / 突破回踩,验证引擎方向性。"""
     scenes = {}
 
@@ -1085,12 +1131,18 @@ def _demo() -> None:
              _bar(104.5, 105.0, vol=1_000_000)]
     scenes["放量突破后缩量回踩"] = bars
 
+    results = {}
     for name, bs in scenes.items():
         r = check_rules(build_features(bs))
+        results[name] = r
+        if output_json:
+            continue
         tri = ",".join(r["triggered"]) or "无"
         mat = ",".join(r["matched"]) or "无"
         print(f"  {name}: 背景={r['context']} 触发不买={tri} 买点={mat}"
               f" → {r['verdict']}")
+    if output_json:
+        print_json(results)
 
 
 if __name__ == "__main__":
@@ -1102,6 +1154,7 @@ if __name__ == "__main__":
                         help="「近期」新低/新高回看天数(默认60)")
     parser.add_argument("--max-stop-pct", type=float, default=8.0,
                         help="止损距离承受力上限%%(默认8,超出判不买)")
+    parser.add_argument("--target-price", type=float, help="手动指定盈亏比闸门目标价")
     parser.add_argument("--sector-top-decline", choices=["yes", "no"],
                         help="D6: 昨日板块内跌幅是否前10%%")
     parser.add_argument("--recent-stopout", choices=["yes", "no"],
@@ -1125,7 +1178,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.demo:
-        _demo()
+        _demo(output_json=args.output_json)
         sys.exit(0)
     if not args.symbol:
         parser.error("需要 symbol(或使用 --demo)")

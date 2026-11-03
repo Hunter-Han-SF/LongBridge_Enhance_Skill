@@ -1,9 +1,9 @@
 """获取 SEC Form 4 内部人交易 + 买卖信号汇总(⚠️仅美股)。
 
 对应 Longbridge CLI: insider-trades <SYMBOL>
-独立性比卖方评级强:高管/大股东用真金白银投票。
+区分公开市场或私下买卖、授予、行权及向发行人处置。
 type: BUY(买入)/SELL(卖出)/EXERCISE(行权)/GRANT(授予)/GIFT(赠与)等;
-code: 'A'= acquire(买)/'D'= dispose(卖)/'M'= option exercise(Form 4 code)。
+code: P/S=买卖，A=授予，D=向发行人处置，M=行权或转换（Form 4）。
 
 加工:净买入金额、买卖笔数/金额统计、最大单笔交易。
 
@@ -29,16 +29,22 @@ from common import (  # noqa: E402
     to_float,
 )
 
-_BUY_TYPES = {"BUY", "PURCHASE", "GRANT", "EXERCISE"}
+_BUY_TYPES = {"BUY", "PURCHASE"}
+_FORM4_CODES = {"P": "买入", "S": "卖出", "A": "授予",
+                "D": "向发行人处置", "M": "行权/转换"}
 _SELL_TYPES = {"SELL", "SALE"}
 
 
 def _classify(t: str, code: str) -> str:
     t = str(t or "").upper()
     code = str(code or "").upper()
-    if t in _SELL_TYPES or code == "D":
+    if code in _FORM4_CODES:
+        return _FORM4_CODES[code]
+    if t in {"GRANT", "EXERCISE", "GIFT"}:
+        return {"GRANT": "授予", "EXERCISE": "行权/转换", "GIFT": "赠与"}[t]
+    if t in _SELL_TYPES:
         return "卖出"
-    if t in _BUY_TYPES or code == "A":
+    if t in _BUY_TYPES:
         return "买入"
     return t or code or "其他"
 
@@ -53,17 +59,20 @@ def fetch_insider_trades(symbol: str, count: int = 20, output_json: bool = False
 
     buys = [t for t in trades if t["side"] == "买入"]
     sells = [t for t in trades if t["side"] == "卖出"]
-    buy_value = sum(to_float(t.get("value")) or 0 for t in buys)
-    sell_value = sum(to_float(t.get("value")) or 0 for t in sells)
-    net = buy_value - sell_value
-    largest = max(trades, key=lambda t: to_float(t.get("value")) or 0)
+    def total_value(records):
+        values = [to_float(t.get("value")) for t in records]
+        return sum(abs(v) for v in values) if all(v is not None for v in values) else None
 
-    def _signal(net_value: float) -> str:
-        if net_value > 0 and sell_value == 0:
-            return "净买入(偏多)"
-        if net_value < 0 and buy_value == 0:
-            return "净卖出(偏空)"
-        return "多空混合(中性)"
+    buy_value, sell_value = total_value(buys), total_value(sells)
+    net = buy_value - sell_value if buy_value is not None and sell_value is not None else None
+    priced = [t for t in trades if to_float(t.get("value")) is not None]
+    largest = max(priced, key=lambda t: abs(to_float(t.get("value"))), default=None)
+    if not buys and not sells:
+        signal = "无公开市场或私下买卖"
+    elif net is None:
+        signal = "成交金额资料不足"
+    else:
+        signal = "净买入" if net > 0 else "净卖出" if net < 0 else "买卖金额相抵"
 
     result = {
         "symbol": symbol,
@@ -71,7 +80,7 @@ def fetch_insider_trades(symbol: str, count: int = 20, output_json: bool = False
         "stats": {
             "buy_count": len(buys), "sell_count": len(sells),
             "buy_value": buy_value, "sell_value": sell_value, "net_value": net,
-            "signal": _signal(net),
+            "signal": signal,
         },
         "largest_trade": largest,
         "trades": trades,
@@ -83,12 +92,15 @@ def fetch_insider_trades(symbol: str, count: int = 20, output_json: bool = False
 
     s = result["stats"]
     print(f"{symbol} 内部人交易(近 {len(trades)} 笔)")
-    print(f"  买入 {s['buy_count']} 笔 / {s['buy_value']/1e6:.2f}M 美元,"
-          f"卖出 {s['sell_count']} 笔 / {s['sell_value']/1e6:.2f}M 美元")
-    print(f"  净额 {net/1e6:+.2f}M 美元 → {s['signal']}")
-    print(f"  最大单笔: {largest.get('owner')}({largest.get('title')})"
-          f" {largest.get('side')} {largest.get('shares')} 股"
-          f" @ {largest.get('price')}(值 {to_float(largest.get('value')) or 0:,.0f})")
+    buy_text = f"{buy_value/1e6:.2f}M 美元" if buy_value is not None else "N/A"
+    sell_text = f"{sell_value/1e6:.2f}M 美元" if sell_value is not None else "N/A"
+    net_text = f"{net/1e6:+.2f}M 美元" if net is not None else "N/A"
+    print(f"  买入 {s['buy_count']} 笔 / {buy_text}，卖出 {s['sell_count']} 笔 / {sell_text}")
+    print(f"  净额 {net_text} → {signal}")
+    if largest is not None:
+        print(f"  最大单笔: {largest.get('owner')}({largest.get('title')})"
+              f" {largest.get('side')} {largest.get('shares')} 股"
+              f" @ {largest.get('price')}(值 {to_float(largest.get('value')):,.0f})")
     print()
     rows = [{
         "日期": t.get("date", ""),

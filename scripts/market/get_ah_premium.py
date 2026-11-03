@@ -53,7 +53,9 @@ def _analyze(rows: list[dict]) -> dict:
     half = len(rates) // 2 or 1
     first_half = sum(rates[:half]) / half
     second_half = sum(rates[-half:]) / half
-    trend = second_half - first_half
+    trend = second_half - first_half if len(rates) > 1 else None
+    direction = (None if trend is None else "H相对走强" if trend > 0 else
+                 "A相对走强" if trend < 0 else "持平")
     return {
         "latest": round(latest, 4),
         "mean": round(mean, 4),
@@ -61,9 +63,8 @@ def _analyze(rows: list[dict]) -> dict:
         "min": round(min(rates), 4),
         "zscore": round((latest - mean) / (statistics.pstdev(rates) or 1), 2)
             if len(rates) >= 3 else None,
-        "trend": {"direction": "溢价收窄(H相对走强)" if trend > 0 else "溢价走阔(A相对走强)",
-                   "change": round(trend, 4)},
-        "note": "rate<0 表示 H 股折价;zscore>1 表示当前折价深于均值(潜在修复机会)",
+        "trend": {"direction": direction, "change": round(trend, 4) if trend is not None else None},
+        "note": "rate<0 表示 H 股折价。正 z-score 表示 H/A 相对价格高于均值，折价较浅或溢价较高。",
     }
 
 

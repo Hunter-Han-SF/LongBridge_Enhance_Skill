@@ -18,11 +18,14 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import datetime
+from datetime import date, datetime, timezone
+import math
+import re
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import common
 from common import (  # noqa: E402
     get_kline_adjusted,
     print_display_table,
@@ -30,20 +33,50 @@ from common import (  # noqa: E402
     print_json,
     to_float,
 )
-from indicators import beta, daily_returns, total_return  # noqa: E402
+from indicators import beta, daily_returns  # noqa: E402
 
 # 各市场默认基准
 DEFAULT_BENCHMARK = {"US": "SPY.US", "HK": "2800.HK", "SH": "510300.SH", "SZ": "510300.SH"}
 
 
-def _ts_to_date(ts) -> str:
+def trading_date(value, symbol: str) -> date | None:
+    """Parse explicit dates or timestamped bars, using the instrument market."""
+    raw = str(value).strip()
+    if re.fullmatch(r"\d{8}", raw):
+        try:
+            return datetime.strptime(raw, "%Y%m%d").date()
+        except ValueError:
+            return None
+    if re.match(r"^\d{4}[-/]\d{2}[-/]\d{2}(?:$|[T ])", raw):
+        try:
+            dt = datetime.fromisoformat(raw.replace("/", "-").replace("Z", "+00:00"))
+            return common.market_date(symbol, dt) if dt.tzinfo else dt.date()
+        except ValueError:
+            return None
     try:
-        n = int(float(ts))
-        if n > 1e12:
-            n //= 1000
-        return datetime.utcfromtimestamp(n).strftime("%Y-%m-%d")
-    except (TypeError, ValueError, OSError):
-        return str(ts)
+        ts = float(raw)
+        if not math.isfinite(ts):
+            return None
+        if abs(ts) >= 1e11:
+            ts /= 1000
+        if abs(ts) < 1e8:
+            return None
+        return common.market_date(symbol, datetime.fromtimestamp(ts, timezone.utc))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _dated_closes(rows: list[dict], symbol: str) -> dict:
+    closes, conflicts = {}, set()
+    for bar in rows:
+        day = trading_date(bar.get("time") or bar.get("timestamp") or bar.get("date"), symbol)
+        close = to_float(bar.get("close"))
+        if day is None or close is None or not math.isfinite(close) or close <= 0:
+            continue
+        if day in closes and closes[day] != close:
+            conflicts.add(day)
+        closes[day] = close
+    return {day: close for day, close in closes.items() if day not in conflicts}
 
 
 def analyze(symbol: str, benchmark: str | None = None, count: int = 260,
@@ -57,19 +90,9 @@ def analyze(symbol: str, benchmark: str | None = None, count: int = 260,
     if not kl_a or not kl_b:
         raise ValueError(f"无法获取 {symbol} 或基准 {benchmark} 的 K 线")
 
-    def _series(kl):
-        return [(str(k.get("time") or k.get("timestamp") or i), to_float(k.get("close")))
-                for i, k in enumerate(kl)]
-
-    a = [(t, c) for t, c in _series(kl_a) if c]
-    b = [(t, c) for t, c in _series(kl_b) if c]
-
-    # 按日期对齐(取交集;time 可能是 ISO 字符串或时间戳,统一转日期键)
-    def _datekey(t):
-        return t[:10] if "-" in t or "/" in t else _ts_to_date(t)
-
-    b_map = {_datekey(t): c for t, c in b}
-    pairs = [(_datekey(t), ca, b_map[_datekey(t)]) for t, ca in a if _datekey(t) in b_map]
+    a = _dated_closes(kl_a, symbol)
+    b = _dated_closes(kl_b, benchmark)
+    pairs = [(day, a[day], b[day]) for day in sorted(a.keys() & b.keys())]
     if len(pairs) < 40:
         raise ValueError(f"与基准可对齐的 K 线不足({len(pairs)} 根,需 ≥40)")
 
@@ -102,9 +125,9 @@ def analyze(symbol: str, benchmark: str | None = None, count: int = 260,
     else:
         verdict = "与大盘互有强弱(震荡)"
     beta_note = (f"Beta={bta:.2f}(每 1% 大盘波动,标的约 {bta:+.2f}%)"
-                 if bta else "Beta 数据不足")
-    if bta:
-        beta_note += " 高弹性" if bta > 1.3 else (" 防御型" if bta < 0.7 else "")
+                 if bta is not None else "Beta 数据不足")
+    if bta is not None:
+        beta_note += " 高弹性" if bta > 1.3 else (" 反向敞口" if bta < 0 else " 低敏感度" if bta < 0.7 else "")
 
     result = {
         "symbol": symbol,
@@ -112,7 +135,7 @@ def analyze(symbol: str, benchmark: str | None = None, count: int = 260,
         "aligned_bars": len(pairs),
         "date_range": f"{dates[0]} ~ {dates[-1]}",
         "relative_strength": rs_all,
-        "beta": round(bta, 3) if bta else None,
+        "beta": round(bta, 3) if bta is not None else None,
         "verdict": verdict,
         "beta_note": beta_note,
         "table": rows,

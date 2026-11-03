@@ -2,7 +2,7 @@
 
 理论: 做市商/卖方的对冲行为倾向于把价格"拉"向 Max Pain 价位
   (该价位上所有 Call+Put 的内在价值赔付总和最小)。
-到期日效应: 越接近到期,价格向 Max Pain 收敛的引力越常被观察到。
+该值是所分析样本中的最低赔付价位。
 
 权重口径(自动选择):
   ✅ 优先 **真实 OI**(calc-index 按合约逐个查询,存量持仓口径,与主流 Max Pain 一致)
@@ -57,6 +57,8 @@ def analyze(symbol: str, date: str | None = None, output_json: bool = False) -> 
         if is_empty(chain):
             raise ValueError(f"{symbol} 在 {date} 无期权链")
         for r in chain:
+            if r.get("standard") is False:
+                continue
             s = to_float(r.get("strike"))
             cv = to_float(r.get("call_vol"), 0) or 0
             pv = to_float(r.get("put_vol"), 0) or 0
@@ -69,7 +71,7 @@ def analyze(symbol: str, date: str | None = None, output_json: bool = False) -> 
     candidates = sorted({s for s, _, _ in weights})
     curve = []
     for s_settle in candidates:
-        payout = sum(max(s_settle - k, 0) * cw + max(k - s_settle, 0) * pw
+        payout = 100 * sum(max(s_settle - k, 0) * cw + max(k - s_settle, 0) * pw
                      for k, cw, pw in weights)
         curve.append({"settle": s_settle, "total_payout": payout})
 
@@ -93,7 +95,7 @@ def analyze(symbol: str, date: str | None = None, output_json: bool = False) -> 
         "top3_lowest_payout": [{"settle": r["settle"], "payout": round(r["total_payout"], 0)}
                                for r in sorted_by_payout],
         "strikes_used": len(weights),
-        "note": f"{mode_note}。到期日当天参考意义最大。",
+        "note": f"{mode_note}。赔付按标准美股合约每张100股计算，成交量回退仅为代理。",
     }
 
     if output_json:
@@ -104,7 +106,7 @@ def analyze(symbol: str, date: str | None = None, output_json: bool = False) -> 
     print(f"  权重口径: {'✅ ' + '真实 OI' if mode == 'oi' else '⚠️ 成交量近似(回退)'}"
           f"({len(weights)} 档行权价)")
     print(f"  Max Pain 行权价: {max_pain}(距现价 {dist_pct:+.2f}%)")
-    print(f"  引力区间(赔付最低的3个价位): "
+    print(f"  样本中赔付最低的3个价位: "
           f"{' / '.join(str(r['settle']) for r in sorted_by_payout)}")
     show = [curve[i] for i in range(0, len(curve), max(1, len(curve) // 12))][:12]
     if curve[-1] not in show:

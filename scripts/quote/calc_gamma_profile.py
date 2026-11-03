@@ -6,7 +6,7 @@
      各行权价的 GEX(S) 求和( Sticky-Strike 近似:每个行权价的 IV 固定用当前值,
      gamma 随假设价位 S 用 Black-Scholes 重算 )
   2. 翻转点: 在 GEX 剖面 GEX(S) 的符号变化处线性插值,取离现价最近的穿越点
-     —— GEX>0 区做市商抑制波动,跌破 Flip 后转为放大波动(波动率机制切换)
+     —— 按 Call 正 / Put 负的仓位方向假设，计算 GEX 剖面的过零位置
   3. 支撑/阻力: 以 call OI / put OI 的核密度平滑曲线(高斯核,带宽=行权价间距)
      找局部极大值,抛物线插值细化到非整数价位(如 215.3),取现价下方/上方各 top3
 
@@ -26,6 +26,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
+
+from calc_gex import _nearest_sign_crossing  # noqa: E402
 
 from common import (  # noqa: E402
     bs_greeks, days_to_years, get_chain_oi, get_option_expirations,
@@ -48,7 +50,7 @@ def _collect_legs(symbol: str, window_days: int, range_pct: float) -> tuple[list
     used = []
     for exp in expirations:
         days = days_to_years(exp) * 365
-        if days < 0 or days > window_days:
+        if days <= 0 or days > window_days:
             continue
         oi = get_chain_oi(symbol, exp, near_atm_pct=range_pct * 1.15, max_strikes=60)
         if not oi.get("oi_mode"):
@@ -91,25 +93,16 @@ def _find_flip(legs: list[dict], spot: float, rate: float,
     翻转点可能远离现价(深度价内持仓重的标的可达 -20% 以上),若在
     当前 range_pct 内无符号变化,自动扩域(×1.5、×2)重试,上限 0.40。
     """
+    if not 0 < range_pct <= 0.40 or steps < 1:
+        raise ValueError("剖面扫描范围须在 0 至 40% 之间，步数必须为正")
     best: float | None = None
     profile: list[dict] = []
-    for rng in (range_pct, range_pct * 1.5, 0.40):
-        if rng > 0.40:
-            break
+    for rng in dict.fromkeys((range_pct, min(range_pct * 1.5, 0.40), 0.40)):
         lo, hi = spot * (1 - rng), spot * (1 + rng)
         dx = (hi - lo) / steps
         xs = [lo + i * dx for i in range(steps + 1)]
         ys = [_gex_at(legs, x, rate) for x in xs]
-        best = None
-        for i in range(1, len(xs)):
-            y0, y1 = ys[i - 1], ys[i]
-            if (y0 <= 0 < y1) or (y0 >= 0 > y1):
-                # 线性插值过零点
-                x0, x1 = xs[i - 1], xs[i]
-                cross = x0 + (0 - y0) * (x1 - x0) / (y1 - y0)
-                # 取离现价最近的穿越点
-                if best is None or abs(cross - spot) < abs(best - spot):
-                    best = cross
+        best = _nearest_sign_crossing(xs, ys, spot)
         profile = [{"price": round(x, 2), "gex": y} for x, y in zip(xs, ys)]
         if best is not None:
             break
@@ -177,13 +170,12 @@ def analyze(symbol: str, window_days: int = 60, range_pct: float = 0.20,
     gex_now = _gex_at(legs, spot, rate)
     sr = _sr_levels(legs, spot)
 
-    if flip is None:
-        regime = "区间内未检测到翻转(全区间同符号)"
-    elif spot > flip:
-        regime = (f"现价在翻转点上方 → 正 GEX 区(做市商抑制波动,偏稳);"
-                  f"跌破 {flip} 转为负 GEX(放大波动,防守位)")
+    sign = "正" if gex_now > 0 else "负" if gex_now < 0 else "零"
+    regime = f"按 Call 正 / Put 负假设，现价为{sign} GEX"
+    if flip is not None:
+        regime += f"，最近剖面过零点约 {flip}"
     else:
-        regime = f"⚠️ 现价已在翻转点 {flip} 下方 → 负 GEX 区(做市商放大波动,易剧烈行情)"
+        regime += "，扫描范围内未找到过零点"
 
     result = {
         "symbol": symbol,
@@ -198,7 +190,7 @@ def analyze(symbol: str, window_days: int = 60, range_pct: float = 0.20,
         "support_levels": sr["support"],
         "resistance_levels": sr["resistance"],
         "profile_sampled": [profile[i] for i in range(0, len(profile), len(profile) // 20 or 1)][:21],
-        "note": ("Sticky-strike IV + BS gamma 重算剖面;S/R 为 OI 核密度峰的抛物线插值,非整数价位。"
+        "note": ("Sticky-strike IV + BS gamma 重算剖面。OI 不提供做市商净仓位。S/R 为 OI 密度峰，显示精度不代表预测精度。"
                  "翻转点=剖面过零的线性插值,取离现价最近者。"),
     }
 
@@ -212,12 +204,12 @@ def analyze(symbol: str, window_days: int = 60, range_pct: float = 0.20,
     print(f"  Gamma Flip(插值): {flip}")
     print(f"  机制: {regime}")
     print()
-    print("支撑位(put OI 密度峰,插值):")
+    print("Put OI 密度峰(现价下方,插值):")
     print_display_table(
         [{"价位": f"{p['price']:.2f}", "距现价": f"{(p['price']/spot-1)*100:+.1f}%",
           "OI密度": f"{p['density']:,.0f}"} for p in sr["support"]] or [{"价位": "-"}],
         columns=["价位", "距现价", "OI密度"])
-    print("阻力位(call OI 密度峰,插值):")
+    print("Call OI 密度峰(现价上方,插值):")
     print_display_table(
         [{"价位": f"{p['price']:.2f}", "距现价": f"{(p['price']/spot-1)*100:+.1f}%",
           "OI密度": f"{p['density']:,.0f}"} for p in sr["resistance"]] or [{"价位": "-"}],
@@ -227,7 +219,7 @@ def analyze(symbol: str, window_days: int = 60, range_pct: float = 0.20,
     step = max(1, len(profile) // 10)
     print_display_table(
         [{"价位": p["price"], "GEX": f"{p['gex']:,.0f}",
-          "符号": "正(稳)" if p["gex"] > 0 else "负(波动)"} for p in profile[::step]][:12],
+          "符号": "正" if p["gex"] > 0 else "负" if p["gex"] < 0 else "零"} for p in profile[::step]][:12],
         columns=["价位", "GEX", "符号"])
     return result
 

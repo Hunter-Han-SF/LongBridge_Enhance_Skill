@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
@@ -33,11 +34,16 @@ from common import (  # noqa: E402
 # 中文名 → 标准键(实测 financial-report 的 accounts 按 name 匹配,ranking_code 不总存在)
 _ACCOUNT_MAP = {
     "每股收益": "eps",
-    "ROE": "roe",
+    "基本每股收益": "eps",
+    "每股基本收益": "eps",
     "营业收入": "revenue",
     "净利润": "net_profit",
+    "归母净利润": "net_profit",
+    "归属于母公司股东的净利润": "net_profit",
     "毛利率": "gross_margin",
     "净利率": "net_margin",
+    "净利润率": "net_margin",
+    "归母净利润率": "net_margin",
     "总资产": "total_assets",
     "总负债": "total_liabilities",
     "权益乘数": "leverage",
@@ -45,6 +51,19 @@ _ACCOUNT_MAP = {
     "经营现金流": "operating_cf",
     "自由现金流": "fcf",
     "资本支出": "capex",
+    "eps": "eps",
+    "roe": "roe",
+    "revenue": "revenue",
+    "net income": "net_profit",
+    "gross margin": "gross_margin",
+    "net margin": "net_margin",
+    "total assets": "total_assets",
+    "total liabilities": "total_liabilities",
+    "equity multiplier": "leverage",
+    "net debt": "net_debt",
+    "operating cash flow": "operating_cf",
+    "free cash flow": "fcf",
+    "capital expenditure": "capex",
 }
 
 
@@ -54,12 +73,8 @@ def _flatten(report: dict) -> dict:
     for stmt in ("IS", "BS", "CF"):
         for group in ((report.get("list") or {}).get(stmt) or {}).get("indicators", []):
             for acc in group.get("accounts", []):
-                name = str(acc.get("name", ""))
-                key = None
-                for cn, std in _ACCOUNT_MAP.items():
-                    if cn in name:
-                        key = std
-                        break
+                name = str(acc.get("name") or "").strip()
+                key = _ACCOUNT_MAP.get(name.casefold())
                 if not key:
                     continue
                 vals = acc.get("values") or []
@@ -69,11 +84,14 @@ def _flatten(report: dict) -> dict:
                 v = to_float(latest.get("value"))
                 if v is None:
                     continue
-                if key not in out:  # 同名账户取第一个匹配
+                if key not in out or (name == "净利润" and out[key]["name"] != "净利润"):
                     out[key] = {
                         "value": v,
                         "yoy_pct": to_float(latest.get("yoy")),
                         "period": latest.get("period", ""),
+                        "year": latest.get("year"),
+                        "period_type": (latest.get("period_type") or latest.get("report_type")
+                                        or acc.get("period_type") or acc.get("report_type")),
                         "name": name,
                     }
     return out
@@ -103,13 +121,23 @@ def analyze(symbol: str, output_json: bool = False, quiet: bool = False) -> dict
     g = lambda k: items.get(k, {}).get("value")  # noqa: E731
     yoy = lambda k: items.get(k, {}).get("yoy_pct")  # noqa: E731
 
-    # 加工指标: 分子用 is not None 判存在(真实零值如负债=0 不能当缺失);
-    # 分母(total_assets/net_profit)刻意保留真值判断——None 与 0 都须跳过,兼防除零
+    def same_period(left, right):
+        left, right = items.get(left, {}), items.get(right, {})
+        period = left.get("period")
+        if not period or period != right.get("period"):
+            return False
+        year = re.search(r"(?:19|20)[0-9]{2}", str(period))
+        year_in_period = year.group() if year else None
+        left_year = str(left.get("year") or year_in_period or "")
+        right_year = str(right.get("year") or year_in_period or "")
+        return bool(left_year and left_year == right_year
+                    and left.get("period_type") == right.get("period_type"))
     debt_ratio = None
-    if g("total_liabilities") is not None and g("total_assets"):
+    if (g("total_liabilities") is not None and (g("total_assets") or 0) > 0
+            and same_period("total_liabilities", "total_assets")):
         debt_ratio = g("total_liabilities") / g("total_assets") * 100
     earnings_quality = None  # FCF / 净利润(%)
-    if g("fcf") is not None and g("net_profit"):
+    if g("fcf") is not None and (g("net_profit") or 0) > 0 and same_period("fcf", "net_profit"):
         earnings_quality = g("fcf") / g("net_profit") * 100
 
     rows = []
@@ -132,14 +160,17 @@ def analyze(symbol: str, output_json: bool = False, quiet: bool = False) -> dict
     # 红绿灯计数
     greens = sum(1 for r in rows if r["灯"] == "🟢")
     reds = sum(1 for r in rows if r["灯"] == "🔴")
-    if reds == 0 and greens >= 5:
-        verdict = "🟢 财务健康(无红灯,多项优良)"
+    scored = sum(bool(r["灯"]) for r in rows)
+    if reds == 0 and (scored < 5 or debt_ratio is None or earnings_quality is None):
+        verdict = "⚪ 关键指标不足，无法判断财务稳健"
+    elif reds == 0 and greens >= 5:
+        verdict = "🟢 多项指标达到经验阈值（无红灯）"
     elif reds == 0:
-        verdict = "🟢 财务稳健(无红灯)"
+        verdict = "🟢 已评估指标无红灯"
     elif reds <= 2:
         verdict = "🟡 有少量预警项,需关注"
     else:
-        verdict = "🔴 多项预警,财务风险偏高"
+        verdict = "🔴 多项指标触发经验预警"
 
     result = {
         "symbol": symbol,
@@ -147,9 +178,9 @@ def analyze(symbol: str, output_json: bool = False, quiet: bool = False) -> dict
         "items": {k: v for k, v in items.items()},
         "computed": {"debt_ratio_pct": debt_ratio, "earnings_quality_pct": earnings_quality},
         "table": rows,
-        "greens": greens, "reds": reds,
+        "greens": greens, "reds": reds, "scored_metrics": scored,
         "verdict": verdict,
-        "note": "灯号阈值为通用经验值(成长股/金融股标准不同),仅供参考。",
+        "note": "经验阈值未按行业校准。FCF/净利润只在同期净利润为正且报表口径一致时评估。",
     }
 
     if output_json:

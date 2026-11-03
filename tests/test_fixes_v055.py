@@ -15,6 +15,7 @@ import os
 import sys
 import unittest
 from datetime import date, datetime, timezone
+from unittest.mock import patch
 
 _HERE = os.path.dirname(__file__)
 _SCRIPTS = os.path.normpath(os.path.join(_HERE, "..", "scripts"))
@@ -42,7 +43,8 @@ class TestDividendTtmWindow(unittest.TestCase):
         try:
             gdq.get_dividend_history = lambda s: divs
             gdq.get_underlying_price = lambda s: price
-            return gdq.analyze("X.US", quiet=True)
+            with patch.object(gdq, "market_date", return_value=date(2026, 8, 31)):
+                return gdq.analyze("X.US", quiet=True)
         finally:
             gdq.get_dividend_history, gdq.get_underlying_price = orig_h, orig_p
 
@@ -139,14 +141,15 @@ class TestAtmIvNearestStrike(unittest.TestCase):
             gih.get_option_expirations = lambda s: ["2027-01-15"]
             gih.get_option_chain = lambda s, e: self._CHAIN
             gih.get_underlying_price = lambda s: 101.0
-            iv, meta = gih.get_current_atm_iv("X.US")
-            self.assertEqual(meta["strike"], 100.0)
+            with patch.object(gih, "days_to_years", return_value=30/365):
+                iv, meta = gih.get_current_atm_iv("X.US")
+            self.assertEqual(meta["source_expiries"][0]["strike"], 100.0)
             self.assertAlmostEqual(iv, (0.30 + 0.28) / 2, places=6)
         finally:
             (gih.get_option_expirations, gih.get_option_chain,
              gih.get_underlying_price) = orig
 
-    def test_no_price_falls_back_to_volume(self):
+    def test_no_price_cannot_identify_atm(self):
         orig = (gih.get_option_expirations, gih.get_option_chain,
                 gih.get_underlying_price)
         try:
@@ -154,7 +157,7 @@ class TestAtmIvNearestStrike(unittest.TestCase):
             gih.get_option_chain = lambda s, e: self._CHAIN
             gih.get_underlying_price = lambda s: None
             iv, meta = gih.get_current_atm_iv("X.US")
-            self.assertEqual(meta["strike"], 50.0)  # 回退旧的流动性最好口径
+            self.assertEqual((iv, meta), (None, None))
         finally:
             (gih.get_option_expirations, gih.get_option_chain,
              gih.get_underlying_price) = orig
@@ -233,10 +236,11 @@ class TestVwapTrendIndependentOfOpen(unittest.TestCase):
     def test_missing_open_avg_still_computes_trend(self):
         orig = gva.get_intraday
         try:
-            rows = [{"price": f"{100 + i * 0.01:.2f}", "avg_price": "100.00"}
+            rows = [{"price": f"{100 + i * 0.01:.2f}", "avg_price": "100.00",
+                     "timestamp": 1793701800 + i * 60}
                     for i in range(70)]
             rows[0]["avg_price"] = ""          # 开盘档缺失(旧代码会因此不给趋势)
-            rows[-30]["avg_price"] = "99.00"   # 30 分钟前明显更低 → 上行
+            rows[-31]["avg_price"] = "99.00"   # 30 个一分钟间隔 → 上行
             gva.get_intraday = lambda s, date=None: rows
             r = gva.analyze("X.US", output_json=True)
             self.assertEqual(r["vwap_trend_30m"], "上行")
@@ -245,13 +249,14 @@ class TestVwapTrendIndependentOfOpen(unittest.TestCase):
 
 
 class TestBsDirtyInputGuards(unittest.TestCase):
-    """S/K ≤ 0 的脏输入返回退化值,不进 log/除零崩溃。"""
+    """Zero-price limits are valid; negative prices are invalid."""
 
-    def test_greeks_all_zero(self):
-        for s, k in ((0, 100), (100, 0), (-5, 100), (100, -1)):
-            g = common.bs_greeks(s, k, 1.0, 0.05, 0.3, "C")
-            self.assertEqual(g, {"delta": 0.0, "gamma": 0.0, "theta": 0.0,
-                                 "vega": 0.0, "rho": 0.0}, f"S={s},K={k}")
+    def test_greeks_boundary_and_invalid_inputs(self):
+        self.assertEqual(common.bs_greeks(0, 100, 1, .05, .3, "C")["delta"], 0)
+        self.assertEqual(common.bs_greeks(100, 0, 1, .05, .3, "C")["delta"], 1)
+        for s, k in ((-5, 100), (100, -1)):
+            with self.assertRaises(ValueError):
+                common.bs_greeks(s, k, 1, .05, .3, "C")
 
     def test_price_zero(self):
         self.assertEqual(common.bs_price(0, 100, 1.0, 0.05, 0.3, "C"), 0.0)

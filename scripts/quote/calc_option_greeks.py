@@ -3,12 +3,12 @@
 对应 Futu: get_option_quote(多腿) / get_option_strategy_analysis(Greeks 部分)
 
 输入: 多条期权腿 [{underlying, expiry, strike, type, action, quantity}, ...]
-组合 Greeks = Σ (单腿 Greeks × 方向符号 × 数量)
+组合 Greeks = Σ (单股 Greeks × 方向符号 × 合约数量 × 100)
   - BUY 的腿用 +1,SELL 的腿用 -1
   - 支持正股腿(type=STOCK,delta=100 股/手,其余 Greeks 为 0),
     可直接分析 get_option_strategy.py 生成的 COLLAR / COVERED_CALL
 
-⚠️ Greeks 为 BS 计算值(IV 来自 chain)。仅支持同标的、同到期日的多腿组合。
+Greeks 优先使用原生报价，缺失时由 BS 回退；只汇总同标的敞口。
 
 用法:
     # Straddle: 买入 1 张 ATM Call + 1 张 ATM Put
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -42,6 +43,9 @@ def calc_portfolio_greeks(legs: list[dict], rate: float = 0.045) -> dict:
     if not legs:
         raise ValueError("腿列表为空")
 
+    if len({str(leg["underlying"]).upper() for leg in legs}) != 1:
+        raise ValueError("组合 Greeks 仅汇总同标的敞口")
+
     detail = []
     totals = {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
     sign_map = {"BUY": 1, "SELL": -1}
@@ -53,7 +57,11 @@ def calc_portfolio_greeks(legs: list[dict], rate: float = 0.045) -> dict:
         ot = str(leg["type"]).upper()
         action = leg.get("action", "BUY").upper()
         qty = float(leg.get("quantity", 1))
-        sign = sign_map.get(action, 1)
+        if action not in sign_map:
+            raise ValueError("组合腿动作必须为 BUY 或 SELL")
+        if not math.isfinite(qty) or qty <= 0:
+            raise ValueError("组合腿数量必须为有限正数")
+        sign = sign_map[action]
 
         # 正股腿(COLLAR/COVERED_CALL 策略生成):delta = 100 股/手,其余 Greeks 恒为 0
         if ot in ("STOCK", "SHARE", "UNDERLYING"):
@@ -71,8 +79,9 @@ def calc_portfolio_greeks(legs: list[dict], rate: float = 0.045) -> dict:
             })
             continue
 
+        if ot not in ("C", "CALL", "P", "PUT") or not math.isfinite(strike) or strike <= 0:
+            raise ValueError("期权腿需要有效的类型和行权价")
         q = get_quote(ul, expiry, strike, ot, rate=rate, output_json=False, quiet=True)
-        # get_quote 会打印;我们只取 greeks。为避免重复输出,这里静默重算
         greeks = q["greeks"]
         if not greeks:
             raise ValueError(f"无法计算 {ul} {expiry} {strike} {ot} 的 Greeks(可能缺 IV 或到期日已过期)")
@@ -95,7 +104,7 @@ def calc_portfolio_greeks(legs: list[dict], rate: float = 0.045) -> dict:
         "detail": detail,
         "portfolio_greeks": {k: round(v, 4) for k, v in totals.items()},
         "interpretation": _interpret(totals),
-        "note": "组合 Greeks 为 BS 计算加权值,theta=/日,vega=/1%IV",
+        "note": "组合 Greeks 为各腿报价 Greeks 加权值，来源可为原生或 BS，theta=/日，vega=/1%IV",
     }
 
 

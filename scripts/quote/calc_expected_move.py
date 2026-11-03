@@ -1,13 +1,8 @@
 """隐含波动幅度(Expected Move,ATM Straddle 法)。
 
-市场用期权价格"押注"的到期前预期波动区间:
-  EM ≈ ATM Straddle 价格 / 现价(经验法则,约 1 个标准差,~68% 置信)
-  EM_annualized ≈ ATM IV × √(T)(理论值,可交叉验证)
-
-用途:
-  - 财报/重大事件前:期权隐含的"赌多大行情",若你认为实际波动会小于 EM,
-    适合卖跨式;大于 EM 适合买跨式
-  - 设止损/目标价:现价 × (1 ± EM) 即市场定价的 1σ 区间
+跨式成本幅度 = ATM 跨式权利金 / 现价，历史字段 expected_move_pct 使用该口径。
+跨式到期盈亏平衡 = 行权价 ± 权利金。
+IV 标准差尺度 = ATM IV × √T，以现价为中心展示。
 
 用法:
     python calc_expected_move.py AAPL.US                    # 最近到期日
@@ -60,6 +55,8 @@ def _one_expiry(symbol: str, price: float, expiry: str) -> dict | None:
     if not straddle:
         return None
     T = days_to_years(expiry)
+    if T <= 0:
+        return None
     iv = get_atm_iv(chain, price)
     em_pct = straddle / price * 100
     # 理论对照:ATM straddle ≈ 0.8·S·σ·√T(近似),此处直接用 IV×√T
@@ -71,6 +68,10 @@ def _one_expiry(symbol: str, price: float, expiry: str) -> dict | None:
         "expected_move_pct": round(em_pct, 2),
         "range_low": round(lo, 2), "range_high": round(hi, 2),
         "iv_implied_move_pct": round(em_iv_pct, 2) if em_iv_pct else None,
+        "straddle_break_even_low": round(atm - straddle, 2),
+        "straddle_break_even_high": round(atm + straddle, 2),
+        "iv_range_low": round(price * (1 - em_iv_pct / 100), 2) if em_iv_pct else None,
+        "iv_range_high": round(price * (1 + em_iv_pct / 100), 2) if em_iv_pct else None,
         "iv_atm": iv,
     }
 
@@ -103,7 +104,7 @@ def analyze(symbol: str, date: str | None = None, show_all: bool = False,
         "underlying_price": price,
         "expected_moves": rows,
         "main": rows[0],
-        "note": "EM = ATM straddle/现价(约1σ,68%置信)。财报前的 EM 含事件溢价,财报后会塌陷(IV Crush)。",
+        "note": "跨式成本幅度以现价为中心展示。跨式盈亏平衡价按行权价计算，IV 标准差尺度单独列示。",
     }
 
     if output_json:
@@ -114,15 +115,16 @@ def analyze(symbol: str, date: str | None = None, show_all: bool = False,
     print()
     print_display_table(
         [{"到期日": r["expiry"], "剩余天数": r["days"], "ATM": r["atm_strike"],
-          "Straddle": r["straddle_cost"], "预期波动": f"±{r['expected_move_pct']}%",
-          "1σ区间": f"{r['range_low']} ~ {r['range_high']}"} for r in rows],
-        columns=["到期日", "剩余天数", "ATM", "Straddle", "预期波动", "1σ区间"])
+          "Straddle": r["straddle_cost"], "跨式成本幅度": f"±{r['expected_move_pct']}%",
+          "跨式成本区间": f"{r['range_low']} ~ {r['range_high']}"} for r in rows],
+        columns=["到期日", "剩余天数", "ATM", "Straddle", "跨式成本幅度", "跨式成本区间"])
     m = result["main"]
     print()
-    print(f"  主参考(最近到期 {m['expiry']}): 市场定价到期前 ±{m['expected_move_pct']}%"
+    print(f"  主参考(最近到期 {m['expiry']}): 跨式成本幅度 ±{m['expected_move_pct']}%"
           f"({m['range_low']} ~ {m['range_high']})")
+    print(f"  跨式到期盈亏平衡价: {m['straddle_break_even_low']} ~ {m['straddle_break_even_high']}")
     if m.get("iv_implied_move_pct"):
-        print(f"  交叉验证: IV 理论值 ±{m['iv_implied_move_pct']}%(两者应接近)")
+        print(f"  IV 标准差尺度 ±{m['iv_implied_move_pct']}% ({m['iv_range_low']} ~ {m['iv_range_high']})")
     return result
 
 

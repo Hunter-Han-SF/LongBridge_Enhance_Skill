@@ -22,12 +22,22 @@ sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath
 from common import print_error, print_json  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from get_iv_history import iv_history as _build_series  # noqa: E402
+from get_iv_history import comparable_iv_series, iv_history as _build_series  # noqa: E402
 
 
 def calc_iv_percentile(symbol: str, min_points: int = 20, output_json: bool = False) -> dict:
     hist = _build_series(symbol, append=True, output_json=False, quiet=True)
-    series = hist["series"]
+    if not hist.get("appended_today", False):
+        raise ValueError("无法采集当前恒定30日 IV，历史样本保留")
+    if min_points < 2:
+        raise ValueError("至少需要两个可比 IV 样本")
+    series = comparable_iv_series(hist.get("series", []))
+    observation = hist.get("observed_at")
+    if observation:
+        observed_day = observation[:10]
+        series = [row for row in series if row["date"] <= observed_day]
+        if not series or series[-1]["date"] != observed_day:
+            raise ValueError("当前观测日没有有效的恒定30日 IV 样本")
     if len(series) < min_points:
         raise ValueError(
             f"历史 IV 数据不足(仅 {len(series)} 点,需 ≥ {min_points})。"
@@ -48,14 +58,16 @@ def calc_iv_percentile(symbol: str, min_points: int = 20, output_json: bool = Fa
     result = {
         "symbol": symbol,
         "current_iv_pct": current,
+        "observed_at": series[-1].get("observed_at"),
+        "quote_freshness": "unknown",
         "iv_percentile": round(percentile, 1),
         "data_points": len(series),
-        "date_range": hist["date_range"],
+        "date_range": f"{series[0]['date']} ~ {series[-1]['date']}",
         "median_iv_pct": round(median, 2),
         "interpretation": (
-            "高位(>70): IV 偏贵"
+            "高位(>70): 样本分位较高"
             if percentile > 70 else
-            "低位(<30): IV 偏便宜"
+            "低位(<30): 样本分位较低"
             if percentile < 30 else
             "中位(30-70)"
         ),
@@ -68,6 +80,8 @@ def calc_iv_percentile(symbol: str, min_points: int = 20, output_json: bool = Fa
         return result
 
     print(f"{symbol} IV Percentile(本地累积 {len(series)} 点,{hist['date_range']})")
+    if result["observed_at"]:
+        print(f"  观测时间: {result['observed_at']}，行情新鲜度未知")
     print(f"  当前 IV:        {current}%")
     print(f"  中位 IV:        {result['median_iv_pct']}%")
     print(f"  IV Percentile:  {result['iv_percentile']}  → {result['interpretation']}")

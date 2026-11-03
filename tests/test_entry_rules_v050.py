@@ -152,7 +152,8 @@ class TestBuySetups(unittest.TestCase):
     def test_b1_breakout_pullback(self):
         r = run(self._b1_bars())
         self.assertEqual(r["rules"]["B1"]["status"], "matched")
-        self.assertEqual(r["verdict"], "✅ 结构符合(纪律通过)")
+        self.assertIn("待确认", r["verdict"])
+        self.assertIn("B0", r["required_confirmations"])
 
     def test_b2_downtrend_line_breakout(self):
         path = ([100, 99, 98, 97, 96, 95, 94, 93, 92, 91,          # 下跌段1
