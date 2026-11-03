@@ -3,6 +3,8 @@
 本文档记录各增强模块(异动/资金流/日历/情绪/技术面/基本面/日内微观/决策)对 Longbridge CLI 的
 封装细节、字段映射和实测限制。对标 [capability-map.md](capability-map.md)(期权部分)。
 
+当前本地实现为0.6.0；CLI字段样例主要来自2026年8月的历史采样。本次未验证实时服务器契约，历史观测不得当成当前接口保证。当前修复与验证见 [审计记录](../docs/audit-fixes-2026-11-03.md)。
+
 ---
 
 ## 模块⑥ 技术面(本地计算,无新增 CLI 命令)
@@ -14,7 +16,8 @@ OBV(20期回归斜率)/MFI/量比/ROC/Williams %R/CCI/唐奇安/52周位置/最�
 
 实现约定:
 - EMA 种子 = 前 n 个的 SMA;KDJ 种子 K=D=50;BOLL 用总体方差(ddof=0)
-- Beta 基于与基准按日期对齐后的日收益(US 默认 SPY / HK 2800 / A股 510300)
+- Beta 基于与基准按真实市场日期对齐后的日收益(US 默认 SPY / HK 2800 / A股 510300)；缺日期拒绝对齐，Beta=0保留。
+- 量比基准为之前5根(不含当日)，缺量不会制造缩量；唐奇安突破阈值只含前20根。
 - 单元测试:单边涨跌边界值、Wilder RSI 对称序列=50、BOLL 与 statistics.pstdev 一致、
   Beta(2×市场)=2 等约束全部通过
 
@@ -49,14 +52,14 @@ institution_up/down/total}`。分歧度 = (highest-lowest)/mean。
 `{name(中文名), ranking_code(不总存在), ratio, values[]}`;
 `values[]` **最新期在前**:`{period:"Q3 2026", year, fp_end, value, yoy}`。
 
-⚠️ 科目按中文名匹配(如"营业收入"/"总负债");排名用 `industry_ranking`(如 "1/49")。
+科目按精确别名匹配(如"营业收入"/"总负债")，不将利润率子串当作利润；排名用 `industry_ranking`(如 "1/49")。跨表比值检查报告期、年份和已提供的报告类型；金额单位/币种沿用同一报表来源，不执行外汇换算或独立货币核验。亏损时不将现金转化率解释为绿灯；关键指标不足不给稳健结论。
 实测可用科目:每股收益/ROE/营业收入/净利润/毛利率/净利率/总资产/总负债/权益乘数/
 每股净资产/净债务/经营现金流/自由现金流/资本支出。
 
 ### `dividend` — 分红历史
 
 `list[]: {desc:"每股派息 0.27 USD", ex_date:"2026.08.10"(点分格式), record_date, payment_date}`。
-金额与币种从 desc 正则解析。年度增长只用完整年份(当年期数少于上年时跳过)。
+优先取结构化金额和币种，兼容 desc 中 `0.27 USD` 与 `USD 0.27/share`。TTM 以市场估值日为锚，按除息日期排除未来记录；年度增长只比较最近两个已结束自然年的已收到记录，且两年均有可比币种；不据此证明数据源已收齐记录。币种不一致或未知时不直接计算相对现价的股息率。
 
 ---
 
@@ -75,7 +78,7 @@ institution_up/down/total}`。分歧度 = (highest-lowest)/mean。
 ### `trades` — 逐笔成交
 
 `[{direction: "Up"|"Down", price, time, volume}]`,**最新在前**(`--count ≤1000`)。
-Up=主动买(买方推动),Down=主动卖。大单阈值按股数(不同价位标的需调整)。
+Up/Down 表示相对前笔成交价的涨跌方向，仅用于估计成交压力，不证明真实主买/主卖。脚本按可解析时间排序，最近30笔不称尾盘；输出未分类比例，大单阈值按股数。
 
 ---
 
@@ -88,7 +91,7 @@ Longbridge 文档用 REST 路径(如 `/docs/cli/market-data/anomaly.md`),但 **C
 
 ---
 
-## 模块① 异动追踪
+## 模块② 异动追踪
 
 ### `anomaly` — 异动信号
 
@@ -147,14 +150,13 @@ longbridge capital <SYMBOL> --flow    # 分钟级时序
 ```
 {capital_in: {large, medium, small}, capital_out: {large, medium, small}, symbol, timestamp}
 ```
-⚠️ **单位实测结论:原始值单位是"万"**(AAPL 实测:原始合计 324,217,当日成交额 $159.5 亿;
-按"元"解释仅占 0.002%,不合常理;按"万"解释 ≈ $32.4 亿,占成交额 20%,合理)。
-`get_capital_flow_snapshot()` / `get_capital_flow_series()` 已统一 ×1e4 换算为当地货币完整单位
-(美股=USD,港股=HKD),调用方无需再处理。
-
-**分钟流**返回 `[{inflow, time}, ...]`。⚠️ 实测 `inflow` 是**当日累计净流入**(391 个点的
-末值与快照 `net.total` 完全一致),不是每分钟增量。`get_capital_flow_series()` 已 ×1e4 换算
-为当地货币完整单位,并计算 `minute_delta`(相邻分钟增量)供峰值分析使用。
+**口径需按实际 CLI 版本核实**：历史样本推断与接口文档对单位及累计/增量的定义存在冲突，不能将一次合理性对比当成通用契约。
+- 默认保留来源值，`amount_unit=source_unit`、`unit_verified=false`，不再静默乘 10000。
+- 核实后可配置环境变量 `LBR_CAPITAL_SCALE` 为转换到当地货币的正倍率；`unit_source=operator_config` 仅表示操作者已指定，不是程序已验证接口。
+- `LBR_CAPITAL_FLOW_MODE` 可设 `cumulative` 或 `incremental`；未设置为 `unknown`，不计算累计额或分钟峰值。
+- 累计模式只对严格相邻60秒观测产生 `minute_delta`；较长间隔通过 `interval_delta`/`interval_seconds` 保留，首点、缺值及无可信时间不能当作一分钟增量。
+- 增量模式将原值当作该分钟增量，`observed_sum` 仅为已收到样本合计，不冒充全天总额。
+- 快照缺失分项保留 `None`，全部分项有效时才计算总净额。
 
 ### `broker-holding` — 港股经纪商持仓 ⚠️仅HK
 
@@ -286,15 +288,7 @@ Gamma Profile 方法论(calc_gamma_profile.py,2026-08-20):
 - 实测:1DTE 深度价内 Call 重仓的链(如 MSFT 08-21)可能全区间无过零 —— 这是
   数学正确的结果(1DTE gamma 极度局域化),旧启发式在此类链上会给假翻转点
 
-交叉验证(与第三方期权分析站对照,2026-08-20):
-- NVDA Gamma Flip:本 skill 203.36 vs 网站 206.28(60天口径,差 1.4%)✅
-- MSFT Gamma Flip:本 skill 373.27 vs 网站 383.84(60天口径,差 2.7%,不同日快照)✅
-- NVDA 第一阻力:本 skill 220.52(插值) vs 网站 219.80 ✅
-- Gamma 翻转点:本 skill 387.5 vs 网站 383.84 ✅
-- Call Wall 500(+3.2%)在网站阻力区 492.56/502.18 内 ✅
-- P/C OI 比率 0.381 vs 网站 0.430(不同到期日快照,同量级)✅
-- Max Pain 差异属口径不同:网站用的是已到期的 0DTE 链(OI 集中在 ATM),
-  本 skill 查询存续链(深度价内 Call 大持仓会把痛点拉低,数学正确)
+历史第三方快照对照使用过不同交易日或到期日，不能据此验证当前算法精度；旧的百分比差异不作为验收证据。当前回归以可构造的 GEX 符号、过零方向、赔付闭式结果为准，真实行情契约仍需版本固定后另行对账。
 
 ### chain 无按行权价的 OI(旧限制,已由 calc-index 解决)
 
@@ -312,14 +306,14 @@ strike, call_iv, put_iv, call_last, put_last, call_vol, put_vol, standard
 每 strike 的 GEX:
 ```
 call_gex = gamma_call × call_oi × 100 × S² × 0.01    (正)
-put_gex  = -gamma_put × put_oi × 100 × S² × 0.01     (负,对冲方向相反)
+put_gex  = -gamma_put × put_oi × 100 × S² × 0.01     (假设负仓位方向)
 net_gex(K) = call_gex + put_gex
 ```
 (gamma 优先取 calc-index 原生值,缺失时 BS;OI 不可用时回退 call_vol/put_vol 并标注)
 跨到期日聚合剖面与插值 Flip 见 calc_gamma_profile.py(公式见 calc-formulas.md §11)。
-- 正总 GEX → 做市商抑制波动(偏稳)
-- 负总 GEX → 做市商放大波动(易剧烈行情)
-- Gamma 翻转点:net_gex 跨越零的价位
+- Call 正 / Put 负是代理仓位假设；OI 不包含做市商净头寸，不能据此断定真实对冲行为。
+- 当前状态直接使用当前 net_gex 的符号；过零需两侧异号，排除相切与零尾部。
+- Gamma 翻转点:在该模型和采样域内 net_gex 跨越零的插值价位，非价格预测。
 
 ---
 
@@ -339,27 +333,27 @@ net_gex(K) = call_gex + put_gex
 8. **quote 的涨跌幅字段名**:实测是 `change_percentage`(百分比形式,"0.29"=0.29%),**不是** `change_pct`/`chg`/`change1m`
 9. **auth 误判规避**:`_looks_like_auth_error()` 用带上下文的短语匹配,避免数据值里的 "401"(如 `turnover:"30617440165"`)、合法字段 `"status":"Normal"` 等被误判为 token 失效;且**仅在 CLI 报错(非零退出码)或输出整体不是 JSON 时才检测**,成功返回的数据内容(如新闻标题含 "access denied")不会触发
 10. **"invalid" 包含子串 "valid"**:所有基于子串的 valid/invalid 判断(auth status、Token Status)必须**先判失效信号**再判 valid,否则失效 token 会被误判为有效
-11. **期权到期日列表含过期日期**:chain 返回的到期日列表头部会带最近已到期的合约,`get_option_expirations()` 已过滤今天之前的日期(默认取 `expirations[0]` 的脚本依赖此行为)
+11. **期权到期日列表含过期日期**:chain 返回的到期日列表头部会带最近已到期的合约,`get_option_expirations()` 已按标的市场日期过滤过期日期，并按标准美股纽约16:00规则排除当天已结束的合约(默认取 `expirations[0]` 的脚本依赖此行为)
 12. **时间戳按 UTC 解析**:anomaly/short-trades/option volume daily 的 Unix 时间戳均按 UTC 转换,输出已标注(UTC 后缀或 `date_utc`/`alert_time UTC`),与市场当地时间可能不同
 
 ## 计算正确性验证
 
-以下计算已通过理论约束或标准库交叉验证:
+以下列出离线校验方法；数值容差适用于测试样本，不是对所有参数的全域误差保证：
 
 | 计算 | 验证方法 | 误差 |
 |---|---|---|
 | Black-Scholes 定价 | Put-Call Parity: C - P = S - K·e^(-rT) | < 3e-10 |
 | BS Greeks | Gamma/Vega 的 Call=Put 对称性;Delta(Call) - Delta(Put) = 1 | 精确(浮点极限) |
 | 历史波动率 HV | 与 `statistics.stdev(ln returns)` 对比 | < 1e-17 |
-| IV Rank/Percentile | 纯统计定义,公式无歧义 | — |
+| IV Rank/Percentile | 恒定30日同口径序列；Percentile历史分母排除本次观测 | 见 calc-formulas.md |
 
 以下为**近似值**(数据源限制,非计算错误,脚本输出已标注):
 
 | 计算 | 近似原因 | 备注 |
 |---|---|---|
-| Put/Call Wall / GEX / Max Pain | ~~成交量代理~~ → 已升级真实 OI(calc-index),成交量仅回退 | 符号约定为行业惯例(SpotGamma 约定),非绝对真理 |
+| Put/Call Wall / GEX / Max Pain | 使用可用 OI(calc-index)，成交量仅回退 | GEX 仓位方向是假设；密度峰与最低赔付点不保证实际价格行为 |
 | 异动综合打分 | 权重(异动40/资金30/涨跌20/榜10)与阈值为设计选择 | 可按需调整 |
-| IV Crush 检测 | 依赖本地 IV 累积,用"单日跌>20%"近似财报效应 | 需每日运行 get_iv_history 积累 |
+| IV 急降样例 | 只比较相邻自然日的恒定30日 IV；未与财报事件建立对应 | 不作为历史财报效应，跨周末/节假日跳过 |
 
 ---
 
@@ -446,7 +440,7 @@ finance-calendar 六类别同构(`{date, list:[{date, count, infos[]}]}`):
     含 config(initialCapital/commission)+ performanceAll(netProfit/maxDrawdown/
     sharpeRatio/profitFactor/winRate/numberOfWining/LosingTrades/buyHoldReturn...)
 - `--input '[14]'` 覆盖 input.*() 默认值;`--language pine` 必须显式传(默认 navi 会 500)
-- 交叉验证实测:服务端 EMA20/RSI14 与本地 indicators.py 末值相对偏差 <0.02% ✅
+- `--cross-check` 在 JSON 与文本均明确返回跳过原因：当前服务端摘要不能证明与本地数据的周期、bar时间、复权和预热窗口一致。旧的单次近似值记录不作为当前验证证据。历史请求默认 start 从 end 向前推算；外部 Pine 文件按内容识别 strategy。
 
 ## 模块⑦补充:基本面新命令
 
@@ -467,7 +461,7 @@ finance-calendar 六类别同构(`{date, list:[{date, count, infos[]}]}`):
 
 | 命令 | 返回结构 | 要点 |
 |---|---|---|
-| `insider-trades`(仅US) | `[{owner, title, date, filing_date, type('EXERCISE'/'SELL'...), code('A'/'D'/'M'), shares, price, value, shares_after}]` | 数值字段已是原生数值(非字符串);脚本按 type+code 双重分类方向 |
+| `insider-trades`(仅US) | `[{owner, title, date, filing_date, type('EXERCISE'/'SELL'...), code('A'/'D'/'M'), shares, price, value, shares_after}]` | 数值字段已是原生数值(非字符串);代码优先：P/S 为普通买卖，A/M/D 为授予/行权转换/向发行人处置；无代码才回退到明确 type |
 | `investors` | `[{cik, name, aum_usd, rank, period}]` | ⚠️ **cik 必须保留字符串**(前导零有意义);`get_investor_rankings()` 已特殊处理(绕过数值化) |
 | `investors <CIK>` | `{cik, firm, filing_date, holdings: [{cusip, name, shares, value_usd, weight_pct}]}` | cusip 含字母不会数值化 |
 | `investors changes <CIK>` | `{added, changes: [{action(NEW/ADDED/REDUCED/EXITED), shares, prev_shares, delta_usd, delta_pct}]}` | delta_pct 新建时是字符串 'NEW' |
@@ -490,7 +484,7 @@ finance-calendar 六类别同构(`{date, list:[{date, count, infos[]}]}`):
   - **ahpremium_rate<0 = H股折价**(如 -0.266 = H 比 A 便宜 26.6%)
   - 仅 A+H 双市场标的;非双市场返回空 klines
 
-## 模块⑨补充:入场纪律检查器 check_entry_rules.py(28条军规,v0.5.0-v0.5.2)
+## 模块⑨:入场纪律检查器 check_entry_rules.py（28条军规，0.6.0口径）
 
 数据源:`kline --adjust forward`(260根) + finance-calendar(财报距离) +
 heat-rank(D10,**返回键名是 `lists` 复数**)。规则引擎为纯函数(合成K线可离线测试)。
@@ -503,14 +497,14 @@ heat-rank(D10,**返回键名是 `lists` 复数**)。规则引擎为纯函数(合
 - **「刚跌破/刚突破」**:最近 3 根内收盘穿越(D3 用穿越式检测,含二次跌破);
   「离强压力很近」= 距离 ≤4%。被跌破的支撑此刻在现价上方,D2/D3-颈线
   须扫全量 levels 而非只扫 supports(v0.5.1)
-- **缩量/放量**:vol < 0.8×MA5量 / vol ≥ 1.5×MA5量(B6 吞没日也校验量 ≥1.2×,v0.5.1)
+- **缩量/放量**:vol < 0.8×之前5根均量 / vol ≥ 1.5×之前5根均量；排除当前根，缺量不可判定。B6 吞没日也校验量 ≥1.2×
 - **斐波那契**:250 日窗内最低点→其后的最高点构成主上行波段(涨幅≥15%、
   高点在近 120 根内),61.8% 回撤位用于 D3(刚跌破)与 B9(守住)
 - **背离**:最近两个同类 pivot,价创新高(新低)而 RSI(6) 反向 ≥2 个点;
   时效约束 = 第二 pivot 在近 25 根内且跨度 ≤40 根(v0.5.1,陈年背离不作数)
 - **RSI**:Wilder;横盘无波动(gain=loss=0)= 中性 50,与 indicators.rsi 一致(v0.5.1)
-- **止损/盈亏比**:止损=最近支撑,目标=最近压力,rr<1 判不买(B0 闸门);
-  止损距离 > --max-stop-pct(默认8%)触发 D5/U4
+- **止损/盈亏比**:以显示的入场参考价核算；止损=最近支撑，目标=最近压力或 --target-price。用未舍入 rr 判断1:1闸门；止损不低于入场价直接阻断。
+  止损距离 > --max-stop-pct(默认8%，显式0有效)触发 D5/U4
 - **B5 回踩**:守住「触及的最深一根」均线即可——经典 10 日线回踩会同时下穿
   5 日线,若要求收在 5 日线上方则该结构永远无法成立(v0.5.1)
 - **B2**:突破棒之后至少要有一根回踩棒,突破当天不能自称「回踩不破」(v0.5.1);
@@ -520,8 +514,7 @@ heat-rank(D10,**返回键名是 `lists` 复数**)。规则引擎为纯函数(合
   旗面吞进杆里),整体上推由 8% 门槛把关(v0.5.3)
 - **US 时区回退**:zoneinfo 不可用(py<3.9 或缺 tzdata)时退**纯算法夏令时规则**
   (3月第2个周日~11月第1个周日),不再固定 UTC-5 导致夏令时期间窗口错 1 小时(v0.5.3)
-- **结论汇总**:manual 清单含 B 规则(如 B8 待确认板块),潜在买点待确认时
-  结论为「观望(潜在买点待确认)」而非「未出现任何买点」(v0.5.1)
+- **结论汇总**:必要D/U人工项、B0或关键价格/成交量证据未确认时，匹配形态仍不能判纪律通过；JSON明确列出 required_confirmations 和 data_quality。B8等候选条件待确认时区分于完全没有买点。
 - **D12 时区与语义**:HK 按 UTC+8,US 尝试 zoneinfo(America/New_York),失败退
   纯算法夏令时;**周末与 closed-calendar 休市日直接 clear**(港股台风临时停市
   不在日历内);**语义经用户确认(2026-09-29):「开盘前半小时不买」= 盘前
@@ -533,31 +526,29 @@ heat-rank(D10,**返回键名是 `lists` 复数**)。规则引擎为纯函数(合
   (默认 3%)视为板块突破日。⚠️ 实测 CLI **无「个股→所属行业」映射命令**
   (industry-peers 只吃 BK 码,quote/static/anomaly/industry-valuation 均无
   行业字段),映射走两条路:--sector <行业名> 指名 / 该股为某行业 leading_ticker
-  时反查;都不中则人工
-- **人工项**:D6/D8/D9/D11 与 B8 的板块半边无数据源,CLI 参数回答后消解;
+  时反查;都不中则人工。自动板块数据必须与个股突破属于同一市场日期，无法确认日期时不得复用今日板块信号
+- **人工项**:D6/D8/D9/D11 及 B8 无法自动取得的板块证据，可通过对应 CLI 参数确认;
   D7 财报距离可被 --earnings-days 覆盖(日历查询失败时)
-- 离线自检:`python scripts/decision/check_entry_rules.py --demo`(无需登录)
+- 离线自检:`python scripts/decision/check_entry_rules.py --demo`；加 `--json` 输出三个合成场景的严格JSON，无需登录
 
-## v0.5.3 跨模块修复摘要(第三轮外部审查核实)
+## v0.5.3 历史修复摘要（后续口径以0.6.0为准）
+
+以下记录历史变更，不替代当前公式或验证记录。
 
 - **calc_option_greeks**: 期权腿加权补合约乘数 ×100(与正股腿口径一致;外来
   补丁方向正确,经回归测试确认后收编)
-- **calc_indicators**: OHLCV 改**同位过滤**(任一字段缺失整根剔除)——原各自
-  独立过滤会错位,外来补丁的"完全不过滤"会让 None 打进指标;另补 ATR 格式化防护
-- **calc_exercise_prob**: T≤0(到期日当天/过期)直接按价内外判定 0/100%,
-  不再进 BS 公式除零(common.bs_price/bs_greeks 本就有 T 防护,此脚本是唯一漏网)
+- **calc_indicators**: 当时以OHLCV同位过滤修复错位；0.6.0进一步保留有效OHLC，缺成交量单独使量能指标不可用，ATR=0仍有效
+- **calc_exercise_prob**: T≤0时按价内外判定；0.6.0的T按纽约常规收市时刻计算，同日盘中仍可大于0
 - **get_constituent**: 还原外来补丁误删的分数→百分数换算(constituent 的 chg
   实测是分数,已知坑 #14 与单测双重印证;审查假设的"API 返回 -5.0"场景不存在)
 - **compare_stocks**: 负 PE/PB/PS 不参与「谁最便宜」排名与最优标记
 - **get_warrant**: --sort expiry 改日期字典序(to_float 会把日期归零使排序失效)
-- **analyze_buy_sell**: 财报事件维取最近一次未来财报(原取第一个命中,乱序时会取错)
+- **analyze_buy_sell**: 财报选择最近一次未来事件；0.6.0将事件改为独立风险扣分，不参与方向权重
 - **get_orderbook_pressure**: 补卖档表格渲染(原来只打买档)
-- **calc_option_pnl**: 未封顶方向的最大盈亏标注「±30%扫描区间内,该方向未封顶」
+- **calc_option_pnl**: 旧版使用扫描及端点标签；0.6.0已改为解析全局极值与零点，扫描只负责绘图
 - **get_financial_health**: 零值科目用 is not None 判存在(总负债=0 不再当缺失)
 
-审查中判定不属实/不采纳的: dividend 连续年数(跨度已严格校验,最新年未派息
-从上年起算是注释明示的设计); constituent 启发式(见上); 其余 Key 强取类
-(各脚本外层 try/except + print_error 兜底,属错误信息友好度问题而非崩溃)。
+历史审查的结论以当时样本为限。0.6.0对股息估值日、未来记录、币种和缺失数据另作修正；外层异常捕获不能代替计算语义验证。
 
 ## v0.4.0 新增已知坑汇总
 

@@ -12,7 +12,7 @@
 
 ---
 
-## 完整映射表
+## 基础期权能力映射（后续扩展见 new-modules-map.md）
 
 ### 🟢 A 档:原生(5 个脚本)
 
@@ -22,7 +22,7 @@
 | `get_option_chain.py` | `option chain <UL> --date` | `get_option_chain` | 某到期日的行权价 + IV + 价格 |
 | `get_option_volume.py` | `option volume` / `volume daily` | `get_option_market_statistic` | 实时/每日 Call-Put 成交量 + **P/C 比率**(原生!) |
 | `resolve_option_code.py` | `build_occ_code` + chain 验证 | `resolve_option_code` | 构造 OCC 代码(Longbridge chain 不返回 symbol) |
-| `get_option_quote.py`(原生部分) | `option quote <OCC>` | `get_option_quote` | ⚠️ 当前返回空(见下方"已知限制") |
+| `get_option_quote.py`(原生部分) | `calc-index <Longbridge合约代码>` | `get_option_quote` | 原生 Greeks/OI 优先，缺失才回退 BS |
 
 ### 🟡 B 档:计算(10 个脚本)
 
@@ -31,7 +31,7 @@
 | `get_option_volatility.py` | chain IV + kline | `get_option_volatility` | HV = std(ln收益)×√252;IV/HV 比率 |
 | `get_vol_smile.py` | chain 各 strike IV | `get_option_volatility`(扩展) | 提取 smile + put skew |
 | `get_option_quote.py`(BS 部分) | chain IV | `get_option_quote` | BS 公式算 delta/gamma/theta/vega/rho |
-| `calc_option_greeks.py` | 各腿 chain IV | `get_option_strategy_analysis`(Greeks) | 多腿 Greeks 加权 |
+| `calc_option_greeks.py` | 各腿原生 Greeks / chain IV 回退 | `get_option_strategy_analysis`(Greeks) | 同标的，按方向×数量×100加权 |
 | `calc_exercise_prob.py` | chain IV + 现价 | `get_option_exercise_probability` | BS N(d2) / |delta| 近似 |
 | `calc_option_pnl.py` | chain last price | `get_option_strategy_analysis`(损益) | 到期损益曲线/盈亏平衡/最大盈亏 |
 | `get_option_strategy.py` | chain + 现价 | `get_option_strategy` | 生成标准策略腿(8 种) |
@@ -55,7 +55,7 @@
 
 ---
 
-## 已知限制(实测得出)
+## 已知限制（历史样本，不代表本次验证当前接口）
 
 ### 1. `option quote` 对单合约返回空
 ```
@@ -63,15 +63,14 @@ longbridge option quote AAPL260918C00200000 → []
 ```
 **现象**:所有美股 OCC 代码查询都返回空数组,但 `option chain --date` 正常返回 IV。
 **原因推测**:CLI 的 `option quote` 可能需要订阅该合约,或 OCC 格式要求不同(token 已确认含 OPRA 权限)。
-**影响**:单合约 Greeks 改用 BS 公式(chain IV 作输入)计算,与服务端可能有细微差异。
-**升级路径**:若 `option quote` 后续可用,`get_option_quote.py` 会自动检测原生数据并优先使用。
+**当前路径**:单合约通过 `calc-index` 获取可用原生 Greeks，缺失时才用 BS 公式(chain IV 作输入)回退。两种来源在输出中区分；BS 不含股息或提前行权。
 
 ### 2. `option chain` 只返回实时数据,无法查历史
 ```
 longbridge option chain AAPL.US --date 2026-07-01 → []
 ```
 **影响**:IV Rank / IV Percentile / IV 时间序列无法靠回溯历史 chain 得到。
-**解决**:`get_iv_history.py` 采用**本地累积模式**,每次运行记录当天 IV,逐步建立序列。建议配 cron 每日运行。
+**解决**:`get_iv_history.py` 采用**本地累积模式**，按市场日期采集恒定30日期限 IV(总方差插值，不外推)。旧的非恒定期限记录仍保留，但不计入 Rank/Percentile；本次采集失败时不把旧值作为当前。统计窗口是全部本地可比记录；采集时间并不证明上游报价实时。
 
 ### 3. 港股期权可能不支持
 ```
@@ -85,7 +84,10 @@ longbridge option volume daily 700.HK → {"stats": []}
 `option volume daily` 仅支持美股 OPRA。
 
 ### 5. IV 数值形式
-Longbridge 的 IV 字段是**小数**(0.214 = 21.4%),与 Futu 的百分比形式不同。本 skill 统一用小数内部计算,输出时转百分比(`iv_pct`)。
+chain 的 IV 字段是小数（0.214 = 21.4%），calc-index 的样本为百分数字符串（如 `22.40%`）。公共封装按端点转换为小数，显示字段再转成百分比（`iv_pct`）。
+
+### 6. 0.6.0 计算边界
+显式非标准期权链记录排除；标准合约乘数为100。默认到期时间采用纽约16:00，同日收盘后自动跳过该到期日；提前收市和特殊结算仍需合同/日历数据。BS 不可微折点明确拒绝 Greeks。完整说明见 [审计修复记录](../docs/audit-fixes-2026-11-03.md)。
 
 ---
 

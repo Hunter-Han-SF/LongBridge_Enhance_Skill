@@ -1,4 +1,4 @@
-# LongBridge Enhance Skill (longbridge-pro)
+# LongBridge Enhance Skill (longbridge-pro) · 0.6.0
 
 **[English](README.md)** | [中文](README.zh-CN.md)
 
@@ -13,13 +13,13 @@
 > + insider trades / 13F institutional holdings / fund holders / shareholders)
 > ⑧ Intraday microstructure (VWAP / order-book imbalance / tick order flow / volume profile)
 > ⑨ Buy/sell decisions (dashboard + 28-rule entry discipline checker) ⑩ Stock screener (preset strategies / custom filters)
-> — all computed locally from Longbridge CLI data, with 142 unit tests.
+> — all computed locally from Longbridge CLI data, with an offline regression suite.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ## What this is
 
-The official `longbridge` skill series gives you **raw data** (option chains, quotes, fundamentals) via the Longbridge CLI. This enhancement skill adds the **compute and fusion layer on top** — Black-Scholes pricing, Greeks, volatility analysis, strategy P&L, anomaly scoring, capital-flow analytics, a full technical-indicator suite, valuation percentiles, analyst consensus, intraday VWAP/order-book/tick analytics, and a six-dimension buy/sell decision dashboard — none of which the raw CLI provides.
+The official `longbridge` skill series gives you **raw data** (option chains, quotes, fundamentals) via the Longbridge CLI. This enhancement skill adds the **compute and fusion layer on top** — Black-Scholes pricing, Greeks, volatility analysis, strategy P&L, anomaly scoring, capital-flow analytics, a full technical-indicator suite, valuation percentiles, analyst consensus, intraday VWAP/order-book/tick analytics, and a five-directional-input dashboard with separate event risk — none of which the raw CLI provides.
 
 ## Features
 
@@ -28,17 +28,17 @@ The official `longbridge` skill series gives you **raw data** (option chains, qu
 - **Single-contract quote** — native server Greeks first (calc-index, incl. OI), Black-Scholes fallback
 - **IV vs HV** — implied vol (from chain) vs historical vol (from K-line)
 - **Volatility smile & skew** — per-strike IV curve + put skew
-- **IV Rank & IV Percentile** — via local accumulation
+- **IV Rank & IV Percentile** — from locally collected constant 30-day ATM IV. Rank and percentile require a successful current capture and at least 20 comparable observations by default. Legacy records are retained and excluded
 - **Exercise probability / Portfolio Greeks / Expiration P&L / 8 strategy legs** (incl. STOCK legs for collar/covered-call)
 - **Put/Call Wall** — real-OI walls (calc-index, volume fallback) as support/resistance
-- **Gamma Exposure (GEX)** — real-OI weighted (native gamma first) + interpolated flip point
+- **Gamma Exposure (GEX)** — OI-weighted gamma and interpolated zero crossings under a Call-positive, Put-negative positioning assumption. OI provides no observed dealer net position
 - **Gamma Profile (flagship)** — multi-expiry (60-day) aggregate GEX surface + interpolated gamma flip + OI-kernel-density fine-grained S/R
 - **Options OI distribution** — per-strike real OI + P/C OI ratio (positioning) + OI walls
-- **Earnings IV Crush** — pre/post-earnings IV change with earnings calendar
-- **Expected Move** — ATM-straddle implied move (1σ range) per expiry
+- **IV decline and earnings context** — current constant 30-day IV, the available earnings calendar, and adjacent-calendar-day IV drops over 20%. Historical drops are not matched to earnings events
+- **Expected Move** — ATM straddle premium range around spot, expiry break-even prices at strike ± premium, and a separate IV model scale of `spot × IV × √T`. The premium range carries no fixed coverage probability
 - **IV term structure** — contango/backwardation + event-premium expiry detection
 - **25Δ Risk Reversal** — standardized skew: IV(25Δ call) − IV(25Δ put)
-- **Max Pain** — expiry "gravity" strike (real OI, volume fallback)
+- **Max Pain** — strike that minimizes aggregate modeled expiry intrinsic payout, weighted by OI or a labeled volume fallback. It provides no price-attraction forecast
 - **HK warrants** (HK only) — underlying's full warrant list (leverage/expiry stats) + contract quotes + issuers; direction taken from quote (list `type` unreliable)
 
 ### 🔵 Module ②: Anomaly tracking
@@ -49,7 +49,7 @@ The official `longbridge` skill series gives you **raw data** (option chains, qu
 - **A/H premium** — dual-listed premium K-line/intraday + z-score + convergence trend
 
 ### 💰 Module ③: Capital flow / main force
-- **Capital distribution** — large/medium/small order inflow/outflow + net + minute-level flow series
+- **Capital distribution** — large/medium/small order inflow/outflow, net and minute observations. Values retain source units by default. Once the feed convention is verified, set `LBR_CAPITAL_SCALE` to a positive multiplier and `LBR_CAPITAL_FLOW_MODE` to `cumulative` or `incremental` (default `unknown`)
 - **HK broker holdings** — top-10 buy/sell brokers, full detail, single-broker history (HK only)
 - **HK broker queue** — which institution is queuing at each price level (names resolved; support/pressure detection)
 - **Short selling** — daily short-volume ratio + open interest (US days-to-cover / HK cost)
@@ -72,13 +72,14 @@ The official `longbridge` skill series gives you **raw data** (option chains, qu
 - **Signal detection** — MA alignment, MA/MACD/KDJ golden & death crosses, overbought/oversold, 20-day breakouts, 250-day line
 - **Composite score** — 0-100 across trend/momentum/volume/position dimensions
 - **Relative strength + Beta** — 1-week to 1-year out/under-performance vs benchmark (default SPY / 2800.HK / 510300.SH)
-- **Server-side quant indicators & backtest** — pine presets (EMA/RSI/MACD + EMA-cross backtest) + cross-check vs local library (<0.02% deviation)
+- **Volume ratio** — latest bar volume divided by the prior five-bar mean. Missing volumes remain unavailable.
+- **Server-side quant indicators & backtest** — pine presets (EMA/RSI/MACD + EMA-cross backtest). `--cross-check` explicitly skips comparison in text and JSON because the server summary lacks verifiable bar times, adjustment and warm-up inputs
 
 ### 🏦 Module ⑦: Fundamentals
 - **Valuation percentile** — current PE/PB vs 5-year history percentile + industry peer comparison
 - **Analyst consensus** — rating distribution, target-price range vs spot, EPS forecast dispersion
-- **Financial health** — key line items from all three statements with traffic-light ratings (growth/profitability/leverage/cash flow)
-- **Dividend quality** — TTM yield, consecutive years, complete-year growth, frequency stability
+- **Financial health** — key line items from all three statements with traffic-light ratings (growth/profitability/leverage/cash flow). Cross-statement ratios require compatible reporting periods, and the verdict stays unassessed when key metrics are unavailable
+- **Dividend quality** — Trailing-year ex-dates through the instrument's market date. Yield requires matching dividend and quote currencies. Growth compares received same-currency records from the two latest ended calendar years; an ended year does not prove feed completeness
 - **Multi-stock compare** — up to 5 symbols across PE/PB/PS/ROE/margins/yield, with in-group rankings
 - **Business segments** — revenue split + concentration (CR1/CR2)
 - **Industry rank + hierarchy tree + valuation distribution** — sector performance, leading stocks, sub-industries, in-industry valuation percentile
@@ -86,38 +87,38 @@ The official `longbridge` skill series gives you **raw data** (option chains, qu
 - **Corporate actions / HK operating reviews / company profiles + executives**
 
 ### 🧠 Module ⑦ signal sources (institutions & insiders)
-- **Insider trades** (SEC Form 4, US only) — net buy value + stats + bull/bear signal
+- **Insider trades** (SEC Form 4, US only) — P/S purchase/sale totals, with grants, exercises and issuer dispositions listed separately. Net value describes transactions without inferring intent
 - **13F institutional holdings** — AUM rankings / per-firm holdings / quarter-over-quarter changes (new/added/reduced/exited)
 - **Fund holders / shareholders** — who is overweight, increase/decrease direction
 
 ### ⚡ Module ⑧: Intraday microstructure
-- **VWAP analysis** — price vs session VWAP deviation + time-above-VWAP ratio
+- **VWAP analysis** — price vs session VWAP deviation, the share of valid observations above VWAP, and input coverage. Thirty-minute trends require the matching timestamp
 - **Order-book pressure** — L2 depth imbalance, bid/ask volume ratio, largest walls
-- **Tick order flow** — active buy/sell ratio (volume & notional), large-trade detection, closing mood
-- **Volume Profile** (5-day) — POC (strongest S/R) + 70% Value Area (VAH/VAL) + position judgment
+- **Tick order flow** — uptick/downtick estimates for volume and notional, with unclassified trades shown separately. Price direction does not identify the trade aggressor
+- **Volume Profile** (5-day) — point of control (highest-volume price level) + 70% Value Area (VAH/VAL) + position judgment
 
 ### 🎯 Module ⑨: Buy/sell decision dashboard + entry discipline checker
-- **Six-dimension aggregate** — technicals 30% + valuation 15% + capital flow 20% + options 10% + analysts 15% + event risk 10%
-- Outputs bull vs bear factor lists and a composite signal; failed dimensions auto-de-weight; non-US symbols get a neutral options score
-- Insider/13F/fund-holder signals available as an independent 7th perspective
+- **Directional score** — technical 30, valuation 15, capital flow 20, US options 10, analysts 15. A signal requires technicals and at least 60 points of observed weight.
+- **Event risk** — earnings within seven days can reduce a bullish score by up to seven points, stopping at neutral. Event risk is separate from directional coverage.
+- Insider/13F/fund-holder signals available as additional independent context
 - **Entry discipline checker (28 rules)** — `check_entry_rules.py` encodes a personal trading
   checklist: 12 no-buy rules in downtrends (D1–D12), 6 no-buy rules in uptrends (U1–U6),
-  and 10 high-win-rate setups (B0–B9, with B0 as a minimum 1:1 reward/risk gate).
+  and 10 candidate setup checks (B0–B9, with B0 as a minimum 1:1 reward/risk gate).
   Every rule reports triggered / clear / needs-manual with evidence (new lows, volume dry-up,
   RSI(6) extremes & divergence, Fibonacci 61.8%, trendline/neckline breaks, S/R clustering,
   engulfing/hammer/W-bottom/flag detection, MA5/MA10 first pullback, earnings proximity,
-  first-30-min window, heat-rank hits, stop distance vs tolerance). Manual items
-  (recent stop-out, familiarity, sector ranking …) resolve via CLI flags.
+  last 30 minutes before the open, heat-rank hits, stop distance vs tolerance). Manual items
+  (recent stop-out, familiarity, sector ranking …) resolve via CLI flags. A pending required item, unavailable live price or volume, or an unconfirmed B0 gate prevents a pass. Use `--target-price` to supply the B0 target.
 
 ### 🔍 Module ⑩: Stock screener
 - **Preset strategies** — 17 official strategies (low valuation / high growth / today's gainers …) run by ID
 - **Custom filters** — `pettm:10:50 roe:5:` style conditions (25+ indicator keys)
-- **Screen → score workflow** — pipe screened names straight into the six-dimension dashboard
+- **Screen → score workflow** — pipe screened names straight into the directional dashboard with separate event risk
 
 ## Requirements
 
 - **Longbridge CLI** installed and authenticated (`longbridge auth login`)
-- **Python 3.8+** (no third-party packages — pure standard library)
+- **Python 3.8+ syntax target** (pure standard library). The 0.6.0 suite was run on Python 3.13.15; a Python 3.8 interpreter was not exercised
 - Options module needs **OPRA options market data** permission (all other modules only need stock quotes)
 
 ## Installation
@@ -150,10 +151,12 @@ python scripts/check_env.py
 
 ## Quick start
 
+Commands with an explicit expiry or strike elsewhere in the documentation are syntax examples. Use `get_option_expiration.py` and the current chain to select a listed contract; commands below omit optional expiries so they select a remaining expiry automatically.
+
 ```bash
 # === Options ===
 python scripts/quote/get_option_volatility.py AAPL.US        # IV vs HV
-python scripts/quote/get_put_call_wall.py AAPL.US --date 2026-09-18  # support/resistance
+python scripts/quote/get_put_call_wall.py AAPL.US             # OI concentration levels
 python scripts/quote/get_warrant.py 700.HK --enrich 20       # HK warrants
 
 # === Anomaly & capital flow ===
@@ -181,23 +184,23 @@ python scripts/intraday/get_trade_stats.py 700.HK               # volume profile
 
 # === One-click daily briefing / buy-sell dashboard / entry discipline ===
 python scripts/sentiment/daily_briefing.py --market US
-python scripts/decision/analyze_buy_sell.py AAPL.US             # six-dimension bull/bear view
+python scripts/decision/analyze_buy_sell.py AAPL.US             # directional inputs + separate event risk
 python scripts/decision/check_entry_rules.py AAPL.US            # 28-rule entry checklist
 ```
 
-Run the unit tests (142 cases, mocked CLI — no network needed):
+Run the offline regression suite (mocked CLI):
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-See [`SKILL.md`](SKILL.md) for the full command reference.
+See [`SKILL.md`](SKILL.md) for the full command reference and [the 0.6.0 audit record](docs/audit-fixes-2026-11-03.md) for all 27 findings, compatibility changes and validation evidence.
 
 ## Known limitations
 
-These are **data-source limitations** of the Longbridge API, not bugs:
+These are recorded interface observations and model limitations. The 0.6.0 audit uses offline fixtures; it does not certify the current server contract.
 
-1. **Single-contract `option quote` returns empty** — Greeks computed via Black-Scholes using chain IV.
+1. **Single-contract `option quote` returned empty in earlier samples** — current wrappers prefer native Greeks via `calc-index`, then fall back to Black-Scholes using chain IV.
 2. **No historical IV** — IV Rank/Percentile use **local accumulation** (`get_iv_history.py` daily).
 3. **US options only (OPRA)** — HK / A-share options return empty (HK derivatives covered via `warrant`).
 4. **Per-strike OI — solved** — `calc-index` provides real OI + native Greeks per contract; Wall/GEX/MaxPain/P-C OI now use real OI (volume only as fallback).
@@ -216,10 +219,10 @@ For the full mapping (Futu↔Longbridge options, plus new modules CLI field map)
 
 ## Verification
 
-All calculations have been cross-validated against theoretical constraints:
-- Black-Scholes: Put-Call Parity holds (error < 3e-14), Gamma/Vega Call=Put symmetry exact, theta/vega/rho match finite differences
+Offline regression tests cover selected formula and input edge cases. Directional weights and setup rules are heuristics without out-of-sample return validation.
+- Black-Scholes: tested positive-input cases satisfy put-call parity and finite-difference sensitivities within floating-point tolerances; deterministic limits and undefined payoff kinks have separate regressions
 - Historical Volatility: matches `statistics.stdev` to floating-point precision
-- P&L break-even: linear interpolation, verified against closed-form formulas
+- P&L break-even: piecewise expiry payoff and analytical break-even roots
 - Technical indicators: boundary values (monotonic rise RSI=100, symmetric Wilder RSI=50), Bollinger vs `statistics.pstdev`, Beta(2×market)=2
 
 See [`references/calc-formulas.md`](references/calc-formulas.md) for the math.
