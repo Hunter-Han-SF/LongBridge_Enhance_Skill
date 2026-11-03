@@ -24,29 +24,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
 from common import (  # noqa: E402
-    find_atm_strike,
     get_option_chain,
     get_underlying_price,
     print_error,
     print_json,
     to_float,
 )
-
-
-def _nearest_strike(chain: list[dict], target: float) -> float | None:
-    """从 chain 找最接近 target 的行权价。"""
-    best, best_diff = None, float("inf")
-    for r in chain:
-        s = to_float(r.get("strike"))
-        if s is not None and abs(s - target) < best_diff:
-            best_diff, best = abs(s - target), s
-    return best
 
 
 def build_strategy(
@@ -63,20 +53,34 @@ def build_strategy(
     if not chain:
         raise ValueError(f"{underlying} 在 {expiry} 无期权链")
 
-    atm = find_atm_strike(chain, price)
-    strikes_sorted = sorted([to_float(r["strike"]) for r in chain if to_float(r.get("strike")) is not None])
-    # OTM Call = 现价×(1+otm_pct), OTM Put = 现价×(1-otm_pct)
-    otm_call_target = price * (1 + otm_pct)
-    otm_put_target = price * (1 - otm_pct)
-    otm_call = _nearest_strike(chain, otm_call_target)
-    otm_put = _nearest_strike(chain, otm_put_target)
-    # ITM Call = 现价×(1-otm_pct)
-    itm_call = _nearest_strike(chain, otm_put_target)
-
+    if not math.isfinite(otm_pct) or not 0 < otm_pct < 1:
+        raise ValueError("OTM 距离比例必须在 0 与 1 之间")
+    strikes = sorted({strike for r in chain if r.get("standard") is not False
+                      for strike in [to_float(r.get("strike"))] if strike and strike > 0})
+    if not strikes:
+        raise ValueError("无标准合约行权价")
+    atm = min(strikes, key=lambda k: abs(k - price))
     strat = strategy.upper()
+    call_floor = max(price, atm) if strat in ("BULL_CALL_SPREAD", "BUTTERFLY") else price
+    put_ceiling = min(price, atm) if strat in ("BEAR_PUT_SPREAD", "BUTTERFLY") else price
+    otm_call = min((k for k in strikes if k > call_floor),
+                   key=lambda k: abs(k - price * (1 + otm_pct)), default=None)
+    otm_put = min((k for k in strikes if k < put_ceiling),
+                  key=lambda k: abs(k - price * (1 - otm_pct)), default=None)
+    if strat == "BUTTERFLY":
+        widths = [atm - lower for lower in strikes if lower < atm
+                  if any(math.isclose(upper - atm, atm - lower, abs_tol=1e-9)
+                         for upper in strikes if upper > atm)]
+        if not widths:
+            raise ValueError("行权价不足以构成等宽蝶式")
+        width = min(widths, key=lambda w: abs(w - price * otm_pct))
+        itm_call = atm - width
+        otm_call = min(strikes, key=lambda k: abs(k - (atm + width)))
     legs: list[dict] = []
 
     def leg(strike, otype, action, qty=1):
+        if strike is None:
+            raise ValueError(f"缺少符合 {strat} 方向约束的行权价")
         return {"underlying": underlying, "expiry": expiry, "strike": strike,
                 "type": otype, "action": action, "quantity": qty}
 

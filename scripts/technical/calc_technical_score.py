@@ -97,7 +97,7 @@ def _score_volume(ind: dict) -> tuple[float, list[str]]:
     if ob.get("rising_20"):
         s += 10
         notes.append("OBV 20期上行 +10")
-    elif ob.get("rising_20") is False:
+    elif (ob.get("slope_20") or 0) < 0:
         notes.append("OBV 20期下行 +0")
     vr = ind.get("volume_ratio")
     if vr is not None and vr >= 1.0:
@@ -148,8 +148,8 @@ def _score_position(ind: dict) -> tuple[float, list[str]]:
         else:
             s += 2
             notes.append(f"ATR {ap:.1f}%/日(波动大)+2")
-    dc = ind.get("donchian20") or {}
-    if dc.get("upper") and ind["price"] >= dc["upper"]:
+    dc = ind.get("donchian20_prior") or {}
+    if dc.get("upper") and ind["price"] > dc["upper"]:
         s += 5
         notes.append("突破 20 日新高 +5")
     return min(s, 25), notes
@@ -158,6 +158,8 @@ def _score_position(ind: dict) -> tuple[float, list[str]]:
 def score(symbol: str, count: int = 300, output_json: bool = False,
           quiet: bool = False) -> dict:
     ind = compute_all(symbol, count=count)
+    if ind["bars"] < 60:
+        raise ValueError("技术面评分至少需要 60 根有效 K 线")
     dims = {
         "趋势": _score_trend(ind),
         "动量": _score_momentum(ind),

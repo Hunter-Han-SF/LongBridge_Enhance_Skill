@@ -1,13 +1,13 @@
 """单标的异动综合打分(融合多数据源)。
 
-跨模块旗舰脚本: 综合异动信号、资金流方向、涨跌幅偏离、成交量比,
+跨模块旗舰脚本: 综合异动信号、资金流方向、涨跌幅偏离、异动榜入榜情况,
 给单标的一个 0-100 的异动强度分 + 方向判断 + 原因解读。
 
 打分维度(各占权重):
   1. 异动信号数(40%): 来自 anomaly,该标的有几条异动 + 情绪方向
   2. 资金流方向(30%): 来自 capital flow,大单净流入/流出
   3. 涨跌幅偏离(20%): 来自 quote,相对前日的涨跌幅
-  4. 成交量比(10%): 来自 top_movers 或 quote,是否放量
+  4. 异动榜(10%): 来自 top_movers,是否入榜
 
 输出:
   - 综合分(0-100,越高越异动)
@@ -85,18 +85,22 @@ def _score_dimension(symbol: str, market: str) -> dict:
     try:
         cap = get_capital_flow_snapshot(symbol)
         net = cap.get("net", {}) if cap else {}
-        net_large = to_float(net.get("large"), 0) or 0
-        net_total = to_float(net.get("total"), 0) or 0
-        # 净流入越大分越高(绝对值归一化到 30)。
-        # 单位为当地货币完整元(common 已把 CLI 的"万"×1e4 换算),
-        # 大单净流入约 300 万(美元/港元)计满 30 分
-        cap_score = min(abs(net_large) / 1e5, 30) if net_large != 0 else 0
+        large_in = to_float((cap.get("capital_in") or {}).get("large"))
+        large_out = to_float((cap.get("capital_out") or {}).get("large"))
+        net_total = to_float(net.get("total"))
+        complete = large_in is not None and large_out is not None and min(large_in, large_out) >= 0
+        net_large = large_in - large_out if complete else None
+        gross = large_in + large_out if complete else None
+        imbalance = abs(net_large) / gross if gross else (0.0 if gross == 0 else None)
+        cap_score = 30 * imbalance if imbalance is not None else None
         dims["capital"] = {
-            "score": round(cap_score, 1),
+            "score": round(cap_score, 1) if cap_score is not None else None,
+            "large_imbalance": imbalance,
             "weight": 0.3,
             "net_large": net_large,
             "net_total": net_total,
-            "direction": "主力流入" if net_large > 0 else ("主力流出" if net_large < 0 else "持平"),
+            "direction": ("数据不足" if net_large is None else
+                          "大单流入" if net_large > 0 else "大单流出" if net_large < 0 else "持平"),
         }
     except Exception as e:
         dims["capital"] = {"score": 0, "weight": 0.3, "error": str(e)}
@@ -107,13 +111,13 @@ def _score_dimension(symbol: str, market: str) -> dict:
         chg = to_float(q.get("change_pct"))
         # ⚠️ CLI 的 change_percentage 是百分比形式(0.29 = 0.29%),不是小数
         # 涨跌幅绝对值越大分越高:超过 ±3% 开始计分,±8% 满分
-        chg_score = min(max((abs(chg) - 3) / 5, 0) * 20, 20) if chg is not None else 0
+        chg_score = min(max((abs(chg) - 3) / 5, 0) * 20, 20) if chg is not None else None
         dims["change"] = {
-            "score": round(chg_score, 1),
+            "score": round(chg_score, 1) if chg_score is not None else None,
             "weight": 0.2,
             "change_pct": chg,
             "price": q.get("last"),
-            "direction": "上涨" if chg and chg > 0 else ("下跌" if chg and chg < 0 else "持平"),
+            "direction": ("数据不足" if chg is None else "上涨" if chg > 0 else "下跌" if chg < 0 else "持平"),
         }
     except Exception as e:
         dims["change"] = {"score": 0, "weight": 0.2, "error": str(e)}
@@ -144,9 +148,10 @@ def _score_dimension(symbol: str, market: str) -> dict:
 def calc_score(symbol: str, market: str = "US", output_json: bool = False) -> dict:
     dims = _score_dimension(symbol, market)
 
-    # 加权综合分
-    total = sum(d.get("score", 0) * d.get("weight", 0) for d in dims.values())
-    total = round(total, 1)
+    # 各维度已按其满分分配权重，直接相加。
+    available = [d for d in dims.values() if d.get("score") is not None and "error" not in d]
+    total = round(sum(d["score"] for d in available), 1) if available else None
+    available_points = round(sum(d["weight"] for d in available) * 100)
 
     # 方向综合(各维度方向投票)
     directions = []
@@ -154,8 +159,8 @@ def calc_score(symbol: str, market: str = "US", output_json: bool = False) -> di
         direction = d.get("direction")
         if direction:
             directions.append(direction)
-    bull_votes = sum(1 for d in directions if d in ("利多", "主力流入", "上涨"))
-    bear_votes = sum(1 for d in directions if d in ("利空", "主力流出", "下跌"))
+    bull_votes = sum(1 for d in directions if d in ("利多", "大单流入", "上涨"))
+    bear_votes = sum(1 for d in directions if d in ("利空", "大单流出", "下跌"))
     if bull_votes > bear_votes:
         overall_dir = "利多 🟢"
     elif bear_votes > bull_votes:
@@ -164,7 +169,9 @@ def calc_score(symbol: str, market: str = "US", output_json: bool = False) -> di
         overall_dir = "中性 ⚪"
 
     # 强度标签
-    if total >= 60:
+    if total is None or available_points < 100:
+        intensity = "资料不全，仅显示已评估维度得分"
+    elif total >= 60:
         intensity = "🔥 强异动"
     elif total >= 35:
         intensity = "⚡ 中等异动"
@@ -177,6 +184,7 @@ def calc_score(symbol: str, market: str = "US", output_json: bool = False) -> di
         "symbol": symbol,
         "market": market,
         "anomaly_score": total,
+        "available_points": available_points,
         "intensity": intensity,
         "direction": overall_dir,
         "dimensions": dims,
@@ -187,19 +195,21 @@ def calc_score(symbol: str, market: str = "US", output_json: bool = False) -> di
         return result
 
     print(f"{symbol} 异动综合打分")
-    print(f"  📊 综合分: {total}/100  {intensity}")
+    score_text = f"{total}/{available_points}" if total is not None else "N/A"
+    print(f"  📊 已评估得分: {score_text}  {intensity}")
     print(f"  🧭 方向: {overall_dir}")
     print()
     print("维度明细:")
     label_map = {"anomaly": "异动信号", "capital": "资金流", "change": "涨跌幅", "top_movers": "异动榜"}
     for key, d in dims.items():
         label = label_map.get(key, key)
-        weighted = round(d.get("score", 0) * d.get("weight", 0), 1)
+        score = d.get("score")
+        score_text = score if score is not None else "N/A"
         if "error" in d:
             print(f"  [{label}] ✗ 数据获取失败({d['error'][:30]})")
             continue
-        print(f"  [{label}] 得分 {d.get('score',0)}/{int(d.get('weight',0)*100)} "
-              f"(加权 {weighted}) — {d.get('direction', d.get('in_movers', ''))}")
+        print(f"  [{label}] 得分 {score_text}/{int(d.get('weight',0)*100)} "
+              f" — {d.get('direction', d.get('in_movers', ''))}")
         if key == "anomaly" and d.get("types"):
             print(f"    信号类型: {', '.join(d['types'])}")
         if key == "top_movers" and d.get("reason"):

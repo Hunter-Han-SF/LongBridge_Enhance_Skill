@@ -40,13 +40,15 @@ def _fmt_bignum(v) -> str:
     return f"{f:.2f}"
 
 
-def _beat_miss(estimate, actual) -> tuple[str, str]:
+def _beat_miss(estimate, actual) -> tuple[str, str | None]:
     e, a = to_float(estimate), to_float(actual)
     if a is None or a == "":
         return "待公布", ""
     if e is None or e == "":
         return "已公布", ""
-    pct = (a - e) / abs(e) * 100 if e else 0
+    if e == 0:
+        return ("超预期" if a > 0 else "逊预期" if a < 0 else "符合"), None
+    pct = (a - e) / abs(e) * 100
     if pct > 0.5:
         return "超预期", f"+{pct:.1f}%"
     if pct < -0.5:
@@ -65,6 +67,8 @@ def fetch_consensus(symbol: str, count: int = 6, output_json: bool = False) -> d
             verdict, pct = _beat_miss(d.get("estimate"), d.get("actual"))
             d["verdict"] = verdict
             d["vs_estimate_pct"] = pct
+            actual, estimate = to_float(d.get("actual")), to_float(d.get("estimate"))
+            d["vs_estimate_absolute"] = actual - estimate if actual is not None and estimate is not None else None
 
     def _period_label(p: dict) -> str:
         return (p.get("period_text")
@@ -92,7 +96,8 @@ def fetch_consensus(symbol: str, count: int = 6, output_json: bool = False) -> d
             "预测": _fmt_bignum(d.get("estimate")),
             "实际": _fmt_bignum(d.get("actual")),
             "结果": d.get("verdict", ""),
-            "偏离": d.get("vs_estimate_pct", ""),
+            "偏离": (d.get("vs_estimate_pct") if d.get("vs_estimate_pct") is not None
+                     else f"{d['vs_estimate_absolute']:+g} (百分比 N/A)"),
         } for d in p.get("details", [])]
         if rows:
             print_display_table(rows, columns=["科目", "预测", "实际", "结果", "偏离"])

@@ -5,12 +5,12 @@
   ① 技术面(30%): calc_technical_score 综合分
   ② 估值面(15%): 估值历史百分位(便宜=高分)
   ③ 资金面(20%): 主力大单净流入方向 + 沽空压力
-  ④ 期权定位(10%): P/C 比率 + IV 贵贱(仅美股,其他市场中性)
+  ④ 期权定位(10%): P/C 比率 + IV 贵贱(仅美股)
   ⑤ 分析师(15%): 评级共识 + 目标价空间
-  ⑥ 事件风险(10%): 距下次财报的距离(临近财报降分,防事件风险)
+  ⑥ 事件风险: 临近财报最多削弱 7 分看多信号，独立于方向评分
 
 输出:
-  - 六维得分表(0-100 归一 + 加权)
+  - 方向维度得分和覆盖权重，财报风险单列
   - 多头因素 vs 空头因素 对照清单
   - 综合信号: 看多/偏多/中性/偏空/看空
 
@@ -35,17 +35,20 @@ for _p in (os.path.normpath(os.path.join(_HERE, "..")), _HERE,
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import common
 from common import (  # noqa: E402
     calc_hv, get_atm_iv, get_capital_flow_snapshot, get_finance_calendar,
-    get_kline, get_option_chain, get_option_expirations, get_option_volume_realtime,
-    get_short_trades, get_underlying_price, is_empty, print_error, print_json,
+    get_kline_adjusted, get_option_chain, get_option_expirations, get_option_volume_realtime,
+    get_short_trades, get_underlying_price, print_error, print_json,
     to_float,
 )
 from calc_technical_score import score as tech_score  # noqa: E402
 from get_valuation_percentile import analyze as val_analyze  # noqa: E402
 from get_analyst_consensus import analyze as analyst_analyze  # noqa: E402
 
-WEIGHTS = {"技术面": 30, "估值面": 15, "资金面": 20, "期权定位": 10, "分析师": 15, "事件风险": 10}
+WEIGHTS = {"技术面": 30, "估值面": 15, "资金面": 20, "期权定位": 10, "分析师": 15}
+MIN_COVERAGE_WEIGHT = 60
+EVENT_PENALTY = 7
 
 
 def _dim_technical(symbol: str, bulls: list, bears: list) -> tuple[float | None, str]:
@@ -82,47 +85,44 @@ def _dim_valuation(symbol: str, bulls: list, bears: list) -> tuple[float | None,
 def _dim_capital(symbol: str, bulls: list, bears: list) -> tuple[float | None, str]:
     try:
         cap = get_capital_flow_snapshot(symbol)
-        net_large = to_float((cap.get("net") or {}).get("large"), 0) or 0
-        # 强度 = |大单净额| / 当日大单总流量(尺度无关)。固定金额阈值对大盘股
-        # 会瞬间饱和(如 AAPL 级净额常超 ±$50M,300 万阈值直接打满 100/0 分);
-        # 失衡占比 ≥10% 视为满强度
-        li = to_float((cap.get("capital_in") or {}).get("large"), 0) or 0
-        lo = to_float((cap.get("capital_out") or {}).get("large"), 0) or 0
-        gross_large = max(li + lo, abs(net_large))
-        s = 50.0
-        if net_large > 0:
-            k = min(abs(net_large) / gross_large / 0.10, 1.0)
-            s = 50 + 50 * k
-            bulls.append(f"资金: 主力大单净流入 {abs(net_large)/1e8:.2f}亿"
-                         f"(占大单流量 {abs(net_large)/gross_large*100:.0f}%)")
-        elif net_large < 0:
-            k = min(abs(net_large) / gross_large / 0.10, 1.0)
-            s = 50 - 50 * k
-            bears.append(f"资金: 主力大单净流出 {abs(net_large)/1e8:.2f}亿"
-                         f"(占大单流量 {abs(net_large)/gross_large*100:.0f}%)")
+        net_large = to_float((cap.get("net") or {}).get("large"))
+        li = to_float((cap.get("capital_in") or {}).get("large"))
+        lo = to_float((cap.get("capital_out") or {}).get("large"))
+        gross = li + lo if li is not None and lo is not None and li >= 0 and lo >= 0 else None
+        s = None
+        detail = []
+        if net_large is not None and gross and abs(net_large) <= gross:
+            ratio = net_large / gross
+            s = 50 + 50 * max(-1, min(1, ratio / 0.10))
+            amount = (f"{net_large / 1e4:+.0f}万(当地货币)" if cap.get("unit_verified")
+                      else f"{net_large:+g}(源数值，货币单位未核实)")
+            detail.append(f"大单净额 {amount}")
+            if ratio:
+                (bulls if ratio > 0 else bears).append(
+                    f"资金: 大单净额 {amount}，占大单总流量 {ratio:+.0%}"
+                )
         # 沽空压力
         try:
             st = get_short_trades(symbol, count=10)
-            rates = [to_float(r.get("rate")) for r in st.get("data", [])]
-            rates = [r for r in rates if r is not None]
-            if rates:
-                latest = rates[-1]
+            latest = to_float(st["data"][-1].get("rate")) if st.get("data") else None
+            if latest is not None and 0 <= latest <= 1:
+                s = 50 if s is None else s
+                detail.append(f"沽空率 {latest:.0%}")
                 if latest >= 0.3:
                     s -= 10
-                    bears.append(f"沽空: 最新沽空比率 {latest*100:.0f}%(偏高压制)")
+                    bears.append(f"沽空: 最新沽空成交占比 {latest:.0%}")
                 elif latest <= 0.1:
                     s += 5
-                return max(min(s, 100), 0), f"大单净额 {net_large/1e4:.0f}万,沽空率 {latest*100:.0f}%"
         except Exception:
             pass
-        return max(min(s, 100), 0), f"大单净额 {net_large/1e4:.0f}万"
+        return (max(min(s, 100), 0), ", ".join(detail)) if s is not None else (None, "无数据")
     except Exception as e:
         return None, f"数据失败({str(e)[:30]})"
 
 
 def _dim_options(symbol: str, bulls: list, bears: list) -> tuple[float | None, str]:
     if not symbol.upper().endswith(".US"):
-        return 50.0, "非美股,期权维度中性"
+        return None, "非美股，期权维度不适用"
     try:
         s = 50.0
         parts = []
@@ -142,7 +142,7 @@ def _dim_options(symbol: str, bulls: list, bears: list) -> tuple[float | None, s
             price = get_underlying_price(symbol)
             iv = get_atm_iv(chain, price) if price else None
             if iv:
-                klines = get_kline(symbol, count=31)
+                klines = get_kline_adjusted(symbol, count=31)
                 closes = [k["close"] for k in klines if k.get("close") is not None]
                 hv = calc_hv(closes)
                 if hv:
@@ -152,7 +152,7 @@ def _dim_options(symbol: str, bulls: list, bears: list) -> tuple[float | None, s
                         bulls.append(f"期权: IV 偏贵(IV/HV {iv/hv:.2f},卖权收租机会)")
                     elif iv / hv < 0.8:
                         s -= 5
-        return max(min(s, 100), 0), ", ".join(parts) or "无数据"
+        return (max(min(s, 100), 0), ", ".join(parts)) if parts else (None, "无数据")
     except Exception as e:
         return None, f"数据失败({str(e)[:30]})"
 
@@ -189,14 +189,14 @@ def _dim_event(symbol: str, bulls: list, bears: list) -> tuple[float | None, str
     try:
         market = symbol.rsplit(".", 1)[-1] if "." in symbol else "US"
         buckets = get_finance_calendar(category="report", market=market, symbol=symbol, count=20)
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = common.market_date(market)
         # 取「最近一次」未来财报(日历返回乱序时不能只拿第一个命中的)
         best_days = None
         for b in buckets:
             for info in b.get("infos", []):
                 d = str(info.get("date", "")).replace(".", "-")[:10]
                 try:
-                    days = (datetime.strptime(d, "%Y-%m-%d") - datetime.strptime(today, "%Y-%m-%d")).days
+                    days = (datetime.strptime(d, "%Y-%m-%d").date() - today).days
                 except ValueError:
                     continue
                 if days >= 0 and (best_days is None or days < best_days):
@@ -204,9 +204,9 @@ def _dim_event(symbol: str, bulls: list, bears: list) -> tuple[float | None, str
         if best_days is not None:
             if best_days <= 7:
                 bears.append(f"事件: {best_days} 天后发财报(波动风险)")
-                return 30.0, f"{best_days} 天后财报"
-            return 90.0, f"下次财报还有 {best_days} 天"
-        return 70.0, "日历中无近期财报"
+                return EVENT_PENALTY, f"{best_days} 天后财报"
+            return 0.0, f"下次财报还有 {best_days} 天"
+        return None, "日历中无可核实的下次财报"
     except Exception as e:
         return None, f"数据失败({str(e)[:30]})"
 
@@ -222,7 +222,6 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
         "资金面": _dim_capital(symbol, bulls, bears),
         "期权定位": _dim_options(symbol, bulls, bears),
         "分析师": _dim_analyst(symbol, bulls, bears),
-        "事件风险": _dim_event(symbol, bulls, bears),
     }
 
     total_w = 0.0
@@ -235,7 +234,13 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
         acc += score_v * WEIGHTS[name]
         total_w += WEIGHTS[name]
         dim_out[name] = {"score": round(score_v, 1), "weight": WEIGHTS[name], "detail": note}
-    composite = round(acc / total_w, 1) if total_w else None
+    event_penalty, event_note = _dim_event(symbol, bulls, bears)
+    coverage_ok = total_w >= MIN_COVERAGE_WEIGHT and dims["技术面"][0] is not None
+    directional_score = acc / total_w if coverage_ok else None
+    # 风险只能削弱看多信号，财报日期本身不形成看空或看多方向。
+    composite = (round(directional_score - min(event_penalty or 0, max(directional_score - 50, 0)), 1)
+                 if directional_score is not None else None)
+    applicable_weight = sum(WEIGHTS.values()) - (0 if symbol.upper().endswith(".US") else WEIGHTS["期权定位"])
 
     if composite is None:
         signal = "数据不足"
@@ -256,6 +261,12 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "dimensions": dim_out,
         "composite_score": composite,
+        "directional_score": round(directional_score, 1) if directional_score is not None else None,
+        "coverage_weight": total_w,
+        "applicable_weight": applicable_weight,
+        "minimum_coverage_weight": MIN_COVERAGE_WEIGHT,
+        "required_dimensions": ["技术面"],
+        "event_risk": {"max_penalty": event_penalty, "detail": event_note},
         "signal": signal,
         "bull_factors": bulls,
         "bear_factors": bears,
@@ -270,10 +281,12 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
     print(f"  {symbol} 买卖决策仪表盘  现价 {price}  {result['generated_at']}")
     print(f"{'='*56}")
     print(f"\n  综合信号: {signal}  (综合分 {composite}/100)\n")
-    print("六维评分:")
+    print(f"方向评分覆盖权重 {total_w:g}/{applicable_weight}（至少 {MIN_COVERAGE_WEIGHT}，须含技术面）")
+    print("方向评分:")
     for name, d in dim_out.items():
         sc = f"{d['score']:.0f}/100" if d["score"] is not None else "N/A"
         print(f"  [{name}](权重{d['weight']}%) {sc} — {d['detail']}")
+    print(f"  事件风险：{event_note}")
     print(f"\n  多头因素({len(bulls)}):")
     for b in bulls or ["(无)"]:
         print(f"    🟢 {b}")

@@ -5,7 +5,7 @@
 
 两种数据:
   1. trades(默认): 每日沽空成交量 + 沽空比率(沽空占总成交比例)
-     - 反映当日做空活跃度。比率持续走高 = 看空情绪升温
+     - 反映当日做空活跃度。比率持续走高表示沽空成交占比增加
   2. positions(--position): 沽空未平仓量(持仓)
      - 美股(双周FINRA): current_shares_short / days_to_cover(回补天数)
      - 港股(日频HKEX): 未平仓股数 / cost(平均沽空成本)
@@ -84,21 +84,30 @@ def _trade_mode(symbol: str, count: int, output_json: bool) -> dict:
     if is_empty(rows):
         raise ValueError(f"无沽空成交量数据。确认 {symbol} 支持沽空查询。")
 
-    # 加工可读列(日期键名带 _utc 后缀,明确时区)
+    rows = sorted(rows, key=lambda r: to_float(r.get("timestamp")) or 0)
     for r in rows:
         r["date_utc"] = _ts_to_date(r.get("timestamp"))
         r["rate_label"] = _rate_label(to_float(r.get("rate")))
 
-    # 趋势判断: 最近 vs 前1/3 平均
-    rates = [to_float(r.get("rate")) or 0 for r in rows]
-    recent = sum(rates[-3:]) / min(3, len(rates)) if rates else 0
-    earlier = sum(rates[:max(1, len(rates) // 3)]) / max(1, len(rates) // 3) if rates else 0
-    if recent > earlier * 1.2:
-        trend = "↑ 沽空比率走高(看空升温)"
-    elif recent < earlier * 0.8:
-        trend = "↓ 沽空比率走低(看空降温)"
-    else:
-        trend = "→ 沽空比率平稳"
+    rates = [to_float(r.get("rate")) for r in rows]
+    timestamps = [to_float(r.get("timestamp")) for r in rows]
+    dated = all(t is not None and t > 0 for t in timestamps)
+    latest = rates[-1] if dated else None
+    trend = "数据不足，无法判断沽空比率趋势"
+    distinct_dates = len({r["date_utc"] for r in rows}) == len(rows)
+    if len(rates) >= 6 and dated and distinct_dates:
+        recent = rates[-3:]
+        earlier = rates[:max(3, len(rates) // 3)]
+        earlier_valid = [r for r in earlier if r is not None]
+        if all(r is not None for r in recent) and len(earlier_valid) >= max(3, (len(earlier) + 1) // 2):
+            recent_avg = sum(recent) / len(recent)
+            earlier_avg = sum(earlier_valid) / len(earlier_valid)
+            if recent_avg > earlier_avg * 1.2:
+                trend = "↑ 沽空比率走高"
+            elif recent_avg < earlier_avg * 0.8:
+                trend = "↓ 沽空比率走低"
+            else:
+                trend = "→ 沽空比率平稳"
 
     result = {
         "symbol": symbol,
@@ -106,7 +115,8 @@ def _trade_mode(symbol: str, count: int, output_json: bool) -> dict:
         "market": market,
         "points": len(rows),
         "trend": trend,
-        "latest_rate": rates[-1] if rates else None,
+        "latest_rate": latest,
+        "valid_rate_points": sum(rate is not None for rate in rates),
         "data": rows,
     }
 
@@ -116,7 +126,7 @@ def _trade_mode(symbol: str, count: int, output_json: bool) -> dict:
 
     print(f"{symbol} 日沽空成交量({market}市场,{len(rows)} 个交易日)")
     print(f"  趋势: {trend}")
-    print(f"  最新沽空比率: {_rate_label(rates[-1] if rates else None)}")
+    print(f"  最新沽空比率: {_rate_label(latest) or 'N/A'}")
     print()
     # 列因市场而异
     if market == "US":
@@ -155,7 +165,9 @@ def _position_mode(symbol: str, count: int, output_json: bool) -> dict:
     print()
     if market == "US":
         # days_to_cover 解读
-        latest_dtc = to_float(rows[-1].get("days_to_cover"))
+        dated_rows = [r for r in rows if to_float(r.get("timestamp"))]
+        latest_row = max(dated_rows, key=lambda r: to_float(r["timestamp"])) if dated_rows else {}
+        latest_dtc = to_float(latest_row.get("days_to_cover"))
         if latest_dtc is not None:
             if latest_dtc >= 5:
                 print(f"  ⚠️ days_to_cover={latest_dtc} ≥5,逼空风险偏高")

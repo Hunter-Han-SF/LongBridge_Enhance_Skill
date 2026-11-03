@@ -55,16 +55,15 @@ def _ma_position(price: float, ma: float | None) -> str:
 def compute_all(symbol: str, count: int = 300) -> dict:
     """拉取前复权 K 线并计算全套指标。返回结构化 dict(供其他脚本复用)。"""
     klines = get_kline_adjusted(symbol, count=count)
-    # 同位过滤: 任一基础字段缺失则整根剔除——四列各自独立过滤会造成时序错位,
-    # 完全不过滤则 None 会打进指标计算
+    # 价格指标保留有效 OHLC；成交量缺失只影响依赖成交量的窗口。
     rows = [(to_float(k.get("close")), to_float(k.get("high")),
              to_float(k.get("low")), to_float(k.get("volume")))
             for k in klines]
-    rows = [r for r in rows if all(x is not None for x in r)]
+    rows = [r for r in rows if all(x is not None for x in r[:3])]
     closes = [r[0] for r in rows]
     highs = [r[1] for r in rows]
     lows = [r[2] for r in rows]
-    vols = [r[3] for r in rows]
+    vols = [r[3] if r[3] is not None and r[3] >= 0 else None for r in rows]
     if not closes or len(closes) < 30:
         raise ValueError(f"K 线数据不足,无法计算指标({symbol})")
 
@@ -79,9 +78,13 @@ def compute_all(symbol: str, count: int = 300) -> dict:
     k9 = kdj(highs, lows, closes)
     boll = bollinger(closes)
     a = atr(highs, lows, closes)
-    ob = obv(closes, vols) if len(vols) == len(closes) else {"obv": None, "slope_20": None, "rising_20": None}
+    ob = (obv(closes, vols) if None not in vols and any(v > 0 for v in vols[-20:])
+          else {"obv": None, "slope_20": None, "rising_20": None})
+    mfi_window = vols[-14:]
+    ratio_window = vols[-6:]
     pos = position_in_range(highs, lows, closes)
     dc = donchian(highs, lows, 20)
+    prior_dc = donchian(highs[:-1], lows[:-1], 20)
 
     indicators = {
         "symbol": symbol,
@@ -94,20 +97,22 @@ def compute_all(symbol: str, count: int = 300) -> dict:
         "kdj": k9,
         "bollinger": boll,
         "atr14": a,
-        "atr_pct": (a / price * 100) if (a and price) else None,
+        "atr_pct": (a / price * 100) if a is not None and price > 0 else None,
         "obv": ob,
-        "mfi14": mfi(highs, lows, closes, vols) if len(vols) == len(closes) else None,
-        "volume_ratio": volume_ratio(vols) if len(vols) == len(closes) else None,
+        "mfi14": (mfi(highs, lows, closes, vols)
+                  if None not in mfi_window and any(v > 0 for v in mfi_window) else None),
+        "volume_ratio": volume_ratio(ratio_window) if None not in ratio_window else None,
         "roc20": roc(closes, 20),
         "williams_r14": williams_r(highs, lows, closes),
         "cci20": cci(highs, lows, closes),
         "position_52w": pos,
         "donchian20": dc,
+        "donchian20_prior": prior_dc,
         "max_drawdown": max_drawdown(closes),
         "total_return_pct": total_return(closes),
     }
 
-    indicators["signals"] = _detect_signals(closes, mas, m, k9, dc, pos)
+    indicators["signals"] = _detect_signals(closes, mas, m, k9, prior_dc, pos)
     return indicators
 
 
@@ -160,9 +165,9 @@ def _detect_signals(closes: list[float], mas: dict, m: dict, k9: dict,
         elif k9["k"] < 20:
             sig.append("🟡 KDJ 超卖(<20,注意反弹)")
     # 通道突破
-    if dc.get("upper") and closes[-1] >= dc["upper"]:
+    if dc.get("upper") and closes[-1] > dc["upper"]:
         sig.append("🟢 突破 20 日新高")
-    if dc.get("lower") and closes[-1] <= dc["lower"]:
+    if dc.get("lower") and closes[-1] < dc["lower"]:
         sig.append("🔴 跌破 20 日新低")
     # 52 周位置
     p = pos.get("position")
@@ -172,6 +177,10 @@ def _detect_signals(closes: list[float], mas: dict, m: dict, k9: dict,
         elif pos.get("near_low"):
             sig.append("🟡 贴近 52 周新低(超跌,需确认反转)")
     return sig
+
+
+def _format(value: float | None, spec: str) -> str:
+    return format(value, spec) if value is not None else "N/A"
 
 
 def show_indicators(symbol: str, count: int = 300, output_json: bool = False) -> dict:
@@ -184,7 +193,7 @@ def show_indicators(symbol: str, count: int = 300, output_json: bool = False) ->
     print(f"{symbol} 技术指标全景(现价 {ind['price']},{ind['bars']} 根日K,前复权)")
     print()
     print("【均线】")
-    ma_rows = [{"均线": k.upper(), "值": round(v, 2) if v else "N/A",
+    ma_rows = [{"均线": k.upper(), "值": round(v, 2) if v is not None else "N/A",
                 "价格位置": _ma_position(ind["price"], v)}
                for k, v in ind["ma"].items()]
     print_display_table(ma_rows, columns=["均线", "值", "价格位置"])
@@ -192,9 +201,9 @@ def show_indicators(symbol: str, count: int = 300, output_json: bool = False) ->
     print("【动量】")
     m, k9, b = ind["macd"], ind["kdj"], ind["bollinger"]
     rows = [
-        {"指标": "MACD(12,26,9)", "值": f"DIF={m['dif']:.3f} DEA={m['dea']:.3f} 柱={m['hist']:.3f}"},
+        {"指标": "MACD(12,26,9)", "值": f"DIF={_format(m['dif'], '.3f')} DEA={_format(m['dea'], '.3f')} 柱={_format(m['hist'], '.3f')}"},
         {"指标": "RSI(14)", "值": f"{ind['rsi14']:.1f}" if ind["rsi14"] is not None else "N/A"},
-        {"指标": "KDJ(9,3,3)", "值": f"K={k9['k']:.1f} D={k9['d']:.1f} J={k9['j']:.1f}"},
+        {"指标": "KDJ(9,3,3)", "值": f"K={_format(k9['k'], '.1f')} D={_format(k9['d'], '.1f')} J={_format(k9['j'], '.1f')}"},
         {"指标": "ROC(20)", "值": f"{ind['roc20']:.2f}%" if ind["roc20"] is not None else "N/A"},
         {"指标": "Williams %R", "值": f"{ind['williams_r14']:.1f}" if ind["williams_r14"] is not None else "N/A"},
         {"指标": "CCI(20)", "值": f"{ind['cci20']:.1f}" if ind["cci20"] is not None else "N/A"},
@@ -203,9 +212,9 @@ def show_indicators(symbol: str, count: int = 300, output_json: bool = False) ->
     print()
     print("【波动】")
     rows = [
-        {"指标": "BOLL(20,2)", "值": f"上轨 {b['upper']:.2f} / 中轨 {b['mid']:.2f} / 下轨 {b['lower']:.2f}"},
-        {"指标": "BOLL 带宽", "值": f"{b['bandwidth']:.1f}%" if b["bandwidth"] else "N/A"},
-        {"指标": "%B(带内位置)", "值": f"{b['percent_b']:.2f}(0=下轨,0.5=中轨,1=上轨)"},
+        {"指标": "BOLL(20,2)", "值": f"上轨 {_format(b['upper'], '.2f')} / 中轨 {_format(b['mid'], '.2f')} / 下轨 {_format(b['lower'], '.2f')}"},
+        {"指标": "BOLL 带宽", "值": f"{b['bandwidth']:.1f}%" if b["bandwidth"] is not None else "N/A"},
+        {"指标": "%B(带内位置)", "值": f"{_format(b['percent_b'], '.2f')}(0=下轨,0.5=中轨,1=上轨)"},
         {"指标": "ATR(14)", "值": (f"{ind['atr14']:.2f}({ind['atr_pct']:.2f}%/日)"
                                   if ind["atr14"] is not None and ind["atr_pct"] is not None
                                   else "N/A")},
@@ -214,8 +223,13 @@ def show_indicators(symbol: str, count: int = 300, output_json: bool = False) ->
     print()
     print("【量能】")
     ob = ind["obv"]
+    ob_text = _format(ob["obv"], ",.0f")
+    slope = ob["slope_20"]
+    if slope is not None:
+        direction = "↑" if slope > 0 else "↓" if slope < 0 else "→"
+        ob_text += f"(20期斜率{direction})"
     rows = [
-        {"指标": "OBV", "值": f"{ob['obv']:,.0f}(20期斜率{'↑' if ob['rising_20'] else '↓'})"},
+        {"指标": "OBV", "值": ob_text},
         {"指标": "MFI(14)", "值": f"{ind['mfi14']:.1f}" if ind["mfi14"] is not None else "N/A"},
         {"指标": "量比(5日)", "值": f"{ind['volume_ratio']:.2f}" if ind["volume_ratio"] is not None else "N/A"},
     ]
@@ -223,7 +237,7 @@ def show_indicators(symbol: str, count: int = 300, output_json: bool = False) ->
     print()
     p52 = ind["position_52w"]
     print("【位置】")
-    print(f"  52周区间: {p52['low']:.2f} ~ {p52['high']:.2f},当前位于 {p52['position']:.1f}% 分位")
+    print(f"  52周区间: {_format(p52['low'], '.2f')} ~ {_format(p52['high'], '.2f')},当前位于 {_format(p52['position'], '.1f')}% 分位")
     print(f"  区间最大回撤: {ind['max_drawdown']*100:.1f}%  累计收益: {ind['total_return_pct']:+.1f}%")
     print()
     print(f"【信号】(共 {len(ind['signals'])} 条)")

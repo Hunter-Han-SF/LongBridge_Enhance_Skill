@@ -7,7 +7,7 @@ description: |
   ④事件日历(财报/除权除息/拆股/IPO/宏观/休市/新股档案) ⑤市场情绪(温度/热度榜/简报/宏观指标)
   ⑥技术面(MA/MACD/RSI/KDJ/BOLL/ATR/OBV/量比/52周/信号/评分/相对强度/Beta/服务端quant)
   ⑦基本面(估值分位/分析师评级/目标价/EPS预测/财务健康/股息/多股对比/业务分部/行业排行/共识/公司行动/经营回顾/公司档案)
-  ⑧日内微观(VWAP/盘口压力/逐笔主动买卖/量价分布Volume Profile)
+  ⑧日内微观(VWAP/盘口压力/逐笔价格方向/量价分布Volume Profile)
   ⑨买卖决策仪表盘 ⑩选股器(预设策略/自定义指标条件筛选)。
   信号源:内部人交易(SEC Form 4)/13F机构持仓/基金持仓/机构股东/指数成分/AH溢价。
   Triggers: 期权策略,straddle,spread,butterfly,collar,option chain,put call ratio,capital flow,order flow,short sale,
@@ -19,9 +19,9 @@ description: |
 license: MIT
 metadata:
   author: community
-  version: "0.5.4"
+  version: "0.6.0"
   risk_level: read_only
-  requires_login: false
+  requires_login: true
   default_install: true
   requires_mcp: false
   tier: read
@@ -67,7 +67,9 @@ earnings calendar,market temperature,expected move,risk reversal,order flow,
 - **新增模块**(异动/资金流/日历/情绪/技术/基本面/日内/决策/选股):加工 Longbridge CLI 原生数据 + 跨模块融合分析。
   详见 [references/new-modules-map.md](references/new-modules-map.md)。
 
-### 已知限制(实测)
+### 已知限制（历史接口观测与当前实现）
+
+0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。
 1. **`option quote` 单合约查询返回空** → 原生 Greeks/OI 改经 calc-index 按合约获取,Black-Scholes 作回退
 2. **`option chain` 无法查历史** → IV Rank/Percentile 靠 `get_iv_history.py` 本地累积,需多日运行
 3. **仅支持美股 OPRA** → 港股/A 股期权数据可能为空(港股衍生品用 `warrant` 涡轮)
@@ -76,7 +78,7 @@ earnings calendar,market temperature,expected move,risk reversal,order flow,
    (Wall/GEX/MaxPain/P-C OI 均已升级真 OI 口径,成交量仅作回退;注意 OI 逐合约查询有限频成本)
 6. **broker-holding/brokers 仅港股** → 美股调用会优雅报错
 7. **short 数据 US/HK 字段不同** → 脚本按字段存在性自动识别市场
-8. **盘口/逐笔为瞬时快照** → 休市时为最后快照,主动买卖比样本取决于时段
+8. **盘口/逐笔为瞬时快照** → 休市时为最后快照,逐笔价格方向样本取决于时段
 9. **估值历史美股常见只有 PE** → 部分标的才有 PB/PS,脚本按实际返回处理
 10. **技术面打分权重/灯号阈值为设计选择** → 可按风格调整,输出已标注
 11. ~~`quant run` 服务端故障~~ → **已解决(pine 方案)**:Navi 路径服务端 500(实测 2026-08-21,
@@ -88,7 +90,7 @@ earnings calendar,market temperature,expected move,risk reversal,order flow,
 ## 前提条件
 
 1. **longbridge CLI** 已安装并登录(`longbridge auth login`)
-2. **Python 3.8+**(本 skill 用 Python 做 BS/HV 等计算,不需要 longport SDK)
+2. **Python 3.8+ 语法目标**（无需 longport SDK）；0.6.0 实测 Python 3.13.15，尚未用 Python 3.8 解释器运行
 3. 期权模块需账户开通 **OPRA 期权行情权限**(其余模块不需要;基本面/日内/技术面仅需股票行情)
 
 环境检查:
@@ -109,7 +111,7 @@ python scripts/check_env.py
 ├── technical/   # ⑥ 技术面(指标库/综合评分/相对强度/服务端quant)
 ├── fundamental/ # ⑦ 基本面(估值/评级/财务/股息/对比/分部/行业/共识/公司档案/信号源)
 ├── intraday/    # ⑧ 日内微观(VWAP/盘口/逐笔/量价分布)
-├── decision/    # ⑨ 买卖决策(六维仪表盘 + 入场纪律28条军规)
+├── decision/    # ⑨ 买卖决策(方向评分与事件风险仪表盘 + 入场纪律28条军规)
 └── screener/    # ⑩ 选股器(预设策略/自定义条件)
 ```
 运行示例:
@@ -121,6 +123,8 @@ python scripts/decision/check_entry_rules.py AAPL.US
 ```
 
 ## 命令速查
+
+显式日期、行权价和合约代码仅演示格式。真实查询先从到期日列表与期权链选取挂牌合约；省略可选 `--date`/`--expiry` 时使用脚本默认存续到期日。默认美股到期时间按纽约16:00计算，不覆盖提前收市或特殊结算。
 
 ### 🟢 A 档:原生数据
 
@@ -194,7 +198,7 @@ python scripts/quote/get_iv_history.py AAPL.US --no-append
 ```bash
 python scripts/quote/calc_iv_rank.py AAPL.US [--min-points 20] [--json]
 ```
-- 依赖 iv_history 积累(建议 ≥ 20 个交易日)
+- 采集恒定 30 日 ATM IV，以总方差作期限插值。默认至少 20 个可比观测日，Rank/Percentile 要求本次成功采集，旧口径记录保留但不参与计算。采集时间无法证明行情新鲜度。
 
 #### IV Percentile
 ```bash
@@ -225,7 +229,7 @@ python scripts/quote/calc_option_greeks.py legs.json
 ```bash
 python scripts/quote/calc_option_pnl.py '<JSON腿列表>' [--json]
 ```
-- 盈亏平衡点、最大盈亏、各腿成本
+- 同标的、同到期日组合；按零价、行权价拐点和右尾斜率解析最大盈亏与盈亏平衡，扫描仅用于绘图。STOCK 数量1代表100股
 
 #### 生成标准策略腿(8 种)
 ```bash
@@ -233,7 +237,7 @@ python scripts/quote/get_option_strategy.py AAPL.US 2026-08-14 STRADDLE [--json]
 ```
 支持策略:`STRADDLE` / `STRANGLE` / `BULL_CALL_SPREAD` / `BEAR_PUT_SPREAD` /
 `BUTTERFLY` / `COLLAR` / `COVERED_CALL` / `CASH_SECURED_PUT`
-- 输出的 legs JSON 可直接传给 `calc_option_greeks.py` 或 `calc_option_pnl.py`
+- 方向与行权价严格受约束，标准蝶式要求等宽；无有效组合时直接报错。输出的 legs JSON 可直接传给 `calc_option_greeks.py` 或 `calc_option_pnl.py`
 
 #### Put/Call Wall(关键支撑/阻力,真实 OI 优先)
 ```bash
@@ -256,18 +260,18 @@ python scripts/quote/calc_gamma_profile.py NVDA.US [--window 60] [--range 0.20] 
 - **Gamma Flip(插值)**:剖面过零线性插值,自动扩域(翻转点最深可至 -40%)
 - **细粒度支撑/阻力**:call/put OI 高斯核密度峰 + 抛物线插值(输出非整数价位,如 220.52)
 - 成本:每个到期日约 12 次 calc-index 调用,60 天窗口约 12 秒(带进程缓存)
-- 正 GEX=抑制波动,负 GEX=放大波动
+- GEX 采用 Call 正、Put 负的仓位方向假设。OI 和成交量均不能观测真实做市商净仓位，过零点为模型结果
 
 #### 财报 IV Crush 分析
 ```bash
 python scripts/quote/analyze_iv_crush.py AAPL.US [--json]
 ```
-- 结合财报日历 + 本地 IV 历史,分析财报前后的 IV 变化
+- 分列当前恒定30日 IV、可用财报日历和相邻自然日 IV 跌幅超过20%的样例；历史样例未关联财报，不能据此断定财报导致急降
 - 依赖 `get_iv_history.py` 累积数据
 
 ---
 
-### 🔵 异动追踪(模块①)
+### 🔵 异动追踪(模块②)
 
 #### 异动信号(大单/封板/放量)
 ```bash
@@ -303,8 +307,8 @@ python scripts/market/get_ah_premium.py 939.HK [--count 60] [--kline-type day] [
 ```bash
 python scripts/flow/get_capital_flow.py AAPL.US [--flow] [--json]
 ```
-- 默认:大/中/小单流入流出 + 净额 + 主力方向(单位为当地货币完整元,CLI 原始"万"已换算)
-- `--flow`:当日分钟级资金净流入时序
+- 默认展示大/中/小单流入流出及净额。默认保留源数值，货币单位和分钟流语义未核实。仅在确认数据口径后设置 `LBR_CAPITAL_SCALE`（有限正数换算倍数）及 `LBR_CAPITAL_FLOW_MODE`（`cumulative` 或 `incremental`，默认 `unknown`）。
+- `--flow`：当日分钟观测。只有配置已核实的流语义才导出单段流量
 
 #### 港股经纪商持仓(⚠️仅港股)
 ```bash
@@ -402,7 +406,7 @@ python scripts/sentiment/get_macro_data.py --code 30771936 --count 12 [--json]  
 ```bash
 python scripts/technical/calc_indicators.py AAPL.US [--count 300] [--json]
 ```
-- MA5/10/20/60/120/250、EMA、MACD、RSI、KDJ、BOLL、ATR、OBV、MFI、量比、ROC、Williams %R、CCI、52周位置、最大回撤(前复权 K 线计算)
+- MA5/10/20/60/120/250、EMA、MACD、RSI、KDJ、BOLL、ATR、OBV、MFI、量比、ROC、Williams %R、CCI、52周位置、最大回撤(前复权 K 线计算)。量比以最新量除以前五根均量，基准排除最新一根；缺量保留不可用
 - 信号:均线多空排列、MA5/20 与 MACD 金叉死叉、KDJ 超买卖、20日新高新低、年线上下
 
 #### 技术面综合评分(0-100)
@@ -423,8 +427,7 @@ python scripts/technical/run_quant_indicator.py AAPL.US ema|rsi|macd --start 202
 python scripts/technical/run_quant_indicator.py AAPL.US backtest --start 2025-01-01     # EMA交叉策略回测
 python scripts/technical/run_quant_indicator.py AAPL.US custom --start 2026-01-01 --script '<Pine代码>'
 ```
-- 内置 EMA/RSI/MACD 指标预设 + EMA 交叉回测预设(PineScript);`--cross-check` 与本地
-  indicators.py 对齐末值(实测相对偏差 <0.02%)
+- 内置 EMA/RSI/MACD 指标预设和 EMA 交叉回测预设（PineScript）。服务端汇总缺少可核实的逐根时间、复权与预热数据，`--cross-check` 在文本和 JSON 中均明确跳过，避免比较异口径末值。
 - ⚠️ 用 pine(Navi 路径服务端故障);指标序列值取自 pretty 表解析,回测取自 report_json
 
 ---
@@ -447,13 +450,13 @@ python scripts/fundamental/get_analyst_consensus.py AAPL.US [--json]
 ```bash
 python scripts/fundamental/get_financial_health.py AAPL.US [--json]
 ```
-- 营收/净利/毛利/ROE/负债率/现金流 + 红绿灯评级(实测字段中文名匹配)
+- 按精确科目及匹配报告期计算财务比率。关键科目不足时显示覆盖缺口并保留待判断状态
 
 #### 股息质量
 ```bash
 python scripts/fundamental/get_dividend_quality.py AAPL.US [--json]
 ```
-- TTM 股息率、连续分红年数、年度增长(仅完整年份)、频率稳定性
+- TTM 按标的市场日期向前一年至当日的除权记录计算。股息与报价币种一致才计算收益率，混合币种单列；年度增长比较最近两个已结束自然年内收到的同币种记录；不保证数据源已收齐各年记录
 
 #### 多股估值横向对比(≤5只)
 ```bash
@@ -505,7 +508,7 @@ python scripts/fundamental/get_company_profile.py AAPL.US [--execs 10] [--json]
 ```bash
 python scripts/fundamental/get_insider_trades.py TSLA.US [--count 20] [--json]
 ```
-- 高管/大股东真实买卖:净买入额、买卖统计、最大单笔 + 多空信号
+- P/S 普通买卖统计及净额；A 授予、M 行权/转换、D 向发行人处置单列。净额不直接作为交易动机或多空结论
 
 #### 13F 机构持仓(排名/持仓/变动)
 ```bash
@@ -535,7 +538,7 @@ python scripts/fundamental/get_shareholders.py AAPL.US [--count 15] [--json]
 ```bash
 python scripts/intraday/get_vwap_analysis.py AAPL.US [--date 20260819] [--json]
 ```
-- 现价 vs 当日 VWAP 偏离、上方时间占比、当日区间位置 → 日内强弱
+- 现价 vs VWAP 偏离、有效配对样本上方占比和覆盖率；覆盖低于80%或不足两点不判断强弱。30分钟趋势需精确时间匹配，日内区间来自分时采样
 
 #### 盘口买卖压力
 ```bash
@@ -543,18 +546,18 @@ python scripts/intraday/get_orderbook_pressure.py AAPL.US [--json]
 ```
 - L2 深度失衡率、买卖盘量比、最大挂单墙(隐形支撑/阻力)、加权中枢
 
-#### 逐笔主动买卖比(Order Flow)
+#### 逐笔价格方向比(Order Flow)
 ```bash
 python scripts/intraday/get_trade_flow.py AAPL.US [--count 300] [--big 1000] [--json]
 ```
-- 主动买/卖量占比(量的口径+金额口径)、大单统计、尾盘情绪
+- Up/Down 是相对前笔成交价的上跳/下跳，用于估计成交压力，无法确定主动成交方。平价或未知方向单列，方向占比以可分类样本为分母。 金额占比另要求有效成交价。
 
 #### 量价分布 Volume Profile(近5日)
 ```bash
 python scripts/intraday/get_trade_stats.py 700.HK [--json]
 ```
-- POC(最大成交价位=最强支撑/阻力)、Value Area 70% 区间(VAH/VAL)
-- 现价在 VA 上/下方判断强弱,主动买卖失衡比;比均线支撑阻力更客观
+- POC（成交量最大的价位）、Value Area 70% 区间(VAH/VAL)
+- 展示现价相对价值区间的位置与成交分布
 
 ---
 
@@ -564,7 +567,7 @@ python scripts/intraday/get_trade_stats.py 700.HK [--json]
 ```bash
 python scripts/quote/calc_expected_move.py AAPL.US [--date 2026-09-18] [--all] [--json]
 ```
-- ATM straddle 法:市场定价的到期前 ±波动区间(1σ),财报前判断"赌多大行情"
+- 分别展示现价 ± ATM 跨式权利金、行权价 ± 权利金的到期盈亏平衡，以及独立的 IV 标准差尺度 `S × IV × √T`。跨式成本区间不代表 1σ 或固定概率覆盖。
 
 #### IV 期限结构
 ```bash
@@ -582,7 +585,7 @@ python scripts/quote/calc_risk_reversal.py AAPL.US [--date 2026-09-18] [--delta 
 ```bash
 python scripts/quote/calc_max_pain.py AAPL.US [--date 2026-09-18] [--json]
 ```
-- 期权到期"引力位"(✅真实 OI 加权,成交量回退),距到期越近参考意义越大
+- 给出使模型到期内在价值总额最低的候选结算价，优先使用 OI，成交量回退时明确标注。该结果不预测价格向此处收敛
 
 #### 港股涡轮/权证(⚠️仅HK,模块①补位)
 ```bash
@@ -597,13 +600,13 @@ python scripts/quote/get_warrant.py --issuers                          # 发行�
 
 ### 🎯 跨模块旗舰
 
-#### 买卖决策仪表盘(六维聚合)
+#### 买卖决策仪表盘（五类方向输入 + 独立事件风险）
 ```bash
 python scripts/decision/analyze_buy_sell.py AAPL.US [--json]
 ```
-- 技术面30% + 估值面15% + 资金面20% + 期权定位10% + 分析师15% + 事件风险10%
-- 输出:六维得分 + 多头/空头因素对照 + 综合信号(看多/偏多/中性/偏空/看空)
-- 信号补充:内部人交易/13F变动/基金持仓可作第 7 维独立参考(get_insider_trades 等)
+- 技术面必须可用，方向维度有效权重至少为 60 才给信号。方向权重为技术 30、估值 15、资金 20、美股期权 10、分析师 15。财报在 7 天内最多将偏多分扣 7 分至中性，单独列示且不计覆盖。
+- 输出方向维度、覆盖权重、独立事件风险、多空对照与综合信号(看多/偏多/中性/偏空/看空)
+- 信号补充:内部人交易/13F变动/基金持仓可作额外独立参考(get_insider_trades 等)
 
 #### 入场纪律检查器(28条军规)
 ```bash
@@ -614,21 +617,21 @@ python scripts/decision/check_entry_rules.py TSLA.US --recent-stopout yes --fami
 python scripts/decision/check_entry_rules.py --demo     # 离线自检,无需登录
 ```
 - 把纪律清单变成可执行判定:**下跌12不买(D1-D12) + 上涨6不买(U1-U6) +
-  高胜率买点10条(B0-B9,含盈亏比闸门 B0 最低 1:1)**
-- 每条规则三态输出:❌触发 / ✅未触发 / ❓需人工;结论 = ❌不买 | ✅结构符合 | ⏸️观望
+  候选买点检查10条(B0-B9,含盈亏比闸门 B0 最低 1:1)**
+- 每条规则给出状态和证据；汇总区分不买、必要条件待确认、纪律通过和观望。形态匹配不能绕过未确认闸门
 - 自动判定:收盘新低/新高、缩量、RSI(6)、斐波那契61.8%、趋势线/颈线、支撑压力
   聚类(强=触及≥2次)、吞没/锤子/W底/旗形/均线回踩、顶底背离、财报距离、
   盘前30分钟(9:00-9:30,时区+休市日历)、热度榜命中、小市值(static 总股本×现价)、
   板块当日涨幅(industry-rank,--sector 指名或领涨股反查)、止损距离 vs 承受力(--max-stop-pct,默认8%)
 - 需人工(可用参数消解): D6板块昨日跌幅排名 / D8刚止损 / D9熟悉度 / D11盘前盘后异动;
-  B8 板块半边默认自动(--sector 指名/领涨股反查,--sector-breakout 手动优先)
-- ⚠️ 形态识别为算法近似(pivot/聚类),非精确图形匹配;纪律参考非投资建议
+  B8 自动仅配对同一市场日期的个股突破与板块涨幅；证据不齐时可用 --sector-breakout 手动确认对应日期
+- 止损距离和盈亏比使用同一入场参考价。缺实时参考价、量能或最新日 K 有效价格，以及 B0 或必要人工项待确认时，候选形态不能判为纪律通过。可用 `--target-price` 指定 B0 目标。 形态识别和方向分为启发式，未经样本外收益验证
 
 #### 单标的异动综合打分
 ```bash
 python scripts/market/calc_anomaly_score.py AAPL.US [--market US] [--json]
 ```
-- 融合异动信号 + 资金流 + 涨跌幅 + 异动榜,输出 0-100 综合分 + 方向
+- 四维上限40/30/20/10直接相加，总上限100；缺失维度保留未知并给出可评估上限，不输出完整强度等级
 
 #### 每日市场简报
 ```bash
@@ -649,7 +652,7 @@ python scripts/screener/run_screener.py --indicators                     # 全�
 ```
 - 条件语法 `KEY:MIN:MAX`(可省一侧),常用 key:pettm/pbmrq/roe/roa/netmargin/
   salesgrowthyoy/divyld/marketcap/leverage/epsttm
-- 筛出的股票可直接送 `decision/analyze_buy_sell.py` 六维打分(见工作流 9)
+- 筛出的股票可直接送 `decision/analyze_buy_sell.py` 方向打分(见工作流 9)
 
 ---
 
@@ -678,9 +681,9 @@ python scripts/quote/calc_option_pnl.py '<复制的 legs JSON>'
 
 ### 工作流 3:长期跟踪 IV(配 cron 每日运行)
 ```bash
-# 每天 1 次,积累 IV 历史
+# 示例使用调度器的当地时区；请按美股交易时段及夏令时安排，采集时间不证明报价实时
 0 22 * * 1-5 python scripts/quote/get_iv_history.py AAPL.US
-# 攒够 20 天后计算 IV Rank
+# 积累至少 20 个可比恒定30日观测且成功采集当前样本后计算 IV Rank
 python scripts/quote/calc_iv_rank.py AAPL.US
 ```
 
@@ -702,11 +705,11 @@ python scripts/flow/get_broker_holding.py 700.HK --detail
 python scripts/flow/get_short_sale.py TSLA.US --position
 ```
 
-### 工作流 6:期权关键价位 + 做市商压力
+### 工作流 6:期权持仓密度与 GEX 假设分析
 ```bash
 # 1. 找 Put/Call Wall(支撑阻力)
 python scripts/quote/get_put_call_wall.py AAPL.US --date 2026-09-18
-# 2. 看 GEX(做市商对冲压力)
+# 2. 看 GEX(仓位方向假设下的 GEX)
 python scripts/quote/calc_gex.py AAPL.US --date 2026-09-18
 # 3. 财报前看 IV Crush 风险
 python scripts/quote/analyze_iv_crush.py AAPL.US
@@ -714,7 +717,7 @@ python scripts/quote/analyze_iv_crush.py AAPL.US
 
 ### 工作流 7:判断"该不该买"(一站式)
 ```bash
-# 1. 六维仪表盘(技术+估值+资金+期权+分析师+事件)
+# 1. 方向评分与事件风险仪表盘(技术+估值+资金+期权+分析师；事件风险单列)
 python scripts/decision/analyze_buy_sell.py AAPL.US
 # 2. 深挖:估值贵不贵
 python scripts/fundamental/get_valuation_percentile.py AAPL.US
@@ -726,7 +729,7 @@ python scripts/technical/calc_relative_strength.py AAPL.US
 
 ### 工作流 8:财报前后的期权决策
 ```bash
-# 1. 市场押注多大行情(Expected Move)
+# 1. 查看跨式成本、到期盈亏平衡与 IV 模型尺度
 python scripts/quote/calc_expected_move.py AAPL.US --all
 # 2. 近月是否含事件溢价(期限结构)
 python scripts/quote/get_iv_term_structure.py AAPL.US
@@ -738,13 +741,13 @@ python scripts/quote/calc_risk_reversal.py AAPL.US --date 2026-09-18
 ```bash
 # 1. 条件选股(如 低估值+高ROE 的港股)
 python scripts/screener/run_screener.py --filter pettm:5:30 --filter roe:10: --market HK
-# 2. 候选逐个六维打分
+# 2. 候选逐个方向打分
 python scripts/decision/analyze_buy_sell.py 2291.HK
 # 3. 候选间横向对比(谁最便宜/质量最高)
 python scripts/fundamental/compare_stocks.py 2291.HK 6693.HK 9973.HK --currency HKD
 ```
 
-### 工作流 10:机构与内部人信号(第 7 维视角)
+### 工作流 10:机构与内部人信号(独立补充视角)
 ```bash
 # 1. 内部人在买还是在卖
 python scripts/fundamental/get_insider_trades.py TSLA.US
@@ -773,7 +776,7 @@ python scripts/decision/check_entry_rules.py AAPL.US --max-stop-pct 5 --lookback
 # 3. 人工项确认后复跑(板块排名/止损史/熟悉度/盘前盘后/板块突破)
 python scripts/decision/check_entry_rules.py AAPL.US --sector-top-decline no \
     --recent-stopout no --familiar yes --prepost-move no --sector-breakout yes
-# 4. 与六维仪表盘互补:军规定"能不能买",仪表盘看"偏多还是偏空"
+# 4. 与方向评分与事件风险仪表盘互补:军规定"能不能买",仪表盘看"偏多还是偏空"
 python scripts/decision/analyze_buy_sell.py AAPL.US
 ```
 
@@ -846,10 +849,10 @@ longbridge-pro/
     ├── intraday/              # ⑧ 日内微观
     │   ├── get_vwap_analysis.py        # VWAP 偏离 + 日内强弱
     │   ├── get_orderbook_pressure.py   # L2 盘口失衡 + 挂单墙
-    │   ├── get_trade_flow.py           # 逐笔主动买卖比 + 大单
+    │   ├── get_trade_flow.py           # 逐笔价格方向比 + 大单
     │   └── get_trade_stats.py          # 量价分布(POC/Value Area)
     ├── decision/              # ⑨ 买卖决策
-    │   ├── analyze_buy_sell.py         # 六维聚合仪表盘(旗舰)
+    │   ├── analyze_buy_sell.py         # 方向评分与事件风险仪表盘(旗舰)
     │   └── check_entry_rules.py        # 入场纪律检查器(28条军规)
     └── screener/              # ⑩ 选股器
         └── run_screener.py             # 预设策略/自定义条件/指标发现
@@ -867,7 +870,7 @@ longbridge-pro/
 | `无经纪商数据` | broker-holding 传了非港股 | 仅港股支持,确认 symbol 是 .HK |
 | `无资金流数据` | 标的当日无交易 | 确认是交易日且标的有流动性 |
 | `K 线数据不足` | 新股/退市/停牌 | 换 --count 更小或确认标的状态 |
-| `无估值/评级数据` | 覆盖不足(小票/新股) | 该维度仪表盘会标 N/A 并降权 |
+| `无估值/评级数据` | 覆盖不足(小票/新股) | 该维度标 N/A；覆盖不足则无方向信号 |
 | `无逐笔/盘口数据` | 休市时段 | 盘中运行,或接受最后快照 |
 | `internal server error`(quant/navi) | Navi 路径服务端故障 | 用 pine(脚本默认已切换);指标值经 pretty 表解析 |
 | `无 A/H 溢价数据` | 非 A+H 两地上市 | 用 939.HK/1398.HK 等双市场标的 |

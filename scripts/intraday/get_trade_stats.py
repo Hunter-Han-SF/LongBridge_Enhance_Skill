@@ -107,7 +107,7 @@ def fetch_trade_stats(symbol: str, output_json: bool = False) -> dict:
             return "价格在 VA 上方(强势,VAH 为支撑)"
         if p < val:
             return "价格在 VA 下方(弱势,VAL 为阻力)"
-        return "价格在 VA 内(震荡,看 POC 引力)"
+        return "价格在 VA 内(成交集中区间,POC 为样本成交峰值)"
 
     result = {
         "symbol": symbol,

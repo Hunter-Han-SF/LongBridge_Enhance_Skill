@@ -314,20 +314,21 @@ class TestInsiderScript(unittest.TestCase):
     def test_classify(self):
         c = get_insider_trades._classify
         self.assertEqual(c("SELL", "S"), "卖出")
-        self.assertEqual(c("BUY", "A"), "买入")
-        self.assertEqual(c("EXERCISE", "M"), "买入")
-        self.assertEqual(c("", "D"), "卖出")
+        self.assertEqual(c("BUY", "A"), "授予")
+        self.assertEqual(c("EXERCISE", "M"), "行权/转换")
+        self.assertEqual(c("", "D"), "向发行人处置")
+        self.assertEqual(c("", "P"), "买入")
 
     @mock.patch.object(common, "run_cli", side_effect=dispatch)
     def test_stats(self, _m):
         r = _run(get_insider_trades.fetch_insider_trades, symbol="TSLA.US",
                  output_json=True)
         s = r["stats"]
-        self.assertEqual(s["buy_count"], 1)
+        self.assertEqual(s["buy_count"], 0)  # M exercise is not a discretionary purchase
         self.assertEqual(s["sell_count"], 1)
-        self.assertEqual(s["buy_value"], 411400.0)
+        self.assertEqual(s["buy_value"], 0.0)
         self.assertEqual(s["sell_value"], 1250000.0)
-        self.assertEqual(s["signal"], "多空混合(中性)")
+        self.assertEqual(s["signal"], "净卖出")
         self.assertEqual(r["largest_trade"]["owner"], "Kimbal Musk")
 
 
@@ -407,7 +408,7 @@ class TestAhPremiumScript(unittest.TestCase):
         self.assertEqual(a["max"], -0.24)
         self.assertEqual(a["min"], -0.30)
         self.assertAlmostEqual(a["zscore"], 0.23, places=2)
-        self.assertEqual(a["trend"]["direction"], "溢价收窄(H相对走强)")
+        self.assertEqual(a["trend"]["direction"], "H相对走强")
         self.assertAlmostEqual(a["trend"]["change"], 0.03, places=6)
 
     @mock.patch.object(common, "run_cli", side_effect=dispatch)

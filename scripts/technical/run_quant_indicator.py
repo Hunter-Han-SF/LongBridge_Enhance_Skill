@@ -38,8 +38,6 @@ import sys
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
 from common import (  # noqa: E402
-    LongbridgeCliError,
-    get_kline_adjusted,
     print_error,
     print_json,
     run_quant_script,
@@ -141,39 +139,6 @@ def parse_backtest_report(data: dict) -> dict:
             "raw_keys": list(report.keys())}
 
 
-def _cross_check(symbol: str, series: dict[str, dict]) -> None:
-    """用本地指标库(indicators.py)对服务端末值做口径校对。"""
-    try:
-        from indicators import ema, rsi  # noqa: E402 - technical/indicators.py
-    except ImportError:
-        print("(本地 indicators.py 不可用,跳过交叉验证)")
-        return
-    klines = get_kline_adjusted(symbol, count=300)
-    closes = [k.get("close") for k in klines if k.get("close") is not None]
-    if not closes:
-        print("(无本地 K 线,跳过交叉验证)")
-        return
-    checks = []
-    if "EMA Fast" in series and len(closes) >= 20:
-        local = ema(closes, 20)
-        checks.append(("EMA20", series["EMA Fast"]["last"], local))
-    if "RSI" in series and len(closes) >= 15:
-        local = rsi(closes, 14)
-        checks.append(("RSI14", series["RSI"]["last"], local))
-    if not checks:
-        print("(无本地可对齐的序列,跳过交叉验证)")
-        return
-    print("\n🔍 交叉验证(服务端 vs 本地 indicators.py,末值):")
-    for name, remote_v, local_v in checks:
-        if remote_v is None or local_v is None:
-            print(f"  {name}: 服务端 {remote_v},本地 {local_v}(一侧无数据)")
-            continue
-        diff = abs(remote_v - local_v)
-        rel = diff / abs(local_v) if local_v else 0
-        print(f"  {name}: 服务端 {remote_v:.4f} vs 本地 {local_v:.4f} "
-              f"(相对偏差 {rel:.2%}{' ✅' if rel < 0.02 else ' ⚠️ 需检查口径'})")
-
-
 def fetch_quant_indicator(
     symbol: str,
     preset: str = "ema",
@@ -188,9 +153,15 @@ def fetch_quant_indicator(
     output_json: bool = False,
 ) -> dict:
     from datetime import date, timedelta
-    end = end or date.today().strftime("%Y-%m-%d")
-    if not start:
-        start = (date.today() - timedelta(days=180)).strftime("%Y-%m-%d")
+    from pathlib import Path
+    from common import market_date
+
+    market = symbol.rsplit(".", 1)[-1] if "." in symbol else "US"
+    end_day = date.fromisoformat(end) if end else market_date(market)
+    start_day = date.fromisoformat(start) if start else end_day - timedelta(days=180)
+    if start_day > end_day:
+        raise ValueError("开始日期不能晚于结束日期")
+    start, end = start_day.isoformat(), end_day.isoformat()
 
     if preset == "custom":
         if not script and not script_file:
@@ -202,8 +173,16 @@ def fetch_quant_indicator(
         script = _PRESETS[preset]
         lang = "pine"
 
-    is_backtest = preset == "backtest" or (
-        script is not None and "strategy(" in script)
+    source = script
+    if preset == "custom" and script_file:
+        if script:
+            raise ValueError("--script 与 --file 只能指定一个")
+        source = Path(script_file).read_text(encoding="utf-8-sig")
+    is_backtest = preset == "backtest" or bool(
+        source and re.search(r"(?m)^\s*strategy\s*\(", source)
+    )
+    check = {"status": "skipped", "reason":
+             "服务端结果未提供可核实的逐根时间、复权方式及预热数据，无法对齐本地指标。"}
     if lang == "navi":
         raise ValueError("Navi 服务端故障(实测 2026-08-21,官方示例同样 500),请用 pine")
 
@@ -215,10 +194,14 @@ def fetch_quant_indicator(
         report = parse_backtest_report(data if isinstance(data, dict) else {})
         result = {"symbol": symbol, "preset": preset, "mode": "backtest",
                   "period": period, "start": start, "end": end, "report": report}
+        if cross_check:
+            result["cross_check"] = check
         if output_json:
             print_json(result)
             return result
         print(f"{symbol} 策略回测({preset},{period},{start} ~ {end})")
+        if cross_check:
+            print(f"  交叉验证跳过：{check['reason']}")
         stats = report.get("stats", {})
         if not stats:
             print("  (无回测统计,检查脚本是否含 strategy.entry/close)")
@@ -241,11 +224,15 @@ def fetch_quant_indicator(
               "period": period, "start": start, "end": end,
               "series": series}
 
+    if cross_check:
+        result["cross_check"] = check
     if output_json:
         print_json(result)
         return result
 
     print(f"{symbol} 服务端指标 {preset}({period},{start} ~ {end})")
+    if cross_check:
+        print(f"  交叉验证跳过：{check['reason']}")
     if not series:
         print("  (未解析到序列,原始输出前 600 字):")
         print(_ANSI_RE.sub("", str(raw))[:600])
@@ -253,8 +240,6 @@ def fetch_quant_indicator(
     for name, s in series.items():
         print(f"  {name}: {s['bars']} 根K线,最新 {s['last']}"
               f"(区间 {s['min']} ~ {s['max']})")
-    if cross_check:
-        _cross_check(symbol, series)
     return result
 
 
@@ -273,7 +258,7 @@ if __name__ == "__main__":
     parser.add_argument("--file", dest="script_file", default=None, help="custom 预设的脚本文件路径")
     parser.add_argument("--language", default="pine", choices=["pine", "navi"],
                         help="脚本语言(默认 pine;navi 服务端故障中)")
-    parser.add_argument("--cross-check", action="store_true", help="与本地指标库交叉验证末值")
+    parser.add_argument("--cross-check", action="store_true", help="检查能否按相同数据口径交叉验证")
     parser.add_argument("--count", type=int, default=0, help="兼容参数(指标统计不含逐bar序列)")
     parser.add_argument("--json", action="store_true", dest="output_json", help="输出 JSON 格式")
     args = parser.parse_args()

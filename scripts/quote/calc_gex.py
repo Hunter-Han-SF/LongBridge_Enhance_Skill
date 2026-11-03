@@ -9,10 +9,10 @@ gamma 口径:优先服务端原生 gamma(calc-index),缺失时回退 BS(chain IV
 GEX 含义:
   - Gamma 衡量 delta 对标的价格变化的敏感度
   - GEX = Σ(gamma × 权重 × 100 × spot² × 0.01),按 call(+)/put(-) 加权
-    (做市商卖 Put 时做多 delta 对冲,符号为正;约定因数据源而异,这里用通用约定)
-  - 正 GEX 区域:做市商对冲方向抑制波动(价格涨就卖,跌就买)→ 低波动
-  - 负 GEX 区域:做市商对冲方向放大波动(价格涨就买,跌就卖)→ 高波动(易出现逼空/闪崩)
-  - Gamma 翻转点(Zero Gamma Level): GEX 由正转负的价位,市场稳定性临界点
+    (符号来自模型对仓位方向的约定，不能从 OI 验证真实仓位方向)
+  - GEX 使用 Call 正 / Put 负的仓位方向假设，OI 不含净做市商头寸
+  - 成交量加权是备用代理，不能代表存量持仓
+  - Gamma 翻转点(Zero Gamma Level): 该模型下 GEX 正负号发生变化的价位
 
 用法:
     python calc_gex.py MSFT.US --date 2026-09-18
@@ -99,6 +99,8 @@ def calc_gex(
             })
     else:
         for r in chain:
+            if r.get("standard") is False:
+                continue
             strike = to_float(r.get("strike"))
             if strike is None or strike <= 0:
                 continue
@@ -122,12 +124,12 @@ def calc_gex(
                 "net_gex": round(net, 0),
             })
 
-    # 按 strike 排序,找翻转点(OI 模式:剖面插值;成交量回退:启发式)
+    # 只有 OI 剖面提供过零点。成交量模式保留每档贡献最小值的独立字段。
     rows.sort(key=lambda x: x["strike"])
     if mode == "oi":
         zero_gamma = _find_flip_profile(oi_data["strikes"], price, T, rate)
     else:
-        zero_gamma = _find_zero_gamma(rows, price)
+        zero_gamma = None
 
     weight_note = ("✅ 真实 OI 加权(calc-index)" if mode == "oi"
                    else "⚠️ 成交量加权(近似,Longbridge chain 无按行权价 OI)")
@@ -144,9 +146,10 @@ def calc_gex(
         "total_gex": round(total_gex, 0),
         "total_gex_label": _gex_label(total_gex),
         "zero_gamma_level": zero_gamma,
+        "volume_min_abs_contribution_strike": _find_zero_gamma(rows, price) if mode == "volume" else None,
         "strikes_analyzed": len(rows),
         "per_strike": rows,
-        "note": f"{weight_note};{gamma_note}。正 GEX=抑制波动,负=放大波动。",
+        "note": f"{weight_note};{gamma_note}。按 Call 正 / Put 负假设计算。OI 和成交量均不提供做市商净仓位。",
     }
 
     if output_json:
@@ -174,9 +177,9 @@ def calc_gex(
 def _gex_label(total_gex: float) -> str:
     """总 GEX 解读。"""
     if total_gex > 0:
-        return "正 GEX(做市商抑制波动,市场偏稳)"
+        return "正 GEX（方向假设下）"
     if total_gex < 0:
-        return "负 GEX(做市商放大波动,易出现剧烈行情)"
+        return "负 GEX（方向假设下）"
     return "中性"
 
 
@@ -192,6 +195,29 @@ def _find_zero_gamma(rows: list[dict], spot: float) -> float | None:
     candidates = near_spot or rows
     closest = min(candidates, key=lambda x: abs(x["net_gex"]))
     return closest["strike"]
+
+
+def _nearest_sign_crossing(xs, ys, spot):
+    """确认两端异号后，保留采样零点或取零区间内离现价最近的位置。"""
+    crossings = []
+    previous = None
+    first_zero = last_zero = None
+    for x, y in zip(xs, ys):
+        if y == 0:
+            if first_zero is None:
+                first_zero = x
+            last_zero = x
+            continue
+        if previous is not None:
+            x0, y0 = previous
+            if (y0 < 0 < y) or (y0 > 0 > y):
+                if first_zero is None:
+                    crossings.append(x0 - y0 * (x - x0) / (y - y0))
+                else:
+                    crossings.append(min(last_zero, max(first_zero, spot)))
+        previous = x, y
+        first_zero = last_zero = None
+    return min(crossings, key=lambda x: abs(x - spot), default=None)
 
 
 def _find_flip_profile(oi_strikes: dict, price: float, T: float,
@@ -212,25 +238,17 @@ def _find_flip_profile(oi_strikes: dict, price: float, T: float,
         return None
     # 翻转点可能远离现价(深度价内持仓重的标的可达 -20% 以上),自动扩域重试
     best = None
-    for rng in (range_pct, range_pct * 1.5, 0.40):
-        if rng > 0.40:
-            break
+    for rng in dict.fromkeys((range_pct, min(range_pct * 1.5, 0.40), 0.40)):
         lo, hi = price * (1 - rng), price * (1 + rng)
         dx = (hi - lo) / steps
-        best = None
-        prev_x = prev_y = None
-        x = lo
-        for i in range(steps + 1):
-            y = 0.0
-            for strike, iv, oi, side in legs:
-                g = bs_greeks(x, strike, T, rate, iv, side)["gamma"]
-                y += (1.0 if side == "C" else -1.0) * g * oi * 100 * x * x * 0.01
-            if prev_y is not None and ((prev_y <= 0 < y) or (prev_y >= 0 > y)):
-                cross = prev_x + (0 - prev_y) * (x - prev_x) / (y - prev_y)
-                if best is None or abs(cross - price) < abs(best - price):
-                    best = cross
-            prev_x, prev_y = x, y
-            x += dx
+        xs = [lo + i * dx for i in range(steps + 1)]
+        ys = [
+            sum((1 if side == "C" else -1)
+                * bs_greeks(x, strike, T, rate, iv, side)["gamma"] * oi
+                for strike, iv, oi, side in legs) * 100 * x * x * .01
+            for x in xs
+        ]
+        best = _nearest_sign_crossing(xs, ys, price)
         if best is not None:
             break
     return round(best, 2) if best is not None else None

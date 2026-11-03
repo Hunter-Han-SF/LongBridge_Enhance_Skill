@@ -23,17 +23,27 @@ sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath
 from common import print_error, print_json  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from get_iv_history import iv_history as _build_series  # noqa: E402
+from get_iv_history import comparable_iv_series, iv_history as _build_series  # noqa: E402
 
 
 def calc_iv_rank(symbol: str, min_points: int = 20, output_json: bool = False) -> dict:
     hist = _build_series(symbol, append=True, output_json=False, quiet=True)
-    series = hist["series"]
+    if not hist.get("appended_today", False):
+        raise ValueError("无法采集当前恒定30日 IV，历史样本保留")
+    if min_points < 2:
+        raise ValueError("至少需要两个可比 IV 样本")
+    series = comparable_iv_series(hist.get("series", []))
+    observation = hist.get("observed_at")
+    if observation:
+        observed_day = observation[:10]
+        series = [row for row in series if row["date"] <= observed_day]
+        if not series or series[-1]["date"] != observed_day:
+            raise ValueError("当前观测日没有有效的恒定30日 IV 样本")
     if len(series) < min_points:
         raise ValueError(
             f"历史 IV 数据不足(仅 {len(series)} 点,需 ≥ {min_points})。"
             f"请多运行 get_iv_history.py 积累数据。当前已记录: "
-            f"{hist['date_range']}"
+            f"{hist.get('date_range', '无')}"
         )
 
     ivs = [s["atm_iv_pct"] for s in series]
@@ -44,20 +54,22 @@ def calc_iv_rank(symbol: str, min_points: int = 20, output_json: bool = False) -
     result = {
         "symbol": symbol,
         "current_iv_pct": current,
+        "observed_at": series[-1].get("observed_at"),
+        "quote_freshness": "unknown",
         "iv_rank": round(rank, 1),
         "data_points": len(series),
-        "date_range": hist["date_range"],
+        "date_range": f"{series[0]['date']} ~ {series[-1]['date']}",
         "iv_high_pct": hi,
         "iv_low_pct": lo,
         "interpretation": (
-            "高位(>70): IV 偏贵,可考虑卖权策略"
+            "高位(>70): 接近样本上沿"
             if rank > 70 else
-            "低位(<30): IV 偏便宜,可考虑买权策略"
+            "低位(<30): 接近样本下沿"
             if rank < 30 else
             "中位(30-70): IV 适中"
         ),
         "method": "(当前IV - 最低IV) / (最高IV - 最低IV) × 100",
-        "note": "Longbridge 不直接提供 IV Rank,基于 get_iv_history 本地累积序列计算",
+        "note": "Longbridge 不直接提供 IV Rank,使用全部本地恒定30日样本，窗口随本地记录变化。观测时间为采集时间，行情新鲜度未知",
     }
 
     if output_json:
@@ -65,6 +77,8 @@ def calc_iv_rank(symbol: str, min_points: int = 20, output_json: bool = False) -
         return result
 
     print(f"{symbol} IV Rank(本地累积 {len(series)} 点,{hist['date_range']})")
+    if result["observed_at"]:
+        print(f"  观测时间: {result['observed_at']}，行情新鲜度未知")
     print(f"  当前 IV:   {current}%")
     print(f"  区间 IV:   {lo}% ~ {hi}%")
     print(f"  IV Rank:   {result['iv_rank']}  → {result['interpretation']}")
