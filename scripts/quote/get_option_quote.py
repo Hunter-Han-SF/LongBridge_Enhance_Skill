@@ -119,10 +119,12 @@ def get_quote(
                 oi = m.get("oi")
                 greeks_source = "native"
                 # 服务端 calc-index 的 theta 为死值(恒 -0.000/-0.001,不随行权价变化,
-                # 见 common.py):零值一律视为无数据,改用本地 BS 补算并标注来源;
+                # 见 common.py):近零(|theta|<0.005)一律视为无数据(只拦 ==0 会漏掉
+                # -0.001 形态的死值;极深度价外合约的合法近零 theta 由 BS 补算出
+                # 同样近零的值,覆盖无副作用),改用本地 BS 补算并标注来源;
                 # 无 IV、已到期或 BS 拒算(如到期折点)时保留 0 并标记 dead_zero。
                 theta_source = "server"
-                if not greeks["theta"]:
+                if abs(greeks["theta"]) < 0.005:
                     if T > 0 and iv and iv > 0:
                         try:
                             greeks["theta"] = bs_greeks(price, strike, T, rate, iv, cp)["theta"]
