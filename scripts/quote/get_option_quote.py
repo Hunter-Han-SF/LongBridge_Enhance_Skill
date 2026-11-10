@@ -8,6 +8,10 @@
 
 ⚠️ Greeks 为 BS 模型计算值(IV 来自 chain),与服务端 Greeks 可能有细微差异。
    theta 单位:每日;vega 单位:每 1% IV 变化;rho 单位:每 1% 利率变化。
+⚠️ 服务端 calc-index 的 theta 为死值(实测恒 -0.000/-0.001,见 common.py
+   get_option_contract_metrics 注释):theta 为 0 时自动用本地 BS 补算,
+   结果标注 theta_source=bs_backfill;无法补算时 theta_source=dead_zero,
+   两种情况都不得把服务端 theta 当真实数据使用。
 
 用法:
     python get_option_quote.py AAPL.US 2026-08-14 315 CALL
@@ -69,8 +73,15 @@ def get_quote(
     for r in chain:
         s = to_float(r.get("strike"))
         if s is not None and abs(s - strike) < 0.001:
-            chain_row = r
-            break
+            # 同一 strike 可能返回重复行(实测 2026-11-10 出现"零值行+真实行"并存):
+            # 先记首个匹配作兜底,再等一行本侧 IV 有效的真实数据,避免被零值行
+            # 抢占导致 IV/价格丢失、theta 补算无原料。
+            if chain_row is None:
+                chain_row = r
+            row_iv = to_float(r.get("call_iv" if cp == "C" else "put_iv"))
+            if row_iv and row_iv > 0:
+                chain_row = r
+                break
 
     iv = None
     last = None
@@ -87,6 +98,9 @@ def get_quote(
     greeks = None
     bs_price_val = None
     greeks_source = None
+    # theta 单独溯源: server=服务端可信非零值 / bs_backfill=服务端死值→本地BS补算 /
+    # black_scholes=整体 BS 回退 / dead_zero=服务端死值且无法补算(不得当真实数据用)
+    theta_source = None
     oi = None
     if price:
         try:
@@ -104,11 +118,25 @@ def get_quote(
                     iv = m["iv"]
                 oi = m.get("oi")
                 greeks_source = "native"
+                # 服务端 calc-index 的 theta 为死值(恒 -0.000/-0.001,不随行权价变化,
+                # 见 common.py):零值一律视为无数据,改用本地 BS 补算并标注来源;
+                # 无 IV、已到期或 BS 拒算(如到期折点)时保留 0 并标记 dead_zero。
+                theta_source = "server"
+                if not greeks["theta"]:
+                    if T > 0 and iv and iv > 0:
+                        try:
+                            greeks["theta"] = bs_greeks(price, strike, T, rate, iv, cp)["theta"]
+                            theta_source = "bs_backfill"
+                        except ValueError:
+                            theta_source = "dead_zero"
+                    else:
+                        theta_source = "dead_zero"
         except LongbridgeCliError:
             pass
         if not greeks and iv and iv > 0:
             greeks = bs_greeks(price, strike, T, rate, iv, cp)
             greeks_source = "black_scholes"
+            theta_source = "black_scholes"
         if iv and iv > 0:
             bs_price_val = bs_price(price, strike, T, rate, iv, cp)
 
@@ -131,6 +159,7 @@ def get_quote(
         "greeks": greeks,
         "native_quote": native is not None,  # 是否拿到了原生 option quote 数据
         "greeks_source": greeks_source,
+        "theta_source": theta_source,
     }
     if expired:
         result["warning"] = ("到期日已过期或为今天,Greeks 为退化值"
@@ -159,7 +188,9 @@ def get_quote(
     if greeks:
         print(f"    delta = {greeks['delta']:.4f}")
         print(f"    gamma = {greeks['gamma']:.4f}")
-        print(f"    theta = {greeks['theta']:.4f} /日")
+        theta_note = {"bs_backfill": "  ⚠️BS补算(服务端死值)",
+                      "dead_zero": "  ⚠️服务端死值,无有效数据"}.get(result["theta_source"], "")
+        print(f"    theta = {greeks['theta']:.4f} /日{theta_note}")
         print(f"    vega  = {greeks['vega']:.4f} /1%IV")
         print(f"    rho   = {greeks['rho']:.4f} /1%rate")
     return result
