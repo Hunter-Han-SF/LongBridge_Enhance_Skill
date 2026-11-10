@@ -1359,6 +1359,10 @@ def get_kline_adjusted(symbol: str, count: int = 260, period: str = "day") -> li
 # 实测(2026-08,CLI 0.26.0):calc-index 支持按单个期权合约查询 oi/iv/delta/gamma/
 # theta/vega/rho/strike/exp/last_done,支持一次传多个合约(不存在的静默跳过)。
 # 这是 chain 之外唯一的按行权价 OI 数据源,Wall/GEX/MaxPain/P-C OI 比率据此升级为真 OI 口径。
+# ⚠️ 实测(2026-11-10,CLI 0.26.0):该端点 theta 为死值——跨标的/到期日恒返回
+# -0.000/-0.001,同一链上不随行权价变化(真实 theta 量级 ~0.1-0.4/日;delta/gamma/
+# vega/rho 均正常)。消费方必须把 theta==0/None 视为无数据:需要 theta 时用本地
+# BS 补算(见 get_option_quote 的 theta_source 标注),勿直接采信服务端值。
 
 _LBR_OPTION_CACHE: dict[str, dict] = {}
 
@@ -1392,6 +1396,8 @@ def get_option_contract_metrics(
     Returns:
         {合约代码: {oi:int, iv:小数, delta, gamma, theta, vega, rho, strike, exp, last_done}}
         无数据的合约不在返回 dict 中。iv 已从 "22.40%" 归一化为 0.224。
+        ⚠️ theta 字段服务端为死值(恒≈0,见模块注释),本函数忠实透传、不做修补;
+        需要 theta 的调用方应自行用 BS 补算并标注来源。
     """
     out: dict[str, dict] = {}
     todo = []

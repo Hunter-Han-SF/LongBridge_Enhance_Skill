@@ -1,4 +1,4 @@
-# LongBridge Enhance Skill (longbridge-pro) · 0.6.0
+# LongBridge Enhance Skill (longbridge-pro) · 0.6.1
 
 [English](README.md) | **[中文](README.zh-CN.md)**
 

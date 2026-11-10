@@ -19,7 +19,7 @@ description: |
 license: MIT
 metadata:
   author: community
-  version: "0.6.0"
+  version: "0.6.1"
   risk_level: read_only
   requires_login: true
   default_install: true
@@ -69,7 +69,7 @@ earnings calendar,market temperature,expected move,risk reversal,order flow,
 
 ### 已知限制（历史接口观测与当前实现）
 
-0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。
+0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.1 修复 calc-index theta 死值（自动 BS 补算 + `theta_source` 溯源）及 chain 同行权价重复行，实证与设计见 [theta 死字段修复记录](docs/fixes-2026-11-10-theta-dead-field.md)。
 1. **`option quote` 单合约查询返回空** → 原生 Greeks/OI 改经 calc-index 按合约获取,Black-Scholes 作回退
 2. **`option chain` 无法查历史** → IV Rank/Percentile 靠 `get_iv_history.py` 本地累积,需多日运行
 3. **仅支持美股 OPRA** → 港股/A 股期权数据可能为空(港股衍生品用 `warrant` 涡轮)
@@ -170,6 +170,7 @@ python scripts/quote/get_option_quote.py AAPL.US 2026-08-14 315 CALL [--rate 0.0
 ```
 - Greeks 优先取 calc-index 服务端原生值(含该合约 OI),取不到时 Black-Scholes 计算
 - theta=/日, vega=/1%IV, rho=/1%rate
+- ⚠️ 服务端 calc-index 的 theta 恒为死值(-0.000,实测 2026-11):theta 自动用 BS 补算并标注(JSON 含 `theta_source`: server/bs_backfill/black_scholes/dead_zero),勿直接采信服务端 theta
 
 #### IV vs HV 波动率分析
 ```bash
