@@ -39,7 +39,7 @@ import common
 from common import (  # noqa: E402
     calc_hv, get_atm_iv, get_capital_flow_snapshot, get_finance_calendar,
     get_kline_adjusted, get_option_chain, get_option_expirations, get_option_volume_realtime,
-    get_short_trades, get_underlying_price, print_error, print_json,
+    get_short_trades, get_underlying_price, nearest_tenor_expiry, print_error, print_json,
     to_float,
 )
 from calc_technical_score import score as tech_score  # noqa: E402
@@ -135,10 +135,13 @@ def _dim_options(symbol: str, bulls: list, bears: list) -> tuple[float | None, s
             elif pc < 0.7:
                 s += 10
                 bulls.append(f"期权: P/C 比率 {pc:.2f}(偏多)")
-        # IV vs HV
+        # IV vs HV —— 期限必须对齐: 下方 HV 用 30 个交易日收益(约 43.5 个自然日),
+        # IV 就取剩余期限最接近它的到期日。最近到期日可能只剩 1~2 天,拿它比 30 日 HV
+        # 会系统性误判贵贱(实测 AAPL: 1.28 天 IV 32.8% → 1.36 "偏贵";
+        # 24 天 IV 25.7% → 1.06 "合理")。
         exps = get_option_expirations(symbol)
         if exps:
-            chain = get_option_chain(symbol, exps[0])
+            chain = get_option_chain(symbol, nearest_tenor_expiry(exps, 30 * 365 / 252))
             price = get_underlying_price(symbol)
             iv = get_atm_iv(chain, price) if price else None
             if iv:
@@ -176,11 +179,11 @@ def _dim_analyst(symbol: str, bulls: list, bears: list) -> tuple[float | None, s
         if up is not None:
             if up > 15:
                 s = min(s + 10, 100)
-                bulls.append(f"目标价: 距中值还有 {up:+.1f}% 空间")
+                bulls.append(f"目标价: 距共识目标还有 {up:+.1f}% 空间")
             elif up < -10:
                 s = max(s - 10, 0)
-                bears.append(f"目标价: 现价已高于中值目标 {abs(up):.1f}%")
-        return max(min(s, 100), 0), f"{rat.get('label')},目标中值空间 {up:+.1f}%" if up is not None else str(rat.get("label"))
+                bears.append(f"目标价: 现价已高于共识目标 {abs(up):.1f}%")
+        return max(min(s, 100), 0), f"{rat.get('label')},共识目标空间 {up:+.1f}%" if up is not None else str(rat.get("label"))
     except Exception as e:
         return None, f"数据失败({str(e)[:30]})"
 

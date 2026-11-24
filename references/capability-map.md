@@ -28,7 +28,7 @@
 
 | 本 skill 脚本 | 数据源 | 对应 Futu | 计算方法 |
 |---|---|---|---|
-| `get_option_volatility.py` | chain IV + kline | `get_option_volatility` | HV = std(ln收益)×√252;IV/HV 比率 |
+| `get_option_volatility.py` | chain IV + kline | `get_option_volatility` | HV = std(ln收益)×√252;IV/HV 比率(0.6.2 起期限对齐:IV 取期限最接近 HV 窗口的到期日) |
 | `get_vol_smile.py` | chain 各 strike IV | `get_option_volatility`(扩展) | 提取 smile + put skew |
 | `get_option_quote.py`(BS 部分) | chain IV | `get_option_quote` | BS 公式算 delta/gamma/theta/vega/rho |
 | `calc_option_greeks.py` | 各腿原生 Greeks / chain IV 回退 | `get_option_strategy_analysis`(Greeks) | 同标的，按方向×数量×100加权 |
@@ -89,6 +89,9 @@ chain 的 IV 字段是小数（0.214 = 21.4%），calc-index 的样本为百分�
 ### 6. 0.6.0 计算边界
 显式非标准期权链记录排除；标准合约乘数为100。默认到期时间采用纽约16:00，同日收盘后自动跳过该到期日；提前收市和特殊结算仍需合同/日历数据。BS 不可微折点明确拒绝 Greeks。完整说明见 [审计修复记录](../docs/audit-fixes-2026-11-03.md)。
 
+### 7. 0.6.2 实盘修正
+chain 同一行权价可能返回多行(零值行或陈旧垃圾行 + 真实行,行序每次不同),`get_option_chain()` 在入口按 call/put 两侧分别合并,每个行权价只返回一行。IV/HV 比率改为期限对齐,不再默认取最近到期日。说明与实证见 [0.6.2 修复记录](../docs/fixes-2026-11-24-high-priority.md)。
+
 ---
 
 ## 数据字段对照
@@ -98,6 +101,7 @@ chain 的 IV 字段是小数（0.214 = 21.4%），calc-index 的样本为百分�
 strike, call_iv, put_iv, call_last, put_last, call_vol, put_vol, standard
 ```
 ⚠️ **不返回** OCC 代码(call_symbol/put_symbol),需用 `build_occ_code()` 构造。
+⚠️ **同一行权价可能返回两行**(实测 2026-11-24:TSLA 2026-11-27 有 20 个行权价各两行,一行为全零或陈旧垃圾值,先后顺序每次调用都变),`get_option_chain()` 已统一合并;直接调用 `run_cli("option","chain",...)` 的调用方需自行处理。chain 只有 `last` 没有买卖价,翼部行权价的最新价可能陈旧。
 
 ### `option volume daily` 返回字段(Longbridge)
 ```

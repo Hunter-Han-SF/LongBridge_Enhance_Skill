@@ -5,11 +5,14 @@
 - Longbridge: IV 取自 chain(call_iv/put_iv),HV 用 K 线收盘价自算
 
 ⚠️ HV 为本地计算值,与 Futu 服务端 HV 可能有细微差异(数据源/算法不同)。
+⚠️ 期限对齐: IV 与 HV 必须覆盖相近的时间窗口。默认取剩余期限最接近 HV 窗口的
+   到期日(30 个交易日收益 ≈ 43.5 个自然日),不再取最近到期日——最近到期日可能
+   只剩 1~2 天,拿它比 30 日 HV 会系统性误判贵贱。
 
 用法:
-    # 指定到期日(从 chain 取 ATM IV)
+    # 指定到期日(从 chain 取 ATM IV;HV 窗口自动对齐该到期日)
     python get_option_volatility.py AAPL.US --expiry 2026-09-18
-    # 自动用最近到期日
+    # 自动取期限最接近 HV 窗口的到期日
     python get_option_volatility.py AAPL.US
     python get_option_volatility.py AAPL.US --hv-days 30 --json
 """
@@ -23,29 +26,55 @@ sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath
 
 from common import (  # noqa: E402
     calc_hv,
+    days_to_years,
     get_atm_iv,
     get_kline,
     get_option_chain,
     get_option_expirations,
     get_underlying_price,
+    nearest_tenor_expiry,
     print_error,
     print_json,
 )
 
 
+TRADING_DAYS_PER_YEAR = 252
+CALENDAR_DAYS_PER_YEAR = 365
+DEFAULT_HV_DAYS = 30
+
+
 def analyze(
     symbol: str,
     expiry: str | None = None,
-    hv_days: int = 30,
+    hv_days: int | None = None,
     option_type: str = "CALL",
     output_json: bool = False,
 ) -> dict:
-    # 1. 确定到期日
+    """IV 与 HV 的期限必须对齐,否则贵贱判断没有意义。
+
+    - 不指定到期日(默认): IV 取剩余期限最接近 HV 窗口的到期日。hv_days 个交易日
+      收益约覆盖 hv_days × 365/252 个自然日(30 日 ≈ 43.5 天),而最近到期日可能
+      只剩 1~2 天(实测 AAPL: 1.28 天 IV 32.8% → 1.36 "偏贵";期限接近的
+      24 天到期日 IV 25.7% → 1.06 "合理")。
+    - 指定到期日而未指定 --hv-days: HV 窗口自动取该到期日的自然日长度。
+    - 两者都指定: 按给定的算,期限相差过大时在 tenor_warning 里提示。
+    """
+    if hv_days is not None and hv_days < 2:
+        raise ValueError("hv-days 至少为 2(需要两个收盘价才能算收益)")
+
+    # 1. 确定到期日与 HV 窗口
     if expiry is None:
         expirations = get_option_expirations(symbol)
         if not expirations:
             raise ValueError(f"{symbol} 无可用到期日(可能不支持期权或非美股)")
-        expiry = expirations[0]
+        window = DEFAULT_HV_DAYS if hv_days is None else hv_days
+        expiry = nearest_tenor_expiry(expirations, window * CALENDAR_DAYS_PER_YEAR / TRADING_DAYS_PER_YEAR)
+    iv_days = days_to_years(expiry) * 365
+    if hv_days is None:
+        window = max(2, round(iv_days * TRADING_DAYS_PER_YEAR / CALENDAR_DAYS_PER_YEAR))
+    else:
+        window = hv_days
+    hv_calendar_days = window * CALENDAR_DAYS_PER_YEAR / TRADING_DAYS_PER_YEAR
 
     # 2. 取正股现价
     price = get_underlying_price(symbol)
@@ -58,27 +87,33 @@ def analyze(
     if iv is None:
         raise ValueError(f"{expiry} 的 chain 中找不到 ATM IV")
 
-    # 4. 用 K 线算 HV(年化)
-    klines = get_kline(symbol, count=hv_days + 1)
+    # 4. 用 K 线算 HV(年化);窗口与所选到期日的期限对齐
+    klines = get_kline(symbol, count=window + 1)
     closes = [k["close"] for k in klines if k.get("close") is not None]
     hv = calc_hv(closes)
 
     # 5. IV/HV 对比
     iv_hv_ratio = (iv / hv) if (iv and hv and hv > 0) else None
+    # 期限相差超过 HV 窗口的四分之一时,比率不再可比(事件溢价落在其中一个窗口内时偏差最大)
+    tenor_warning = (None if abs(iv_days - hv_calendar_days) <= 0.25 * hv_calendar_days else
+                     f"期限不对齐: IV 剩余 {iv_days:.0f} 个自然日, HV 窗口约 {hv_calendar_days:.0f} 个自然日,"
+                     f" 贵贱判断仅供参考")
 
     result = {
         "symbol": symbol,
         "expiry": expiry,
+        "iv_days": round(iv_days, 1),
         "underlying_price": price,
         "option_type": option_type,
         "implied_volatility": iv,           # 小数,如 0.234
         "iv_pct": round(iv * 100, 2),       # 百分比,如 23.4
         "historical_volatility": hv,        # 小数
         "hv_pct": round(hv * 100, 2) if hv else None,
-        "hv_days": hv_days,
+        "hv_days": window,
         "iv_hv_ratio": round(iv_hv_ratio, 3) if iv_hv_ratio else None,
+        "tenor_warning": tenor_warning,
         "valuation": None,                  # HV 算不出时保持 None(下方判断跳过)
-        "note": "HV 为本地计算值(对数收益年化),非服务端返回",
+        "note": "HV 为本地计算值(对数收益年化),非服务端返回。IV 取期限最接近 HV 窗口的到期日。",
     }
 
     # 贵贱判断
@@ -94,12 +129,14 @@ def analyze(
         print_json(result)
         return result
 
-    print(f"{symbol} 期权波动率分析(到期 {expiry},HV 窗口 {hv_days} 日)")
+    print(f"{symbol} 期权波动率分析(到期 {expiry},剩余 {iv_days:.1f} 天,HV 窗口 {window} 日)")
     print(f"  正股现价:     {price}")
     print(f"  ATM IV({option_type}):  {result['iv_pct']}%")
-    print(f"  HV({hv_days}日年化):    {result['hv_pct'] if result['hv_pct'] is not None else 'N/A'}%")
+    print(f"  HV({window}日年化):    {result['hv_pct'] if result['hv_pct'] is not None else 'N/A'}%")
     print(f"  IV/HV 比率:   {result['iv_hv_ratio']}")
     print(f"  判断:         {result['valuation'] or '无法判断(HV 数据不足)'}")
+    if tenor_warning:
+        print(f"  ⚠️ {tenor_warning}")
     print(f"  注: HV 为本地计算值,与 Futu 服务端 HV 可能有细微差异")
     return result
 
@@ -107,8 +144,11 @@ def analyze(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="期权波动率分析(IV vs HV)")
     parser.add_argument("symbol", help="正股代码,如 AAPL.US")
-    parser.add_argument("--expiry", default=None, help="到期日 YYYY-MM-DD(默认最近)")
-    parser.add_argument("--hv-days", type=int, default=30, help="HV 计算窗口(默认 30 日)")
+    parser.add_argument("--expiry", default=None,
+                        help="到期日 YYYY-MM-DD(默认取剩余期限最接近 HV 窗口的到期日)")
+    parser.add_argument("--hv-days", type=int, default=None,
+                        help="HV 计算窗口,单位为交易日收益数(默认 30,约 43.5 个自然日);"
+                             "指定 --expiry 而不给本参数时,自动取该到期日的自然日长度")
     parser.add_argument("--type", default="CALL", help="ATM IV 取 Call 还是 Put(默认 CALL)")
     parser.add_argument("--json", action="store_true", dest="output_json", help="输出 JSON 格式")
     args = parser.parse_args()

@@ -1,4 +1,4 @@
-# LongBridge Enhance Skill (longbridge-pro) · 0.6.1
+# LongBridge Enhance Skill (longbridge-pro) · 0.6.2
 
 **[English](README.md)** | [中文](README.zh-CN.md)
 
@@ -194,7 +194,7 @@ Run the offline regression suite (mocked CLI):
 python -m unittest discover -s tests -v
 ```
 
-See [`SKILL.md`](SKILL.md) for the full command reference and [the 0.6.0 audit record](docs/audit-fixes-2026-11-03.md) for all 27 findings, compatibility changes and validation evidence.
+See [`SKILL.md`](SKILL.md) for the full command reference and [the 0.6.0 audit record](docs/audit-fixes-2026-11-03.md) for all 27 findings, compatibility changes and validation evidence. 0.6.2 fixes five live-verified high-priority defects (duplicated chain strike rows, support/resistance clustering in the entry checker, financial-health account matching, IV/HV tenor alignment, analyst consensus); see [the 0.6.2 fix record](docs/fixes-2026-11-24-high-priority.md).
 
 ## Known limitations
 

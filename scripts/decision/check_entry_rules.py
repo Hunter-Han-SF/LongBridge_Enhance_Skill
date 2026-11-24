@@ -132,29 +132,58 @@ def find_pivots(highs: list[float], lows: list[float], k: int = PIVOT_K) -> list
 
 
 def cluster_levels(pivots: list[dict], price: float, atr_val: float | None) -> list[dict]:
-    """pivot 聚类成支撑/压力位。
+    """pivot 聚类成支撑/阻力区间(每个区间 = 一个簇)。
 
-    容差 = max(1.5%, 0.8×ATR);「强」= touches ≥ 2(被触及两次以上)。
+    容差 = max(1.5%, 0.8×ATR);「强」= touches ≥ 2(同一侧有两个以上枢轴点落在
+    同一区间)。每个区间带 low/high(簇的下沿/上沿)与 price(簇内均值,仅供展示)。
     阈值为设计选择,输出会标明。
+
+    ⚠️ 两处必须这样做,否则价位图会整体失真(2026-11-24 实盘复盘):
+    - 高点与低点分开聚类。混在一起时,一个宽幅震荡区里的全部枢轴点会被并成
+      一个均值毫无意义的巨型簇:TSLA 337~459 的 43 个点曾被并成 395.97 一个
+      "价位",而 338~354 被测试过 3 次的支撑整段消失。
+    - 新点只与簇内最低点比较,簇宽因此不超过容差。逐点链式比较(每一步都在
+      容差内,首尾却相隔几十个百分点)会让簇一路吞下去。
     """
     if not pivots:
         return []
     tol = max(price * 0.015, (atr_val or 0) * 0.8)
-    pts = sorted(pivots, key=lambda p: p["price"])
-    clusters: list[list[dict]] = [[pts[0]]]
-    for p in pts[1:]:
-        if p["price"] - clusters[-1][-1]["price"] <= tol:
-            clusters[-1].append(p)
-        else:
-            clusters.append([p])
     levels = []
-    for cl in clusters:
-        levels.append({
-            "price": sum(p["price"] for p in cl) / len(cl),
-            "touches": len(cl),
-            "last_idx": max(p["idx"] for p in cl),
-        })
+    for kind in ("low", "high"):
+        pts = sorted((p for p in pivots if p["kind"] == kind), key=lambda p: p["price"])
+        clusters: list[list[dict]] = []
+        for p in pts:
+            if clusters and p["price"] - clusters[-1][0]["price"] <= tol:
+                clusters[-1].append(p)
+            else:
+                clusters.append([p])
+        for cl in clusters:
+            levels.append({
+                "price": sum(p["price"] for p in cl) / len(cl),
+                "low": cl[0]["price"], "high": cl[-1]["price"],
+                "touches": len(cl),
+                "last_idx": max(p["idx"] for p in cl),
+                "kind": kind,
+            })
     return levels
+
+
+def _zone_low(level: dict) -> float:
+    """簇下沿。兼容只带 price 的旧式价位(视为一个点,下沿 = 上沿 = price)。"""
+    low = level.get("low")
+    return low if low is not None else level["price"]
+
+
+def _zone_high(level: dict) -> float:
+    """簇上沿(同上,兼容旧式价位)。"""
+    high = level.get("high")
+    return high if high is not None else level["price"]
+
+
+def _zone_text(level: dict) -> str:
+    """价位的展示文本: 单点簇给价格,多点簇给区间。"""
+    low, high = _zone_low(level), _zone_high(level)
+    return f"{low:.2f}" if abs(high - low) < 0.005 else f"{low:.2f}~{high:.2f}"
 
 
 def cross_below_recently(closes: list[float], level: float, m: int = BROKE_BARS) -> bool:
@@ -225,16 +254,20 @@ def build_features(bars: list[dict], symbol: str = "US") -> dict:
     # 但被触碰 ≥2 次的结构位(含刚被回踩测试的历史强支撑)必须保留:
     # 回踩强支撑企稳正是 B1 类最优买点,不能因最近一次触碰把它整簇丢掉
     levels = [x for x in levels if x["touches"] >= 2 or x["last_idx"] <= n - 7]
-    supports = sorted([x for x in levels if x["price"] < last * 0.999],
-                      key=lambda x: -x["price"])
-    resistances = sorted([x for x in levels if x["price"] > last * 1.001],
-                         key=lambda x: x["price"])
+    # 价位是区间不是一条线:只要簇下沿还在现价下方,它就是可以依托的支撑
+    # (现价回落进支撑簇内 = 回踩,止损放在簇下沿之下);簇下沿已在现价上方的
+    # 才是压力(簇内更高的部分只是同一道压力的上沿)。
+    supports = sorted([x for x in levels if _zone_low(x) < last * 0.999],
+                      key=lambda x: -_zone_low(x))
+    resistances = sorted([x for x in levels if _zone_low(x) > last * 1.001],
+                         key=lambda x: _zone_low(x))
     sup = supports[0] if supports else None
     res = resistances[0] if resistances else None
 
-    # 止损/目标与盈亏比(B0/D5/U4 共用)
-    stop = sup["price"] if sup else None
-    target = res["price"] if res else None
+    # 止损/目标与盈亏比(B0/D5/U4 共用):风险量到支撑簇下沿(支撑要整段跌破才算
+    # 失效),空间量到压力簇下沿(涨进压力区就开始遇到阻力),两边都取保守的一侧。
+    stop = _zone_low(sup) if sup else None
+    target = _zone_low(res) if res else None
     stop_dist, rr = _entry_risk(last, stop, target)
 
     # 趋势背景
@@ -333,15 +366,16 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
     # D2: 刚跌破强支撑 + 上方压力距离 ≤4%
     # 注意「被跌破的支撑」此刻位于现价上方(归入 levels/resistances 一侧),
     # 必须扫全量 levels,不能只扫 supports
+    # 跌破 = 收盘价落到支撑簇下沿之下(收在簇内不算跌破)
     broken = [x for x in f["levels"]
-              if x["price"] > last and cross_below_recently(c, x["price"])]
+              if _zone_low(x) > last and cross_below_recently(c, _zone_low(x))]
     broke_strong = [x for x in broken if x["touches"] >= 2]
     res = f["resistance"]
-    near_res = res is not None and (res["price"] - last) / last <= NEAR_RES_PCT
+    near_res = res is not None and (_zone_low(res) - last) / last <= NEAR_RES_PCT
     if broke_strong and near_res:
         R["D2"] = _r("triggered", f"近{BROKE_BARS}日跌破强支撑 "
-                     f"{broke_strong[0]['price']:.2f}(触及{broke_strong[0]['touches']}次),"
-                     f"上方压力 {res['price']:.2f}(距现价 {pct((res['price'] - last) / last)})")
+                     f"{_zone_text(broke_strong[0])}(触及{broke_strong[0]['touches']}次),"
+                     f"上方压力 {_zone_text(res)}(距现价 {pct((_zone_low(res) - last) / last)})")
     elif broke_strong:
         R["D2"] = _r("clear", "跌破强支撑但上方压力尚远")
     else:
@@ -361,9 +395,9 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
         breaks.append(f"斐波那契61.8%({f['fib']['f618']:.2f})")
     # 颈线/强支撑跌破: 同 D2,被跌破的位在现价上方,须扫全量 levels
     neck = [x for x in f["levels"]
-            if x["price"] > last and x["touches"] >= 2 and cross_below_recently(c, x["price"])]
+            if _zone_low(x) > last and x["touches"] >= 2 and cross_below_recently(c, _zone_low(x))]
     if neck:
-        breaks.append(f"结构颈线/强支撑 {neck[0]['price']:.2f}")
+        breaks.append(f"结构颈线/强支撑 {_zone_text(neck[0])}")
     R["D3"] = _r("triggered" if breaks else "clear",
                  "、".join(breaks) if breaks else "未发生关键位跌破")
 
@@ -480,8 +514,8 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
                  f"{ratio_text}")
 
     new_high_all = last >= max(c[:-1]) * 0.999
-    below = [x["price"] for x in f["supports"]] + [m for m in (f["ma20"][-1], f["ma10"][-1])
-                                                   if m and m < last]
+    below = [_zone_low(x) for x in f["supports"]] + [m for m in (f["ma20"][-1], f["ma10"][-1])
+                                                    if m and m < last]
     near_sup = max(below) if below else None
     sup_dist = (last - near_sup) / last if near_sup else 1.0
     R["U2"] = _r("triggered" if (new_high_all and sup_dist > 0.10) else "clear",
@@ -489,12 +523,13 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
                  f"最近支撑 {near_sup:.2f} 距 {pct(sup_dist)}" if near_sup
                  else f"区间新高: {'是' if new_high_all else '否'};下方无参考支撑")
 
-    broke_up = any(cross_above_recently(c, x["price"]) for x in f["levels"])
+    # 突破 = 收盘价站到压力簇上沿之上(收在簇内不算突破)
+    broke_up = any(cross_above_recently(c, _zone_high(x)) for x in f["levels"])
     strong_res = [x for x in f["resistances"] if x["touches"] >= 2]
     nxt = strong_res[0] if strong_res else None
-    if broke_up and nxt and (nxt["price"] - last) / last <= 0.03:
-        R["U3"] = _r("triggered", f"近期刚突破压力,下一强压力 {nxt['price']:.2f}"
-                     f" 距 {pct((nxt['price'] - last) / last)}")
+    if broke_up and nxt and (_zone_low(nxt) - last) / last <= 0.03:
+        R["U3"] = _r("triggered", f"近期刚突破压力,下一强压力 {_zone_text(nxt)}"
+                     f" 距 {pct((_zone_low(nxt) - last) / last)}")
     else:
         R["U3"] = _r("clear", "未触发(或上方已无强压力)")
 

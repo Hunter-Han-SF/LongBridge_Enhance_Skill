@@ -66,6 +66,28 @@ _ACCOUNT_MAP = {
     "capital expenditure": "capex",
 }
 
+# 实测(2026-11-24):accounts 的 name 带币种后缀,如 "营业收入(USD)"、"总资产(HKD)"
+# (美股、港股都带;括号有半角也有全角)。只按裸名匹配时,营收/净利润/负债率/
+# 现金流/净债务这些科目会静默丢失,9 个核心指标只剩毛利率、净利率、ROE 三项。
+# ranking_code 不是每个科目都有,所以先按 code、再按去后缀的名称匹配。
+_RANKING_CODE_MAP = {
+    "operating_revenue": "revenue",
+    "net_profit": "net_profit",
+    "roe": "roe",
+    "net_profit_margin": "net_margin",
+    "total_assets": "total_assets",
+    "leverage": "leverage",
+}
+_CURRENCY_SUFFIX = re.compile(r"[\s]*[(（]\s*[A-Za-z]{3}\s*[)）]\s*$")
+
+
+def _account_key(acc: dict) -> tuple[str | None, str]:
+    """→ (标准键, 去掉币种后缀的科目名)。匹配不上时标准键为 None。"""
+    code = str(acc.get("ranking_code") or "").strip().lower()
+    name = _CURRENCY_SUFFIX.sub("", str(acc.get("name") or "").strip()).strip()
+    key = _RANKING_CODE_MAP.get(code) or _ACCOUNT_MAP.get(name.casefold())
+    return key, name
+
 
 def _flatten(report: dict) -> dict:
     """把三张报表的 accounts 展平成 {标准键: {value, yoy, period}}(取每项最新一期)。"""
@@ -73,8 +95,7 @@ def _flatten(report: dict) -> dict:
     for stmt in ("IS", "BS", "CF"):
         for group in ((report.get("list") or {}).get(stmt) or {}).get("indicators", []):
             for acc in group.get("accounts", []):
-                name = str(acc.get("name") or "").strip()
-                key = _ACCOUNT_MAP.get(name.casefold())
+                key, name = _account_key(acc)
                 if not key:
                     continue
                 vals = acc.get("values") or []
