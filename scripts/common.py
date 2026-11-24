@@ -483,17 +483,112 @@ def get_option_expirations(underlying: str) -> list[str]:
     return sorted(valid)
 
 
+def _chain_side(row: dict, side: str) -> tuple[float | None, float | None, float | None]:
+    """chain 单行 call/put 一侧的 (最新价, IV, 成交量)。"""
+    return (to_float(row.get(f"{side}_last")), to_float(row.get(f"{side}_iv")),
+            to_float(row.get(f"{side}_vol")))
+
+
+def _chain_ref_iv(rows: list[list[dict]], index: int, side: str) -> float | None:
+    """邻近行权价(前后各 3 档,不含自身)同侧有效 IV 的中位数。
+
+    只用来判断"同一个行权价的两行里,哪个 IV 离谱"——不改动任何数值。
+    """
+    def valid(groups):
+        return [iv for group in groups for r in group
+                for iv in [_chain_side(r, side)[1]] if iv and iv > 0]
+    values = sorted(valid(rows[max(0, index - 3):index] + rows[index + 1:index + 4])
+                    or valid(rows))
+    return values[len(values) // 2] if values else None
+
+
+def _merge_chain_duplicates(rows: list[dict]) -> list[dict]:
+    """把同一行权价的重复行合并成一行,每个行权价只返回一行。
+
+    ⚠️ 实测(2026-11-24,CLI 0.27.1):chain 对部分行权价返回两行——一行真实数据,
+    另一行全零,或带陈旧垃圾值(TSLA 11-27 的 400 Call:垃圾行 last 0.23/IV 0.136,
+    真实行 2.75/0.465),而且两行的先后顺序每次调用都会变。任何"取首个匹配行"的
+    消费方都会随机拿到垃圾值,所以在入口统一合并:
+      - call/put 两侧分别选: 只看 IV>0 的候选,取 IV 最贴近邻近行权价的一行
+        (并列时优先可用侧更多、Call/Put IV 更一致的一行);
+      - 成交量取各行的最大值(同一合约的重复 feed 不重复计)。
+    没有重复行权价时原样返回,不触碰任何数值。
+    """
+    groups: dict[float, list[dict]] = {}
+    order: list[float] = []
+    for r in rows:
+        s = to_float(r.get("strike"))
+        if s is None:
+            continue
+        if s not in groups:
+            groups[s] = []
+            order.append(s)
+        groups[s].append(r)
+    if all(len(g) == 1 for g in groups.values()):
+        return rows
+
+    ordered = [groups[s] for s in order]
+    ref = {(s, side): _chain_ref_iv(ordered, i, side)
+           for i, s in enumerate(order) for side in ("call", "put")}
+
+    def usable(row: dict, side: str) -> bool:
+        iv = _chain_side(row, side)[1]
+        return iv is not None and iv > 0
+
+    def pick(strike: float, side: str) -> tuple[float | None, float] | None:
+        candidates = []
+        for i, row in enumerate(groups[strike]):
+            last, iv, _ = _chain_side(row, side)
+            if iv is None or iv <= 0:
+                continue
+            reference = ref[(strike, side)]
+            drift = abs(math.log(iv / reference)) if reference else 0.0
+            sides = sum(usable(row, d) for d in ("call", "put"))
+            call_iv, put_iv = _chain_side(row, "call")[1], _chain_side(row, "put")[1]
+            parity = 0 if sides == 2 and abs(call_iv - put_iv) <= 0.05 else 1
+            candidates.append(((drift, -sides, parity, i), last, iv))
+        best = min(candidates) if candidates else None
+        return (best[1], best[2]) if best else None
+
+    merged_rows: list[dict] = []
+    emitted: set[float] = set()
+    for r in rows:
+        s = to_float(r.get("strike"))
+        if s is None:
+            merged_rows.append(r)
+            continue
+        if s in emitted:
+            continue
+        emitted.add(s)
+        group = groups[s]
+        merged = dict(group[0])
+        if len(group) > 1:
+            for side in ("call", "put"):
+                chosen = pick(s, side)
+                if chosen is not None:
+                    merged[f"{side}_last"], merged[f"{side}_iv"] = chosen
+                volumes = [v for row in group for v in [_chain_side(row, side)[2]]
+                           if v is not None]
+                if volumes:
+                    merged[f"{side}_vol"] = max(volumes)
+        merged_rows.append(merged)
+    return merged_rows
+
+
 def get_option_chain(underlying: str, expiry: str) -> list[dict]:
     """返回某到期日的期权链(normalize 后,含 strike/call_iv/put_iv 等)。
 
     注意:Longbridge CLI 的 chain 不返回 OCC 代码(call_symbol/put_symbol),
     仅返回价格/IV/成交量。需要 OCC 代码时用 build_occ_code() 构造。
+    同一行权价若返回多行(实测存在,且行序不稳定),已在此合并为一行,
+    见 _merge_chain_duplicates;调用方按行权价取值即可,无需自行去重。
     """
     data = run_cli("option", "chain", underlying, "--date", expiry)
     # All derived option calculations use the standard 100-share deliverable.
     # An adjusted contract needs its own root/deliverable; never synthesize it.
-    return [r for r in normalize_records(data)
+    rows = [r for r in normalize_records(data)
             if str(r.get("standard", True)).strip().lower() not in {"false", "0", "no"}]
+    return _merge_chain_duplicates(rows)
 
 
 def get_option_volume_daily(underlying: str, count: int = 20) -> list[dict]:
@@ -778,6 +873,25 @@ def days_to_years(expiry: str, today: str | None = None, *, now: datetime | None
         current = market_now("US", now=current)
     remaining = (close.astimezone(timezone.utc) - current.astimezone(timezone.utc)).total_seconds()
     return max(remaining, 0) / (365 * 86400)
+
+
+def nearest_tenor_expiry(expirations: list[str], calendar_days: float) -> str | None:
+    """返回剩余自然日最接近 calendar_days 的到期日(期限对齐用)。
+
+    IV 与 HV 只有在覆盖相近时间窗口时才可比:最近到期日可能只剩 1~2 天,
+    拿它的 IV 去比 30 日 HV 会系统性误判贵贱。全部到期日都已到期时取第一个。
+    """
+    candidates = [e for e in (expirations or []) if isinstance(e, str)]
+    if not candidates:
+        return None
+
+    def distance(expiry: str) -> tuple[float, int]:
+        try:
+            return abs(days_to_years(expiry) * 365 - calendar_days), candidates.index(expiry)
+        except ValueError:
+            return float("inf"), candidates.index(expiry)
+
+    return min(candidates, key=distance)
 
 
 # ===========================================================================

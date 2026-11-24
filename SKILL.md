@@ -19,7 +19,7 @@ description: |
 license: MIT
 metadata:
   author: community
-  version: "0.6.1"
+  version: "0.6.2"
   risk_level: read_only
   requires_login: true
   default_install: true
@@ -69,7 +69,7 @@ earnings calendar,market temperature,expected move,risk reversal,order flow,
 
 ### 已知限制（历史接口观测与当前实现）
 
-0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.1 修复 calc-index theta 死值（自动 BS 补算 + `theta_source` 溯源）及 chain 同行权价重复行，实证与设计见 [theta 死字段修复记录](docs/fixes-2026-11-10-theta-dead-field.md)。
+0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.1 修复 calc-index theta 死值（自动 BS 补算 + `theta_source` 溯源）及 chain 同行权价重复行，实证与设计见 [theta 死字段修复记录](docs/fixes-2026-11-10-theta-dead-field.md)。0.6.2 修复五项实盘验证的高优先级问题：chain 重复行权价改在 `get_option_chain` 入口统一合并(此前仅 get_option_quote 自保，其余按行权价取首个匹配行的脚本会随机拿到零值/垃圾值)、入场规则支撑阻力聚类(高低点分开、簇宽受限、按区间取止损与目标)、财务健康科目名的币种后缀匹配、IV/HV 期限对齐、分析师共识取最新快照与共识目标价，见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。
 1. **`option quote` 单合约查询返回空** → 原生 Greeks/OI 改经 calc-index 按合约获取,Black-Scholes 作回退
 2. **`option chain` 无法查历史** → IV Rank/Percentile 靠 `get_iv_history.py` 本地累积,需多日运行
 3. **仅支持美股 OPRA** → 港股/A 股期权数据可能为空(港股衍生品用 `warrant` 涡轮)
@@ -176,8 +176,8 @@ python scripts/quote/get_option_quote.py AAPL.US 2026-08-14 315 CALL [--rate 0.0
 ```bash
 python scripts/quote/get_option_volatility.py AAPL.US [--expiry 2026-09-18] [--hv-days 30] [--json]
 ```
-- IV 取自 chain,HV 用 K 线自算(年化)
-- 给出 IV/HV 比率 + 贵贱判断
+- IV 取自 chain,HV 用 K 线自算(年化)。**期限对齐**:默认取剩余期限最接近 HV 窗口的到期日(30 个交易日收益 ≈ 43.5 个自然日),不取最近到期日;指定 `--expiry` 而不给 `--hv-days` 时 HV 窗口自动对齐该到期日
+- 给出 IV/HV 比率 + 贵贱判断(JSON 含 `iv_days`/`hv_days`;两者期限相差过大时给出 `tenor_warning`,此时贵贱判断仅供参考)
 
 #### 波动率微笑/偏度
 ```bash
@@ -446,12 +446,15 @@ python scripts/fundamental/get_valuation_percentile.py AAPL.US [--json]
 python scripts/fundamental/get_analyst_consensus.py AAPL.US [--json]
 ```
 - 买入/跑赢/持有/跑输/卖出分布、目标价区间 vs 现价空间、EPS 预测分歧度
+- 目标价「中值」(`target_price.mid`)优先取服务端共识目标价(`instratings.target`,`mid_source=consensus`),服务端未给出时才退回 (最高+最低)/2
+- EPS 预测是**截至最新日期的共识快照**(`as_of`;`forecast-eps` 返回的是按日期升序的历史快照序列,不是未来各报告期)
 
 #### 财务健康(三大报表)
 ```bash
 python scripts/fundamental/get_financial_health.py AAPL.US [--json]
 ```
 - 按精确科目及匹配报告期计算财务比率。关键科目不足时显示覆盖缺口并保留待判断状态
+- 科目按 `ranking_code` 或去掉币种后缀的名称匹配(实盘科目名形如 `营业收入(USD)`、`总资产(HKD)`;0.6.2 之前按裸名匹配,美股/港股均只剩毛利率、净利率、ROE 三项)
 
 #### 股息质量
 ```bash
@@ -621,12 +624,13 @@ python scripts/decision/check_entry_rules.py --demo     # 离线自检,无需登
   候选买点检查10条(B0-B9,含盈亏比闸门 B0 最低 1:1)**
 - 每条规则给出状态和证据；汇总区分不买、必要条件待确认、纪律通过和观望。形态匹配不能绕过未确认闸门
 - 自动判定:收盘新低/新高、缩量、RSI(6)、斐波那契61.8%、趋势线/颈线、支撑压力
-  聚类(强=触及≥2次)、吞没/锤子/W底/旗形/均线回踩、顶底背离、财报距离、
+  聚类(高点、低点分开聚成区间,强=同侧触及≥2次)、吞没/锤子/W底/旗形/均线回踩、顶底背离、财报距离、
   盘前30分钟(9:00-9:30,时区+休市日历)、热度榜命中、小市值(static 总股本×现价)、
   板块当日涨幅(industry-rank,--sector 指名或领涨股反查)、止损距离 vs 承受力(--max-stop-pct,默认8%)
 - 需人工(可用参数消解): D6板块昨日跌幅排名 / D8刚止损 / D9熟悉度 / D11盘前盘后异动;
   B8 自动仅配对同一市场日期的个股突破与板块涨幅；证据不齐时可用 --sector-breakout 手动确认对应日期
 - 止损距离和盈亏比使用同一入场参考价。缺实时参考价、量能或最新日 K 有效价格，以及 B0 或必要人工项待确认时，候选形态不能判为纪律通过。可用 `--target-price` 指定 B0 目标。 形态识别和方向分为启发式，未经样本外收益验证
+- 支撑/压力是**区间**:止损取最近支撑区间的下沿,目标取最近压力区间的下沿(两边都取保守一侧);现价回落进支撑区间内仍算该区间为支撑,收盘跌破区间下沿才算「跌破」,收盘站上压力区间上沿才算「突破」。0.6.2 之前高低点混在一个聚类里且逐点链式合并,一年 K 线常被并成 2~5 个巨型价位
 
 #### 单标的异动综合打分
 ```bash
