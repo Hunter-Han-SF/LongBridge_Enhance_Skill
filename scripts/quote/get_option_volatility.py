@@ -22,7 +22,10 @@ import argparse
 import os
 import sys
 
-sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (os.path.normpath(os.path.join(_HERE, "..")), _HERE):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from common import (  # noqa: E402
     calc_hv,
@@ -39,6 +42,7 @@ from common import (  # noqa: E402
     print_error,
     print_json,
 )
+from get_iv_history import maybe_record_daily_iv  # noqa: E402
 
 
 TRADING_DAYS_PER_YEAR = 252
@@ -105,6 +109,7 @@ def analyze(
     klines = get_kline_adjusted(symbol, count=window + 1)
     closes = [k["close"] for k in klines if k.get("close") is not None]
     hv = calc_hv(closes)
+    maybe_record_daily_iv(symbol)
 
     # 4. IV/HV 对比
     iv_hv_ratio = (iv / hv) if (iv and hv and hv > 0) else None

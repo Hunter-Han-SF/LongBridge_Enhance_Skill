@@ -34,10 +34,10 @@
 | `calc_option_greeks.py` | 各腿原生 Greeks / chain IV 回退 | `get_option_strategy_analysis`(Greeks) | 同标的，按方向×数量×100加权 |
 | `calc_exercise_prob.py` | chain IV + 现价 | `get_option_exercise_probability` | BS N(d2) / |delta| 近似 |
 | `calc_option_pnl.py` | chain last price | `get_option_strategy_analysis`(损益) | 到期损益曲线/盈亏平衡/最大盈亏 |
-| `get_option_strategy.py` | chain + 现价 | `get_option_strategy` | 生成标准策略腿(8 种) |
-| `get_iv_history.py` | 每日累积 chain IV | `get_option_underlying_his_volatility` | **本地累积**(见下方限制) |
-| `calc_iv_rank.py` | iv_history 序列 | `get_option_underlying_overview`(IV_RANK) | (当前-最低)/(最高-最低) |
-| `calc_iv_percentile.py` | iv_history 序列 | `get_option_underlying_overview`(IV_PERCENTILE) | 低于当前 IV 的天数占比 |
+| `get_option_strategy.py` | chain + 现价 | `get_option_strategy` | 生成 11 种买方/卖方/中性策略腿（支持 `--delta`、`--width`、`--with-pnl`、`--check-liquidity`） |
+| `get_iv_history.py` | 每日累积 + 问股自动补录 | `get_option_underlying_his_volatility` | **本地累积**（支持批量 `--watchlist`/`--positions`、`LBR_IV_HISTORY_DIR` 与日常问股静默补录） |
+| `calc_iv_rank.py` | iv_history + 1年HV30代理 | `get_option_underlying_overview`(IV_RANK) | `(当前-最低)/(最高-最低)`；样本不足时默认提供 `hv_52w_proxy`（`--strict` 关闭） |
+| `calc_iv_percentile.py` | iv_history + 1年HV30代理 | `get_option_underlying_overview`(IV_PERCENTILE) | 低于当前 IV 天数占比；样本不足时默认提供 `hv_52w_proxy`（`--strict` 关闭） |
 
 ### 🔴 C 档:不支持(Longbridge 无数据源)
 
@@ -70,7 +70,7 @@ longbridge option quote AAPL260918C00200000 → []
 longbridge option chain AAPL.US --date 2026-07-01 → []
 ```
 **影响**:IV Rank / IV Percentile / IV 时间序列无法靠回溯历史 chain 得到。
-**解决**:`get_iv_history.py` 采用**本地累积模式**，按市场日期采集恒定30日期限 IV(总方差插值，不外推)。旧的非恒定期限记录仍保留，但不计入 Rank/Percentile；本次采集失败时不把旧值作为当前。统计窗口是全部本地可比记录；采集时间并不证明上游报价实时。
+**解决**:`get_iv_history.py` 采用**本地累积模式**（支持问股每日静默补录、`--watchlist`/`--positions` 批量采集及 `LBR_IV_HISTORY_DIR` 目录自定义），按市场日期采集恒定30日期限 IV(总方差插值，不外推)。旧的非恒定期限记录仍保留，但不计入 Rank/Percentile；本次采集失败时不把旧值作为当前。本地样本不足 20 天时，`calc_iv_rank.py` 与 `calc_iv_percentile.py` 默认使用过去 1 年滚动 `HV30` 提供冷启动代理分位（`hv_52w_proxy`，不冒充真实历史 IV，`--strict` 可强制报错）；采集时间并不证明上游报价实时。
 
 ### 3. 港股期权可能不支持
 ```

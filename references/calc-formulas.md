@@ -249,5 +249,6 @@ JSON 与文本共用结果；过去某次末值接近不能证明任意请求可
 - 技术面综合评分(0.6.3):当日 K 线未收盘时量比不计分,总分 = 各维得分之和 ÷ 95 × 100(JSON `raw_score`、`score_basis`),收盘后仍按 100。
 - 入场规则的量能条件(0.6.3):当日 K 线未收盘时成交量按未定处理,缩量/放量类条件为未知,不判「缩量」;参考价取常规时段的 last,不用延长时段价。
 - 风险定仓计算(0.6.7):按 `Shares = floor(min(Capital × Risk% / (Entry - Stop), Capital × MaxPos% / Entry) / LotSize) × LotSize` 计算建议股数(`--capital` 或只读 `--use-account`,默认单笔风险 `1.0%`、单票上限 `20.0%`,非美股按每手股数向下取整)。
+- 策略内联损益与冷启动 HV 代理(0.7.0): `get_option_strategy --with-pnl` 按盈亏平衡根分段对到期盈利区间求 BS 风险中性覆盖概率 `POP_bs = Σ [N(d2(lo)) - N(d2(hi))]`（以卖方/期权腿均值为 σ）；`calc_iv_rank` / `calc_iv_percentile` 样本 `< min_points` 时默认以过去 1 年日线滚动 30 日 `HV` 序列给出 `hv_52w_proxy` 过渡参考并保留 `iv_rank`/`iv_percentile` 为 `None`。
 - 仪表盘资金面的沽空部分(0.6.3):港股卖空成交占比 ≥30% 扣 10 分、≤10% 加 5 分;美股是 FINRA 空头成交量占比(含做市对冲,各股常态水平不同),只展示不计分。
 - 评分、阈值和形态属于启发式，尚无样本外收益或胜率校准。

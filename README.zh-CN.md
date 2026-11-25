@@ -1,4 +1,4 @@
-# LongBridge Enhance Skill (longbridge-pro) · 0.6.7
+# LongBridge Enhance Skill (longbridge-pro) · 0.7.0
 
 [English](README.md) | **[中文](README.zh-CN.md)**
 
@@ -25,8 +25,8 @@
 - **单合约报价** — 服务端原生 Greeks 优先(calc-index,含 OI),Black-Scholes 回退
 - **IV vs HV** — 隐含波动率(期权链)对比历史波动率(K 线自算)
 - **波动率微笑与偏度** — 各行权价 IV 曲线 + Put 偏度
-- **IV Rank 与 IV Percentile** — 采集恒定 30 日 ATM IV，以总方差作期限插值。默认至少 20 个可比观测日，Rank/Percentile 要求本次成功采集，旧口径记录保留但不参与计算。采集时间无法证明行情新鲜度。
-- **行权概率 / 组合希腊值 / 到期损益 / 8 种标准策略腿**
+- **IV Rank 与 IV Percentile** — 采集恒定 30 日 ATM IV，以总方差作期限插值（支持多股/`--watchlist`/`--positions` 批量采集、`LBR_IV_HISTORY_DIR` 目录定制及问股时每日静默补录）。默认至少 20 个可比观测日，不足时提供 1 年滚动 `HV30` 冷启动过渡分位（`hv_52w_proxy`，`--strict` 可关闭）与 `VRP`；旧口径记录保留但不参与计算
+- **行权概率 / 组合希腊值 / 到期损益 / 11 种标准策略腿** — 新增 `BULL_PUT_SPREAD`、`BEAR_CALL_SPREAD`、`IRON_CONDOR` 卖方策略及 `--delta`/`--width` 选腿、`--check-liquidity` OI 校验与 `--with-pnl` 内联损益/胜率
 - **Put/Call Wall** — 真实 OI 墙(calc-index,成交量回退),判断支撑/阻力
 - **Expected Move** — 分列现价 ± 跨式权利金、行权价 ± 权利金的到期盈亏平衡、`S × IV × √T` 的模型波动尺度。
 - **Max Pain** — 最小化模型到期内在价值总额的候选结算价，优先使用 OI，成交量回退会标明。该结果不预测价格收敛。
@@ -157,6 +157,8 @@ python scripts/check_env.py
 ```bash
 # === 期权 ===
 python scripts/quote/get_option_volatility.py AAPL.US          # IV vs HV
+python scripts/quote/get_option_strategy.py AAPL.US <EXPIRY> IRON_CONDOR --delta 0.20 --width 5 --with-pnl
+python scripts/quote/get_iv_history.py --watchlist              # 批量采集自选股30日IV
 python scripts/quote/get_put_call_wall.py AAPL.US             # OI 集中价位
 python scripts/quote/get_warrant.py 700.HK --enrich 20         # 港股涡轮
 
@@ -197,7 +199,7 @@ python scripts/decision/scan_watchlist.py --market US --capital 50000 # 批量�
 python -m unittest discover -s tests -v
 ```
 
-完整命令参考见 [`SKILL.md`](SKILL.md)；全部27项映射、兼容性变化和验证记录见 [0.6.0 审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.2 修复五项经实盘验证的高优先级问题(chain 重复行权价、入场规则支撑阻力聚类、财务健康科目匹配、IV/HV 期限对齐、分析师共识),见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项经实盘验证的中优先级问题(盘中量比用了未收盘的当日 K 线、零成交腿被当成免费期权、盘前盘后现价为昨收且无标注、半日市被 D12 误放行、美股沽空占比套用港股阈值、美股盘口只有一档却给出结论),见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。0.6.4 修复低优先级审计项(GEX 改用合约 IV 的 BS gamma 优先、组合 Greeks 传导 `theta_source`、A/H 溢价日期改用港股时区、估值同行改用 `industry-valuation dist` 全行业排名、Put/Call 墙位置与剖面自适应去重、规则半日市 T、统一 70/50/30 温度档位、异动榜涨跌幅百分比格式化),见 [0.6.4 修复记录](docs/fixes-2026-11-25-low-priority.md)。0.6.5 修复美股盘前实盘抽检(`AAPL.US`/`MSFT.US`/`BRK.B.US`)发现的四组问题(`trade-stats` 50 档截断防护、空 IV 新周链回退、美股节假日与延长时段边界、`VWAP --session all`、异动延长时段涨跌幅、多点号代码/窄止损告警/选股器 `--count`),见 [0.6.5 修复记录](docs/fixes-2026-11-25-us-live-spotcheck.md)。0.6.6 新增大盘环境引擎 `get_market_regime.py`（VIX+宽基均线/盘前跳空+3星Tier-1宏观）并接入仪表盘/简报/入场军规，修复宏观日历星级与日期，打通 `B8`/`D11`/`D6` 自动分诊及 CLI `0.32.0` 批量容错，见 [0.6.6 开发记录](docs/feat-2026-11-25-v066-regime-macro-autorules.md)。0.6.7 新增进程内只读 CLI TTL 缓存与并发节流、自选股/持仓批量扫描器 `scan_watchlist.py` 及 `check_entry_rules.py` 风险定仓计算器（`--capital`/`--use-account`），见 [0.6.7 开发记录](docs/feat-2026-11-25-v067-scanner-cache-sizing.md)。
+完整命令参考见 [`SKILL.md`](SKILL.md)；全部27项映射、兼容性变化和验证记录见 [0.6.0 审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.2 修复五项经实盘验证的高优先级问题(chain 重复行权价、入场规则支撑阻力聚类、财务健康科目匹配、IV/HV 期限对齐、分析师共识),见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项经实盘验证的中优先级问题(盘中量比用了未收盘的当日 K 线、零成交腿被当成免费期权、盘前盘后现价为昨收且无标注、半日市被 D12 误放行、美股沽空占比套用港股阈值、美股盘口只有一档却给出结论),见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。0.6.4 修复低优先级审计项(GEX 改用合约 IV 的 BS gamma 优先、组合 Greeks 传导 `theta_source`、A/H 溢价日期改用港股时区、估值同行改用 `industry-valuation dist` 全行业排名、Put/Call 墙位置与剖面自适应去重、规则半日市 T、统一 70/50/30 温度档位、异动榜涨跌幅百分比格式化),见 [0.6.4 修复记录](docs/fixes-2026-11-25-low-priority.md)。0.6.5 修复美股盘前实盘抽检(`AAPL.US`/`MSFT.US`/`BRK.B.US`)发现的四组问题(`trade-stats` 50 档截断防护、空 IV 新周链回退、美股节假日与延长时段边界、`VWAP --session all`、异动延长时段涨跌幅、多点号代码/窄止损告警/选股器 `--count`),见 [0.6.5 修复记录](docs/fixes-2026-11-25-us-live-spotcheck.md)。0.6.6 新增大盘环境引擎 `get_market_regime.py`（VIX+宽基均线/盘前跳空+3星Tier-1宏观）并接入仪表盘/简报/入场军规，修复宏观日历星级与日期，打通 `B8`/`D11`/`D6` 自动分诊及 CLI `0.32.0` 批量容错，见 [0.6.6 开发记录](docs/feat-2026-11-25-v066-regime-macro-autorules.md)。0.6.7 新增进程内只读 CLI TTL 缓存与并发节流、自选股/持仓批量扫描器 `scan_watchlist.py` 及 `check_entry_rules.py` 风险定仓计算器（`--capital`/`--use-account`），见 [0.6.7 开发记录](docs/feat-2026-11-25-v067-scanner-cache-sizing.md)。0.7.0 新增期权卖方三策略（`BULL_PUT_SPREAD`/`BEAR_CALL_SPREAD`/`IRON_CONDOR`）、目标 Delta 选腿（`--delta`/`--width`）、流动性检查（`--check-liquidity`）与内联损益/BS胜率（`--with-pnl`），并新增问股静默自动记录 IV、`--watchlist`/`--positions` 批量采集及 `calc_iv_rank`/`calc_iv_percentile` 的 1 年滚动 `HV30` 冷启动过渡与断档提示（`--strict` 可关），见 [0.7.0 开发记录](docs/feat-2026-11-25-v070-option-sellers-iv-coldstart.md)。
 
 ## 已知限制
 
