@@ -28,6 +28,7 @@ from common import (  # noqa: E402
     get_heat_rank,
     get_market_temp,
     market_now,
+    market_temp_label,
     get_option_volume_realtime,
     get_top_movers,
     print_error,
@@ -41,14 +42,8 @@ def _section(title: str) -> str:
 
 
 def _temp_emoji(t: float | None) -> str:
-    """温度档位表情。0 度是最冷端,必须判偏冷;真值判断会把 0 吞进「温和」。"""
-    if t is None:
-        return "🌡️温和"
-    if t >= 60:
-        return "🔥偏热"
-    if t < 40:
-        return "❄️偏冷"
-    return "🌡️温和"
+    """温度档位表情(复用 common.market_temp_label)。"""
+    return market_temp_label(to_float(t))
 
 
 def generate_briefing(market: str = "US", include_pc: bool = True, output_json: bool = False) -> dict:

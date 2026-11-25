@@ -29,6 +29,7 @@ from common import (  # noqa: E402
     get_ah_premium,
     get_ah_premium_intraday,
     is_empty,
+    market_now,
     print_display_table,
     print_error,
     print_json,
@@ -36,11 +37,14 @@ from common import (  # noqa: E402
 )
 
 
-def _ts_to_date(ts) -> str:
+def _ts_label(ts, intraday: bool = False) -> str:
     f = to_float(ts)
     if not f:
         return ""
-    return datetime.fromtimestamp(f, tz=timezone.utc).strftime("%Y-%m-%d")
+    if abs(f) >= 1e11:
+        f /= 1000
+    local = market_now("HK", datetime.fromtimestamp(f, timezone.utc))
+    return local.strftime("%m-%d %H:%M" if intraday else "%Y-%m-%d")
 
 
 def _analyze(rows: list[dict]) -> dict:
@@ -80,6 +84,12 @@ def fetch_ah_premium(symbol: str, count: int = 60, kline_type: str = "day",
         raise ValueError(f"无 A/H 溢价数据({symbol})。仅 A+H 两地上市的港股支持"
                          f"(如 939.HK/1398.HK/2628.HK)。")
 
+    is_intraday = (mode == "intraday")
+    for r in rows:
+        lbl = _ts_label(r.get("timestamp"), intraday=is_intraday)
+        if lbl:
+            r["date"] = lbl
+
     analysis = _analyze(rows)
     result = {"symbol": symbol, "mode": mode, "points": len(rows),
               "analysis": analysis, "klines": rows}
@@ -99,7 +109,7 @@ def fetch_ah_premium(symbol: str, count: int = 60, kline_type: str = "day",
     print()
     show = rows[-15:]
     table = [{
-        "日期": _ts_to_date(r.get("timestamp")) or str(r.get("timestamp", "")),
+        "日期": r.get("date") or _ts_label(r.get("timestamp"), intraday=is_intraday) or str(r.get("timestamp", "")),
         "A价": r.get("aprice", ""),
         "H价": r.get("hprice", ""),
         "汇率": r.get("currency_rate", ""),

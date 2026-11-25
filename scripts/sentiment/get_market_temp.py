@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath
 from common import (  # noqa: E402
     get_market_temp,
     is_empty,
+    market_temp_label,
     print_display_table,
     print_error,
     print_json,
@@ -42,16 +43,7 @@ from common import (  # noqa: E402
 
 def _temp_emoji(temp) -> str:
     """温度转表情。"""
-    t = to_float(temp)
-    if t is None:
-        return ""
-    if t >= 70:
-        return "🔥 偏热(贪婪)"
-    if t >= 50:
-        return "🌡️ 偏暖"
-    if t >= 30:
-        return "❄️ 偏凉"
-    return "🥶 偏冷(恐惧)"
+    return market_temp_label(temp)
 
 
 def fetch_market_temp(

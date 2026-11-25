@@ -19,7 +19,7 @@ description: |
 license: MIT
 metadata:
   author: community
-  version: "0.6.3"
+  version: "0.6.4"
   risk_level: read_only
   requires_login: true
   default_install: true
@@ -69,7 +69,7 @@ earnings calendar,market temperature,expected move,risk reversal,order flow,
 
 ### 已知限制（历史接口观测与当前实现）
 
-0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.1 修复 calc-index theta 死值（自动 BS 补算 + `theta_source` 溯源）及 chain 同行权价重复行，实证与设计见 [theta 死字段修复记录](docs/fixes-2026-11-10-theta-dead-field.md)。0.6.2 修复五项实盘验证的高优先级问题：chain 重复行权价改在 `get_option_chain` 入口统一合并(此前仅 get_option_quote 自保，其余按行权价取首个匹配行的脚本会随机拿到零值/垃圾值)、入场规则支撑阻力聚类(高低点分开、簇宽受限、按区间取止损与目标)、财务健康科目名的币种后缀匹配、IV/HV 期限对齐、分析师共识取最新快照与共识目标价，见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项中优先级问题:盘中未收盘 K 线的成交量不再用于量比(技术指标、技术评分、入场规则)、期权到期损益的零成交腿不再按零成本、常规时段之外的现价取延长时段最新价并标注来源、半日市不再被 D12 当作休市日、美股空头成交占比不再套用港股阈值或参与仪表盘计分、盘口可见档位不足时不下结论,见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。
+0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.1 修复 calc-index theta 死值（自动 BS 补算 + `theta_source` 溯源）及 chain 同行权价重复行，实证与设计见 [theta 死字段修复记录](docs/fixes-2026-11-10-theta-dead-field.md)。0.6.2 修复五项实盘验证的高优先级问题：chain 重复行权价改在 `get_option_chain` 入口统一合并(此前仅 get_option_quote 自保，其余按行权价取首个匹配行的脚本会随机拿到零值/垃圾值)、入场规则支撑阻力聚类(高低点分开、簇宽受限、按区间取止损与目标)、财务健康科目名的币种后缀匹配、IV/HV 期限对齐、分析师共识取最新快照与共识目标价，见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项中优先级问题:盘中未收盘 K 线的成交量不再用于量比(技术指标、技术评分、入场规则)、期权到期损益的零成交腿不再按零成本、常规时段之外的现价取延长时段最新价并标注来源、半日市不再被 D12 当作休市日、美股空头成交占比不再套用港股阈值或参与仪表盘计分、盘口可见档位不足时不下结论,见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。0.6.4 修复低优先级审计项:GEX 改用合约 IV 的 BS gamma 优先(避免服务端 3 位小数把虚值腿舍入成 0)、组合 Greeks 传导 `theta_source` 拒绝 `dead_zero` 伪有利衰减、A/H 溢价日期改用港股时区、估值同行排名改取 `industry-valuation dist` 全行业数据、Put/Call 墙与剖面自适应间距、美股规则半日市 T 按 13:00 ET 收盘、温度档位统一为 70/50/30、异动榜涨跌幅百分比格式化,见 [0.6.4 修复记录](docs/fixes-2026-11-25-low-priority.md)。
 1. **`option quote` 单合约查询返回空** → 原生 Greeks/OI 改经 calc-index 按合约获取,Black-Scholes 作回退
 2. **`option chain` 无法查历史** → IV Rank/Percentile 靠 `get_iv_history.py` 本地累积,需多日运行
 3. **仅支持美股 OPRA** → 港股/A 股期权数据可能为空(港股衍生品用 `warrant` 涡轮)
@@ -79,8 +79,8 @@ earnings calendar,market temperature,expected move,risk reversal,order flow,
 6. **broker-holding/brokers 仅港股** → 美股调用会优雅报错
 7. **short 数据 US/HK 字段不同** → 脚本按字段存在性自动识别市场;美股 `rate` 是 FINRA 空头成交量占比,含做市商对冲、各股常态水平不同(实测 17%~58%),只与自身此前均值比较,不套港股 40/25/10 阈值,也不参与仪表盘计分;空头持仓看 `--position`
 8. **盘口/逐笔为瞬时快照** → 休市时为最后快照,逐笔价格方向样本取决于时段;美股默认行情为 LV1,盘口只有买一/卖一(港股 LV2 为 10 档),买卖两侧不足 5 档时盘口脚本不给失衡结论、挂单墙和加权中枢
-9. **估值历史美股常见只有 PE** → 部分标的才有 PB/PS,脚本按实际返回处理
-10. **技术面打分权重/灯号阈值为设计选择** → 可按风格调整,输出已标注
+9. **估值历史美股常见只有 PE** → 部分标的才有 PB/PS,脚本按实际返回处理;`valuation.peers` 只返回少量预览,完整行业排名由 `industry-valuation dist` 提供
+10. **技术面打分权重/灯号阈值为设计选择** → 可按风格调整,输出已标注;市场温度两脚本统一使用 70/50/30 档位
 11. ~~`quant run` 服务端故障~~ → **已解决(pine 方案)**:Navi 路径服务端 500(实测 2026-08-21,
     官方示例同挂),PineScript 路径正常 —— 内置预设全部改用 pine;指标序列值只在 pretty 表
     (JSON 模式的 events_json 不含 plot 值,CLI 0.27.1 缺口),脚本已自动解析;回测走 report_json
@@ -127,7 +127,7 @@ python scripts/decision/check_entry_rules.py AAPL.US
 
 ## 命令速查
 
-显式日期、行权价和合约代码仅演示格式。真实查询先从到期日列表与期权链选取挂牌合约；省略可选 `--date`/`--expiry` 时使用脚本默认存续到期日。默认美股到期时间按纽约16:00计算，不覆盖提前收市或特殊结算。
+显式日期、行权价和合约代码仅演示格式。真实查询先从到期日列表与期权链选取挂牌合约；省略可选 `--date`/`--expiry` 时使用脚本默认存续到期日。默认美股到期时间按纽约 16:00 计算，规则半日市(感恩节次日、周一至周四的 07-03 与 12-24)按 13:00 ET 计算，交易所临时调整或特殊结算以日历为准。
 
 ### 🟢 A 档:原生数据
 
@@ -252,11 +252,11 @@ python scripts/quote/get_put_call_wall.py AAPL.US --date 2026-09-18 [--walls 3] 
 - 找持仓量(OI)最大的价外 Put 行权价(支撑)/ Call 行权价(阻力)
 - ✅ 真实 OI 口径(calc-index),不可用时回退成交量并标注
 
-#### Gamma Exposure (GEX,真实 OI + 原生 gamma 优先)
+#### Gamma Exposure (GEX,真实 OI + BS gamma 优先)
 ```bash
 python scripts/quote/calc_gex.py AAPL.US --date 2026-09-18 [--rate 0.045] [--json]
 ```
-- 各 strike gamma × OI 加权(原生 gamma 优先,BS 回退),算净 GEX 和翻转点(剖面插值,无过零时如实报告)
+- 各 strike gamma × OI 加权(优先用合约 IV / chain IV 按 BS 重算,缺失 IV 时才以服务端 3 位小数原生 gamma 兜底;JSON `gamma_sources`),算净 GEX 和翻转点(剖面插值,无过零时如实报告)
 
 #### Gamma Profile(跨到期日聚合剖面,旗舰)
 ```bash
@@ -444,7 +444,7 @@ python scripts/technical/run_quant_indicator.py AAPL.US custom --start 2026-01-0
 ```bash
 python scripts/fundamental/get_valuation_percentile.py AAPL.US [--json]
 ```
-- PE/PB 当前值处于历史百分位(<30% 便宜 / >70% 偏贵)+ 行业同行排名
+- PE/PB 当前值处于历史百分位(<30% 便宜 / >70% 偏贵)+ 完整行业排名(`industry-valuation dist` 由低到高排名与行业中位数,不再把 `valuation.peers` 的少量预览条数充当行业总数)
 
 #### 分析师共识 + 目标价 + EPS 预测
 ```bash

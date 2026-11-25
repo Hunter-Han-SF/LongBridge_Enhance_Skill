@@ -49,6 +49,8 @@ def calc_portfolio_greeks(legs: list[dict], rate: float = 0.045) -> dict:
     detail = []
     totals = {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
     sign_map = {"BUY": 1, "SELL": -1}
+    invalid_theta_legs: list[str] = []
+    backfilled_count = 0
 
     for leg in legs:
         ul = leg["underlying"]
@@ -75,6 +77,7 @@ def calc_portfolio_greeks(legs: list[dict], rate: float = 0.045) -> dict:
                 "delta": round(weighted["delta"], 4),
                 "gamma": 0.0,
                 "theta": 0.0,
+                "theta_source": "n/a",
                 "vega": 0.0,
             })
             continue
@@ -86,29 +89,52 @@ def calc_portfolio_greeks(legs: list[dict], rate: float = 0.045) -> dict:
         if not greeks:
             raise ValueError(f"无法计算 {ul} {expiry} {strike} {ot} 的 Greeks(可能缺 IV 或到期日已过期)")
 
+        leg_label = f"{action} {qty}× {ul} {expiry} {strike} {ot}"
+        theta_source = q.get("theta_source")
+        theta_invalid = theta_source in ("dead_zero", None)
+        if theta_source == "bs_backfill":
+            backfilled_count += 1
+
         weighted = {k: greeks[k] * sign * qty * 100 for k in totals}
         for k in totals:
+            if k == "theta" and theta_invalid:
+                continue
             totals[k] += weighted[k]
 
+        if theta_invalid:
+            invalid_theta_legs.append(leg_label)
+
         detail.append({
-            "leg": f"{action} {qty}× {ul} {expiry} {strike} {ot}",
+            "leg": leg_label,
             "iv_pct": q["iv_pct"],
             "delta": round(weighted["delta"], 4),
             "gamma": round(weighted["gamma"], 4),
-            "theta": round(weighted["theta"], 4),
+            "theta": None if theta_invalid else round(weighted["theta"], 4),
+            "theta_source": theta_source,
             "vega": round(weighted["vega"], 4),
         })
 
-    return {
+    portfolio_greeks: dict[str, float | None] = {k: round(v, 4) for k, v in totals.items()}
+    if invalid_theta_legs:
+        portfolio_greeks["theta"] = None
+
+    result = {
         "legs": len(legs),
         "detail": detail,
-        "portfolio_greeks": {k: round(v, 4) for k, v in totals.items()},
-        "interpretation": _interpret(totals),
-        "note": "组合 Greeks 为各腿报价 Greeks 加权值，来源可为原生或 BS，theta=/日，vega=/1%IV",
+        "portfolio_greeks": portfolio_greeks,
+        "theta_valid": not invalid_theta_legs,
+        "interpretation": _interpret(portfolio_greeks, len(invalid_theta_legs)),
+        "note": ("组合 Greeks 为各腿报价 Greeks 加权值，来源可为原生或 BS，theta=/日，vega=/1%IV；"
+                 "theta_source 为 dead_zero 或缺失的腿不计入组合 theta（整组置为 N/A）"),
     }
+    if invalid_theta_legs:
+        result["theta_invalid_legs"] = invalid_theta_legs
+    if backfilled_count:
+        result["theta_backfilled_legs"] = backfilled_count
+    return result
 
 
-def _interpret(g: dict) -> str:
+def _interpret(g: dict, invalid_theta_count: int = 0) -> str:
     parts = []
     if abs(g["delta"]) < 0.1:
         parts.append("Delta 中性(方向风险小)")
@@ -116,7 +142,9 @@ def _interpret(g: dict) -> str:
         parts.append(f"看多敞口(delta={g['delta']:.2f})")
     else:
         parts.append(f"看空敞口(delta={g['delta']:.2f})")
-    if g["theta"] > 0:
+    if g.get("theta") is None:
+        parts.append(f"theta 无有效数据({invalid_theta_count} 条腿为服务端死值,无法补算)")
+    elif g["theta"] > 0:
         parts.append(f"时间衰减有利(theta=+{g['theta']:.2f}/日)")
     else:
         parts.append(f"时间衰减不利(theta={g['theta']:.2f}/日)")
@@ -143,12 +171,14 @@ def main():
             print("  各腿明细:")
             for d in result["detail"]:
                 iv_str = f"IV={d['iv_pct']}%" if d.get("iv_pct") is not None else "正股"
-                print(f"    {d['leg']}  {iv_str}  delta={d['delta']} theta={d['theta']} vega={d['vega']}")
+                theta_str = "N/A(死值)" if d["theta"] is None else str(d["theta"])
+                print(f"    {d['leg']}  {iv_str}  delta={d['delta']} theta={theta_str} vega={d['vega']}")
             pg = result["portfolio_greeks"]
+            theta_disp = f"{pg['theta']} /日" if pg["theta"] is not None else "N/A"
             print(f"  组合计:")
             print(f"    delta = {pg['delta']}")
             print(f"    gamma = {pg['gamma']}")
-            print(f"    theta = {pg['theta']} /日")
+            print(f"    theta = {theta_disp}")
             print(f"    vega  = {pg['vega']} /1%IV")
             print(f"    rho   = {pg['rho']}")
             print(f"  解读: {result['interpretation']}")

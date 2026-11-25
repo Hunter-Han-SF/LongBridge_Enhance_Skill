@@ -293,7 +293,7 @@ longbridge calc-index MSFT260821C485000.US --fields oi,iv,delta,gamma,theta,vega
 据此升级(成交量仅作 OI 不可用时的回退,输出标注 weight_mode):
 - **get_option_oi.py**:按行权价 OI 表 + P/C OI 比率(存量口径)+ OI 墙
 - **calc_max_pain.py**:真实 OI 加权
-- **calc_gex.py**:OI 加权 + 原生 gamma(缺失时 BS 回退)
+- **calc_gex.py**:OI 加权 + 优先合约 IV / chain IV 按 BS 重算 gamma(服务端 calc-index 的 gamma 仅 3 位小数,仅在无 IV 时作兜底)
 - **get_put_call_wall.py**:OI 墙(约定:Call Wall 只在 ≥现价、Put Wall 只在 ≤现价 中找)
 - **get_option_quote.py**:原生 Greeks 优先(greeks_source="native"),BS 回退,附带 OI
 
@@ -329,7 +329,7 @@ call_gex = gamma_call × call_oi × 100 × S² × 0.01    (正)
 put_gex  = -gamma_put × put_oi × 100 × S² × 0.01     (假设负仓位方向)
 net_gex(K) = call_gex + put_gex
 ```
-(gamma 优先取 calc-index 原生值,缺失时 BS;OI 不可用时回退 call_vol/put_vol 并标注)
+(gamma 优先用合约 IV / chain IV 按 BS 重算,服务端 3 位小数原生值仅作无 IV 兜底;OI 不可用时回退 call_vol/put_vol 并标注)
 跨到期日聚合剖面与插值 Flip 见 calc_gamma_profile.py(公式见 calc-formulas.md §11)。
 - Call 正 / Put 负是代理仓位假设；OI 不包含做市商净头寸，不能据此断定真实对冲行为。
 - 当前状态直接使用当前 net_gex 的符号；过零需两侧异号，排除相切与零尾部。

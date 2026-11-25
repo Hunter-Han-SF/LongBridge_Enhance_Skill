@@ -33,6 +33,7 @@ from common import (  # noqa: E402
     is_empty,
     print_error,
     print_json,
+    to_float,
 )
 
 
@@ -74,6 +75,8 @@ def fetch_top_movers(
         ev["name"] = stock.get("name") or stock.get("full_name") or ev.get("name") or ""
         ev["price"] = stock.get("last_done")
         ev["change"] = stock.get("change")
+        chg_num = to_float(ev["change"])
+        ev["change_pct"] = round(chg_num * 100, 2) if chg_num is not None else None
         ev["summary"] = _extract_summary(ev)
         summary = ev.get("summary") or ""
         ev["summary_short"] = (summary[:60] + "...") if len(summary) > 60 else summary
@@ -99,9 +102,17 @@ def fetch_top_movers(
     print(f"更新时间: {data['updated_at']}")
     print()
     for i, ev in enumerate(events, 1):
-        price_str = f"${ev.get('price','?')}" if ev.get("price") else ""
-        chg_str = f"({ev.get('change','')})" if ev.get("change") else ""
-        print(f"[{i}] {ev.get('symbol','?')} {ev.get('name','')} {price_str} {chg_str}  — {ev.get('alert_reason','')}")
+        sym = ev.get("symbol", "?")
+        px = ev.get("price")
+        price_str = (f"${px}" if str(sym).upper().endswith(".US") else f"{px}") if px else ""
+        pct = ev.get("change_pct")
+        if pct is not None:
+            chg_str = f"({pct:+.2f}%)"
+        elif ev.get("change"):
+            chg_str = f"({ev.get('change')})"
+        else:
+            chg_str = ""
+        print(f"[{i}] {sym} {ev.get('name','')} {price_str} {chg_str}  — {ev.get('alert_reason','')}")
         if ev["summary_short"]:
             print(f"    📰 {ev['summary_short']}")
         print()

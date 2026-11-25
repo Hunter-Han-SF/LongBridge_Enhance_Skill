@@ -218,17 +218,15 @@ class TestOrderbookCenterSameBasis(unittest.TestCase):
 
 
 class TestTempEmoji(unittest.TestCase):
-    """温度 0 度是最冷端,必须判偏冷(真值判断会把 0 吞进「温和」)。"""
+    """温度 0 度是最冷端,必须判偏冷,且两脚本统一使用 70/50/30 档位。"""
 
     def test_boundaries(self):
-        self.assertEqual(dbf._temp_emoji(0), "❄️偏冷")
-        self.assertEqual(dbf._temp_emoji(30), "❄️偏冷")
-        self.assertEqual(dbf._temp_emoji(39.9), "❄️偏冷")
-        self.assertEqual(dbf._temp_emoji(40), "🌡️温和")
-        self.assertEqual(dbf._temp_emoji(50), "🌡️温和")
-        self.assertEqual(dbf._temp_emoji(None), "🌡️温和")
-        self.assertEqual(dbf._temp_emoji(60), "🔥偏热")
-        self.assertEqual(dbf._temp_emoji(70), "🔥偏热")
+        self.assertEqual(dbf._temp_emoji(0), "🥶 偏冷(恐惧)")
+        self.assertEqual(dbf._temp_emoji(29.9), "🥶 偏冷(恐惧)")
+        self.assertEqual(dbf._temp_emoji(30), "❄️ 偏凉")
+        self.assertEqual(dbf._temp_emoji(50), "🌡️ 偏暖")
+        self.assertEqual(dbf._temp_emoji(None), "")
+        self.assertEqual(dbf._temp_emoji(70), "🔥 偏热(贪婪)")
 
 
 class TestVwapTrendIndependentOfOpen(unittest.TestCase):
