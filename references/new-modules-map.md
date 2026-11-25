@@ -561,6 +561,7 @@ heat-rank(D10,**返回键名是 `lists` 复数**)。规则引擎为纯函数(合
 - **D6 / D11 自动分诊**(0.6.6):D11 结合延长时段振幅、最新 `news` 标题与财报窗口三区自动分诊(平稳放行 `clear`、非财报大异动 `triggered`、中间区 `manual`);D6 在上一完整日 K 未显著收跌、跑赢所属行业或优于 ≥30% 抽样 `valuation` 同行时自动 `clear`。无法自动排雷的 D6/D8/D9/D11 及 B8 证据仍可通过对应 CLI 参数确认;
   D7 财报距离可被 --earnings-days 覆盖(日历查询失败时)
 - 离线自检:`python scripts/decision/check_entry_rules.py --demo`；加 `--json` 输出三个合成场景的严格JSON，无需登录
+- 风险定仓(0.6.7):`check_entry_rules.py --capital/--use-account` 与 `scan_watchlist.py` 复用 `calc_position_sizing()`，只读调用 `assets` / `max-qty` 校验可买上限(无下单调用);`common.run_cli()` 默认启用 15s 进程内只读 TTL 缓存(`LBR_CACHE_TTL=0` 可关闭)。
 
 ## v0.5.3 历史修复摘要（后续口径以0.6.0为准）
 

@@ -1,4 +1,4 @@
-# LongBridge Enhance Skill (longbridge-pro) · 0.6.6
+# LongBridge Enhance Skill (longbridge-pro) · 0.6.7
 
 **[English](README.md)** | [中文](README.zh-CN.md)
 
@@ -12,7 +12,7 @@
 > business segments / industry rank / consensus detail / corp actions / operating reviews / company profiles
 > + insider trades / 13F institutional holdings / fund holders / shareholders)
 > ⑧ Intraday microstructure (VWAP / order-book imbalance / tick order flow / volume profile)
-> ⑨ Buy/sell decisions (dashboard + 28-rule entry discipline checker) ⑩ Stock screener (preset strategies / custom filters)
+> ⑨ Buy/sell decisions (dashboard + 28-rule entry checker + watchlist/position scanner + risk position sizing) ⑩ Stock screener (preset strategies / custom filters)
 > — all computed locally from Longbridge CLI data, with an offline regression suite.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -186,7 +186,8 @@ python scripts/intraday/get_trade_stats.py 700.HK               # volume profile
 python scripts/sentiment/daily_briefing.py --market US
 python scripts/market/get_market_regime.py --market US     # Market regime + 3-star macro
 python scripts/decision/analyze_buy_sell.py AAPL.US             # directional inputs + separate event/regime risk
-python scripts/decision/check_entry_rules.py AAPL.US            # 28-rule entry checklist
+python scripts/decision/check_entry_rules.py AAPL.US --capital 50000 # 28-rule entry checklist + position sizing
+python scripts/decision/scan_watchlist.py --market US --capital 50000 # batch watchlist/positions scanner
 ```
 
 Run the offline regression suite (mocked CLI):
@@ -195,7 +196,7 @@ Run the offline regression suite (mocked CLI):
 python -m unittest discover -s tests -v
 ```
 
-See [`SKILL.md`](SKILL.md) for the full command reference and [the 0.6.0 audit record](docs/audit-fixes-2026-11-03.md) for all 27 findings, compatibility changes and validation evidence. 0.6.2 fixes five live-verified high-priority defects (duplicated chain strike rows, support/resistance clustering in the entry checker, financial-health account matching, IV/HV tenor alignment, analyst consensus); see [the 0.6.2 fix record](docs/fixes-2026-11-24-high-priority.md). 0.6.3 fixes six live-verified medium-priority defects (volume ratio computed from the unfinished intraday daily bar, zero-last option legs treated as free, the stale "last price" shown outside regular hours, D12 cleared on half trading days, HK short-ratio thresholds applied to US short volume, order-book verdicts drawn from a one-level US book); see [the 0.6.3 fix record](docs/fixes-2026-11-25-medium-priority.md). 0.6.4 addresses the low-priority audit items (BS gamma priority in GEX, `theta_source` propagation in portfolio Greeks, HK timezone for A/H premium dates, full-industry ranking via `industry-valuation dist`, Put/Call wall position labels and adaptive profile dedup, rule-based US early-close T, unified 70/50/30 temperature thresholds, top-movers percentage formatting); see [the 0.6.4 fix record](docs/fixes-2026-11-25-low-priority.md). 0.6.5 fixes four groups of US pre-market live-spot-check defects verified on `AAPL.US`/`MSFT.US`/`BRK.B.US` (50-level `trade-stats` truncation guard, empty newly-listed weekly option chain fallback, US market-holiday and extended-hours session alignment for VWAP/anomaly/expected-move, multi-dot tickers, narrow-stop alerts, and screener `--count`); see [the 0.6.5 fix record](docs/fixes-2026-11-25-us-live-spotcheck.md). 0.6.6 adds the Market Regime engine (`get_market_regime.py`), fixes `get_macro_calendar` star/date extraction with Tier-1 catalyst classification, wires Market Regime into the dashboard/briefing/entry checker, automates `B8`/`D11`/`D6` entry triage, and hardens batch CLI parsing for `longbridge 0.32.0`; see [the 0.6.6 release record](docs/feat-2026-11-25-v066-regime-macro-autorules.md).
+See [`SKILL.md`](SKILL.md) for the full command reference and [the 0.6.0 audit record](docs/audit-fixes-2026-11-03.md) for all 27 findings, compatibility changes and validation evidence. 0.6.2 fixes five live-verified high-priority defects (duplicated chain strike rows, support/resistance clustering in the entry checker, financial-health account matching, IV/HV tenor alignment, analyst consensus); see [the 0.6.2 fix record](docs/fixes-2026-11-24-high-priority.md). 0.6.3 fixes six live-verified medium-priority defects (volume ratio computed from the unfinished intraday daily bar, zero-last option legs treated as free, the stale "last price" shown outside regular hours, D12 cleared on half trading days, HK short-ratio thresholds applied to US short volume, order-book verdicts drawn from a one-level US book); see [the 0.6.3 fix record](docs/fixes-2026-11-25-medium-priority.md). 0.6.4 addresses the low-priority audit items (BS gamma priority in GEX, `theta_source` propagation in portfolio Greeks, HK timezone for A/H premium dates, full-industry ranking via `industry-valuation dist`, Put/Call wall position labels and adaptive profile dedup, rule-based US early-close T, unified 70/50/30 temperature thresholds, top-movers percentage formatting); see [the 0.6.4 fix record](docs/fixes-2026-11-25-low-priority.md). 0.6.5 fixes four groups of US pre-market live-spot-check defects verified on `AAPL.US`/`MSFT.US`/`BRK.B.US` (50-level `trade-stats` truncation guard, empty newly-listed weekly option chain fallback, US market-holiday and extended-hours session alignment for VWAP/anomaly/expected-move, multi-dot tickers, narrow-stop alerts, and screener `--count`); see [the 0.6.5 fix record](docs/fixes-2026-11-25-us-live-spotcheck.md). 0.6.6 adds the Market Regime engine (`get_market_regime.py`), fixes `get_macro_calendar` star/date extraction with Tier-1 catalyst classification, wires Market Regime into the dashboard/briefing/entry checker, automates `B8`/`D11`/`D6` entry triage, and hardens batch CLI parsing for `longbridge 0.32.0`; see [the 0.6.6 release record](docs/feat-2026-11-25-v066-regime-macro-autorules.md). 0.6.7 adds thread-safe rate limiting with an in-process read-only CLI TTL cache (`LBR_CACHE_TTL`), a batch watchlist/positions scanner (`scan_watchlist.py`), and risk-based position sizing in `check_entry_rules.py` (`--capital`/`--use-account`); see [the 0.6.7 release record](docs/feat-2026-11-25-v067-scanner-cache-sizing.md).
 
 ## Known limitations
 

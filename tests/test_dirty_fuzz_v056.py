@@ -206,6 +206,13 @@ F = {
         } for s in (syms or [])
     },
     "get_symbol_news": [{"id": "1", "title": "Headline", "published_at": "2026-11-25T12:00:00Z"}],
+    "get_watchlist_groups": [{"id": 1, "name": "Tech", "securities": [
+        {"symbol": "AAPL.US", "name": "Apple", "market": "US"},
+    ]}],
+    "get_stock_positions": [{"symbol": "AAPL.US", "name": "Apple", "quantity": "10",
+                             "cost_price": "100.0", "currency": "USD", "market": "US"}],
+    "get_account_assets": {"currency": "USD", "net_assets": 50000.0, "total_cash": 10000.0, "buy_power": 20000.0},
+    "estimate_max_purchase_qty": {"symbol": "X.US", "price": 100.0, "cash_max_qty": 100, "margin_max_qty": 200},
 }
 
 # ---------------------------------------------------------------- 变异器 --
@@ -246,6 +253,7 @@ def _ns(**kw):
          "sector_top_decline": None, "recent_stopout": None, "familiar": None,
          "prepost_move": None, "sector_breakout": None, "earnings_days": None,
          "no_heat": False, "no_regime": False, "strict_regime": False,
+         "capital": None, "use_account": False, "risk_pct": 1.0, "max_pos_pct": 20.0,
          "smallcap_usd": 3e9, "now": None, "sector": None, "sector_chg_pct": 2.0,
          "output_json": False}
     d.update(kw)
@@ -266,6 +274,7 @@ CASES = [
     case("get_split_calendar", "fetch_split_calendar", kwargs={"market": "US", "symbol": "AAPL.US", "watchlist": None, "count": 10, "output_json": False}),
     case("analyze_buy_sell", "analyze", ("AAPL.US",), {"output_json": False}),
     case("check_entry_rules", "analyze", ("AAPL.US", _ns())),
+    case("scan_watchlist", "scan_watchlist", kwargs={"symbols": ["AAPL.US", "MSFT.US"], "mode": "fast", "include_regime": False, "output_json": False}),
     case("get_broker_holding", "fetch_broker_holding", ("700.HK",), {"period": "rct_1", "detail": False, "output_json": False}),
     case("get_broker_queue", "fetch_broker_queue", ("700.HK",), {"levels": 5, "output_json": False}),
     case("get_capital_flow", "fetch_capital_flow", ("AAPL.US",), {"flow": False, "output_json": False}),
@@ -337,9 +346,9 @@ _REGIME_FIXTURE = {
     "warnings": [], "summary": "VIX 18.0, SPY 700",
 }
 for _c in CASES:
-    if _c["mod"] in ("analyze_buy_sell", "check_entry_rules", "daily_briefing"):
+    if _c["mod"] in ("analyze_buy_sell", "check_entry_rules", "daily_briefing", "scan_watchlist"):
         _c["extra"]["assess_market_regime"] = _REGIME_FIXTURE
-    if _c["mod"] in ("calc_indicators", "calc_technical_score", "calc_relative_strength"):
+    if _c["mod"] in ("calc_indicators", "calc_technical_score", "calc_relative_strength", "scan_watchlist"):
         _c["extra"]["calc_indicators.get_kline_adjusted"] = F["get_kline_adjusted"]
     if _c["mod"] == "run_quant_indicator":
         _c["extra"]["run_quant_script"] = _QUANT_RESULT

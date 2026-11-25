@@ -19,7 +19,7 @@ description: |
 license: MIT
 metadata:
   author: community
-  version: "0.6.6"
+  version: "0.6.7"
   risk_level: read_only
   requires_login: true
   default_install: true
@@ -69,7 +69,7 @@ earnings calendar,market temperature,expected move,risk reversal,order flow,
 
 ### 已知限制（历史接口观测与当前实现）
 
-0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.1 修复 calc-index theta 死值（自动 BS 补算 + `theta_source` 溯源）及 chain 同行权价重复行，实证与设计见 [theta 死字段修复记录](docs/fixes-2026-11-10-theta-dead-field.md)。0.6.2 修复五项实盘验证的高优先级问题：chain 重复行权价改在 `get_option_chain` 入口统一合并(此前仅 get_option_quote 自保，其余按行权价取首个匹配行的脚本会随机拿到零值/垃圾值)、入场规则支撑阻力聚类(高低点分开、簇宽受限、按区间取止损与目标)、财务健康科目名的币种后缀匹配、IV/HV 期限对齐、分析师共识取最新快照与共识目标价，见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项中优先级问题:盘中未收盘 K 线的成交量不再用于量比(技术指标、技术评分、入场规则)、期权到期损益的零成交腿不再按零成本、常规时段之外的现价取延长时段最新价并标注来源、半日市不再被 D12 当作休市日、美股空头成交占比不再套用港股阈值或参与仪表盘计分、盘口可见档位不足时不下结论,见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。0.6.4 修复低优先级审计项:GEX 改用合约 IV 的 BS gamma 优先(避免服务端 3 位小数把虚值腿舍入成 0)、组合 Greeks 传导 `theta_source` 拒绝 `dead_zero` 伪有利衰减、A/H 溢价日期改用港股时区、估值同行排名改取 `industry-valuation dist` 全行业数据、Put/Call 墙与剖面自适应间距、美股规则半日市 T 按 13:00 ET 收盘、温度档位统一为 70/50/30、异动榜涨跌幅百分比格式化,见 [0.6.4 修复记录](docs/fixes-2026-11-25-low-priority.md)。0.6.5 修复美股盘前实盘抽检（`AAPL.US`/`MSFT.US`/`BRK.B.US`）发现的四组问题:`get_trade_stats` 服务端 50 档截断防护与全样本买卖比、`get_option_volatility`/`analyze_buy_sell` 跳过尚无 IV 的新挂牌周链并统一前复权 HV、美股节假日与延长时段边界（`VWAP --session all`、异动打分延长时段涨跌幅、Expected Move/期限结构常规时段 ATM 对齐）、多点号代码与窄止损告警及选股器 `--count`,见 [0.6.5 实盘抽检修复记录](docs/fixes-2026-11-25-us-live-spotcheck.md)。0.6.6 新增大盘环境引擎 `get_market_regime.py`（`.VIX.US`+`SPY`/`QQQ`+3星Tier-1宏观）并接入买卖仪表盘/简报/入场军规，修复 `get_macro_calendar` 星级与日期，打通 `check_entry_rules` 的 `B8`/`D11`/`D6` 自动分诊及 `longbridge 0.32.0` 批量容错,见 [0.6.6 开发记录](docs/feat-2026-11-25-v066-regime-macro-autorules.md)。
+0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.1 修复 calc-index theta 死值（自动 BS 补算 + `theta_source` 溯源）及 chain 同行权价重复行，实证与设计见 [theta 死字段修复记录](docs/fixes-2026-11-10-theta-dead-field.md)。0.6.2 修复五项实盘验证的高优先级问题：chain 重复行权价改在 `get_option_chain` 入口统一合并(此前仅 get_option_quote 自保，其余按行权价取首个匹配行的脚本会随机拿到零值/垃圾值)、入场规则支撑阻力聚类(高低点分开、簇宽受限、按区间取止损与目标)、财务健康科目名的币种后缀匹配、IV/HV 期限对齐、分析师共识取最新快照与共识目标价，见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项中优先级问题:盘中未收盘 K 线的成交量不再用于量比(技术指标、技术评分、入场规则)、期权到期损益的零成交腿不再按零成本、常规时段之外的现价取延长时段最新价并标注来源、半日市不再被 D12 当作休市日、美股空头成交占比不再套用港股阈值或参与仪表盘计分、盘口可见档位不足时不下结论,见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。0.6.4 修复低优先级审计项:GEX 改用合约 IV 的 BS gamma 优先(避免服务端 3 位小数把虚值腿舍入成 0)、组合 Greeks 传导 `theta_source` 拒绝 `dead_zero` 伪有利衰减、A/H 溢价日期改用港股时区、估值同行排名改取 `industry-valuation dist` 全行业数据、Put/Call 墙与剖面自适应间距、美股规则半日市 T 按 13:00 ET 收盘、温度档位统一为 70/50/30、异动榜涨跌幅百分比格式化,见 [0.6.4 修复记录](docs/fixes-2026-11-25-low-priority.md)。0.6.5 修复美股盘前实盘抽检（`AAPL.US`/`MSFT.US`/`BRK.B.US`）发现的四组问题:`get_trade_stats` 服务端 50 档截断防护与全样本买卖比、`get_option_volatility`/`analyze_buy_sell` 跳过尚无 IV 的新挂牌周链并统一前复权 HV、美股节假日与延长时段边界（`VWAP --session all`、异动打分延长时段涨跌幅、Expected Move/期限结构常规时段 ATM 对齐）、多点号代码与窄止损告警及选股器 `--count`,见 [0.6.5 实盘抽检修复记录](docs/fixes-2026-11-25-us-live-spotcheck.md)。0.6.6 新增大盘环境引擎 `get_market_regime.py`（`.VIX.US`+`SPY`/`QQQ`+3星Tier-1宏观）并接入买卖仪表盘/简报/入场军规，修复 `get_macro_calendar` 星级与日期，打通 `check_entry_rules` 的 `B8`/`D11`/`D6` 自动分诊及 `longbridge 0.32.0` 批量容错,见 [0.6.6 开发记录](docs/feat-2026-11-25-v066-regime-macro-autorules.md)。0.6.7 新增进程内只读 CLI TTL 缓存（默认 15s，`LBR_CACHE_TTL=0` 可关闭）与并发锁节流、批量自选股/持仓扫描器 `scan_watchlist.py`（`--fast`/`--full`），并为 `check_entry_rules.py` 与扫描器接入按单笔风险%与仓位上限算股数的风险定仓计算器（支持 `--capital` 与只读 `--use-account`）,见 [0.6.7 开发记录](docs/feat-2026-11-25-v067-scanner-cache-sizing.md)。
 1. **`option quote` 单合约查询返回空** → 原生 Greeks/OI 改经 calc-index 按合约获取,Black-Scholes 作回退
 2. **`option chain` 无法查历史** → IV Rank/Percentile 靠 `get_iv_history.py` 本地累积,需多日运行
 3. **仅支持美股 OPRA** → 港股/A 股期权数据可能为空(港股衍生品用 `warrant` 涡轮)
@@ -628,14 +628,24 @@ python scripts/decision/analyze_buy_sell.py AAPL.US [--no-regime] [--json]
 - 现价为最新时段的价格:盘前/盘后/夜盘运行时取延长时段最新价,并标注来源和常规时段收盘价(JSON `underlying_price_source`)
 - 信号补充:内部人交易/13F变动/基金持仓可作额外独立参考(get_insider_trades 等)
 
-#### 入场纪律检查器(28条军规)
+#### 入场纪律检查器(28条军规) + 风险定仓计算器
 ```bash
 python scripts/decision/check_entry_rules.py AAPL.US [--strict-regime] [--no-regime] [--json]
-python scripts/decision/check_entry_rules.py 0700.HK --max-stop-pct 6 --lookback 60
+python scripts/decision/check_entry_rules.py AAPL.US --capital 50000 --risk-pct 1.0 --max-pos-pct 20.0
+python scripts/decision/check_entry_rules.py 0700.HK --use-account --max-stop-pct 6 --lookback 60
 python scripts/decision/check_entry_rules.py TSLA.US --recent-stopout yes --familiar no \
     --sector-top-decline no --prepost-move no --sector-breakout yes
 python scripts/decision/check_entry_rules.py --demo     # 离线自检,无需登录
 ```
+- **风险定仓计算器**：传入 `--capital <总资金>` 或 `--use-account`（只读 `assets` + `max-qty`）后，按 `min(总资金×risk_pct/(入场价-止损价), 总资金×max_pos_pct/入场价)` 并按市场每手股数取整直接给出建议买入股数、最大止损金额与购买力告警。
+
+#### 自选股 / 持仓批量扫描器
+```bash
+python scripts/decision/scan_watchlist.py [--group 核心池] [--capital 50000] [--json]
+python scripts/decision/scan_watchlist.py --positions --full --use-account
+python scripts/decision/scan_watchlist.py AAPL.US MSFT.US NVDA.US --only-setups
+```
+- 采用「1 次批量 quote + 每市场 1 次 Regime + 受控并发线程 + `15s` 进程内只读 CLI 缓存（`LBR_CACHE_TTL=0` 可关）」，`--fast` 秒级扫全自选技术分/买点结构/止损盈亏比/财报，`--full` 叠加完整六维仪表盘评分。
 - 把纪律清单变成可执行判定:**下跌12不买(D1-D12) + 上涨6不买(U1-U6) +
   候选买点检查10条(B0-B9,含盈亏比闸门 B0 最低 1:1)**
 - 每条规则给出状态和证据；汇总区分不买、必要条件待确认、纪律通过和观望。形态匹配不能绕过未确认闸门
@@ -876,7 +886,8 @@ longbridge-pro/
     │   └── get_trade_stats.py          # 量价分布(POC/Value Area)
     ├── decision/              # ⑨ 买卖决策
     │   ├── analyze_buy_sell.py         # 方向评分与事件风险仪表盘(旗舰)
-    │   └── check_entry_rules.py        # 入场纪律检查器(28条军规)
+    │   ├── check_entry_rules.py        # 入场纪律检查器(28条军规+风险定仓)
+    │   └── scan_watchlist.py           # 自选股/持仓批量扫描器(--fast/--full)
     └── screener/              # ⑩ 选股器
         └── run_screener.py             # 预设策略/自定义条件/指标发现
 ```

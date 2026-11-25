@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
@@ -18,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from typing import Any, Iterable
@@ -91,15 +93,95 @@ def find_longbridge_cli() -> str:
 
 _MIN_INTERVAL = 0.11  # ≈ 9 次/秒,留余量
 _last_call_ts = 0.0
+_THROTTLE_LOCK = threading.Lock()
 
 
 def _throttle() -> None:
     global _last_call_ts
-    now = time.monotonic()
-    wait = _MIN_INTERVAL - (now - _last_call_ts)
+    with _THROTTLE_LOCK:
+        now = time.monotonic()
+        target = max(now, _last_call_ts + _MIN_INTERVAL)
+        _last_call_ts = target
+        wait = target - now
     if wait > 0:
         time.sleep(wait)
-    _last_call_ts = time.monotonic()
+
+
+# ---------------------------------------------------------------------------
+# 进程内只读 CLI TTL 缓存(LBR_CACHE_TTL 控制,默认 15s,设 0 可禁用)
+# ---------------------------------------------------------------------------
+
+DEFAULT_CACHE_TTL = 15.0
+_CACHE_LOCK = threading.Lock()
+_CLI_CACHE: dict[tuple, tuple[float, Any]] = {}
+_KLINE_CACHE: dict[tuple, tuple[float, int, list]] = {}
+_CACHEABLE_CMDS = frozenset({
+    "quote", "kline", "option", "static", "valuation", "institution-rating",
+    "forecast-eps", "financial-report", "dividend", "finance-calendar",
+    "market-temp", "rank", "industry-rank", "industry-peers",
+    "industry-valuation", "short-trades", "short-positions", "capital",
+    "news", "watchlist", "positions", "assets",
+})
+
+
+def get_cache_ttl() -> float:
+    """读取进程内只读缓存有效期(秒);LBR_CACHE_TTL=0 可关闭。"""
+    raw = os.environ.get("LBR_CACHE_TTL")
+    if raw is None or not str(raw).strip():
+        return DEFAULT_CACHE_TTL
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_CACHE_TTL
+    if not math.isfinite(val) or val <= 0:
+        return 0.0
+    return val
+
+
+def clear_cli_cache() -> None:
+    """清空进程内 CLI 缓存(供测试或需要强制刷新时调用)。"""
+    with _CACHE_LOCK:
+        _CLI_CACHE.clear()
+        _KLINE_CACHE.clear()
+
+
+def _is_cacheable_cli_call(args: tuple[str, ...], fmt: str) -> bool:
+    if fmt != "json" or not args:
+        return False
+    cmd = str(args[0])
+    if cmd == "watchlist":
+        return len(args) == 1 or (len(args) >= 2 and args[1] == "show")
+    return cmd in _CACHEABLE_CMDS
+
+
+def _parse_kline_cache_args(args: tuple[str, ...]) -> tuple[tuple, int] | None:
+    if len(args) < 2 or args[0] != "kline" or "history" in args:
+        return None
+    sym = str(args[1]).upper()
+    period, adjust, session, count = "day", "none", "intraday", 100
+    i = 2
+    while i < len(args):
+        tok = args[i]
+        if tok == "--period" and i + 1 < len(args):
+            period = str(args[i + 1])
+            i += 2
+        elif tok == "--adjust" and i + 1 < len(args):
+            adjust = str(args[i + 1])
+            i += 2
+        elif tok == "--session" and i + 1 < len(args):
+            session = str(args[i + 1])
+            i += 2
+        elif tok == "--count" and i + 1 < len(args):
+            try:
+                count = int(args[i + 1])
+            except (TypeError, ValueError):
+                return None
+            i += 2
+        else:
+            return None
+    if count <= 0:
+        return None
+    return (id(subprocess.run), sym, period, adjust, session), count
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +199,7 @@ def run_cli(
     check_auth: bool = True,
     retries: int = 2,
     allow_partial: bool = False,
+    use_cache: bool = True,
 ) -> Any:
     """调用 longbridge CLI,返回解析后的 Python 对象。
 
@@ -128,6 +211,7 @@ def run_cli(
         allow_partial: CLI >= 0.31.1 批量查询(quote / calc-index)混入未知代码时
             会以非 0 退出码退出,同时在 stdout 输出其余有效标的的非空 JSON 数组;
             设为 True 时保留这部分有效结果而不是整体抛错。
+        use_cache: 是否启用短生命周期进程内只读缓存(默认 True;受 LBR_CACHE_TTL 控制)。
 
     Returns:
         json 模式返回 dict/list/None;raw 模式返回字符串
@@ -135,10 +219,40 @@ def run_cli(
     Raises:
         LongbridgeCliError: 调用失败
     """
+    ttl = get_cache_ttl() if use_cache else 0.0
+    cacheable = ttl > 0 and _is_cacheable_cli_call(args, fmt)
+    run_id = id(subprocess.run)
+    cache_key = (run_id, fmt, tuple(args))
+    kline_meta = _parse_kline_cache_args(args) if cacheable else None
+    if cacheable:
+        now_m = time.monotonic()
+        with _CACHE_LOCK:
+            hit = _CLI_CACHE.get(cache_key)
+            if hit and now_m < hit[0]:
+                return copy.deepcopy(hit[1])
+            if kline_meta is not None:
+                kk, req_n = kline_meta
+                khit = _KLINE_CACHE.get(kk)
+                if khit and now_m < khit[0] and khit[1] >= req_n and len(khit[2]) >= req_n:
+                    return copy.deepcopy(khit[2][-req_n:])
+
     exe = find_longbridge_cli()
     full_args = [exe, *args]
     if fmt == "json" and "--format" not in args and "-o" not in args:
         full_args += ["--format", "json"]
+
+    def _store_cache(parsed_val: Any) -> Any:
+        if cacheable and parsed_val is not None:
+            exp = time.monotonic() + ttl
+            snap = copy.deepcopy(parsed_val)
+            with _CACHE_LOCK:
+                _CLI_CACHE[cache_key] = (exp, snap)
+                if kline_meta is not None and isinstance(parsed_val, list):
+                    kk, req_n = kline_meta
+                    prev = _KLINE_CACHE.get(kk)
+                    if not prev or time.monotonic() >= prev[0] or req_n >= prev[1]:
+                        _KLINE_CACHE[kk] = (exp, req_n, snap)
+        return parsed_val
 
     last_err: str | None = None
     for attempt in range(retries + 1):
@@ -194,13 +308,13 @@ def run_cli(
         if not stripped:
             return None
         try:
-            return json.loads(stripped)
+            return _store_cache(json.loads(stripped))
         except json.JSONDecodeError:
             # 有时 CLI 会把非 JSON 内容(进度条/警告)混在前面,尝试提取首个 JSON 结构
             for i, ch in enumerate(stripped):
                 if ch in "[{":
                     try:
-                        return json.loads(stripped[i:])
+                        return _store_cache(json.loads(stripped[i:]))
                     except json.JSONDecodeError:
                         break
             # 整体不是 JSON:可能 token 失效时 CLI 以退出码 0 输出错误文本
@@ -804,6 +918,9 @@ def get_batch_quotes(symbols: list[str], batch_size: int = 20) -> dict[str, dict
             unique.append(s)
     if not unique:
         return {}
+    ttl = get_cache_ttl()
+    run_id = id(subprocess.run)
+    req_by_upper = {s.upper(): s for s in unique}
     out: dict[str, dict] = {}
     for i in range(0, len(unique), batch_size):
         chunk = unique[i:i + batch_size]
@@ -816,10 +933,17 @@ def get_batch_quotes(symbols: list[str], batch_size: int = 20) -> dict[str, dict
             continue
         if is_empty(data) or not isinstance(data, list):
             continue
+        exp = time.monotonic() + ttl if ttl > 0 else 0.0
         for row in data:
             rec = _parse_quote_record(row)
             if rec:
-                out[rec["symbol"].upper()] = rec
+                up = rec["symbol"].upper()
+                out[up] = rec
+                if ttl > 0 and isinstance(row, dict):
+                    req_sym = req_by_upper.get(up, rec["symbol"])
+                    with _CACHE_LOCK:
+                        for sym_k in {rec["symbol"], up, req_sym}:
+                            _CLI_CACHE[(run_id, "json", ("quote", sym_k))] = (exp, [copy.deepcopy(row)])
     return out
 
 
@@ -2620,6 +2744,137 @@ def get_ah_premium_intraday(symbol: str) -> list[dict]:
     if is_empty(data) or not isinstance(data, dict):
         return []
     return normalize_records(data.get("klines", []))
+
+
+# ---- 模块⑨补充:只读自选股 / 持仓 / 账户资产 / 可买上限 ----
+
+_OPTION_SYM_RE = re.compile(r"^[A-Z]+\d{6}[CP]\d+(?:\.[A-Z]+)?$")
+
+
+def is_equity_symbol(symbol: Any, asset_type: Any = None) -> bool:
+    """判断代码是否为正股/ETF(排除期权、指数点前缀、加密 .HAS 及港股 5 位涡轮牛熊证)。"""
+    s = str(symbol or "").strip().upper()
+    if not s or s.startswith(".") or s.endswith(".HAS"):
+        return False
+    at = str(asset_type or "").strip().upper()
+    if at and at not in ("STOCK", "EQUITY", "ETF"):
+        return False
+    if _OPTION_SYM_RE.match(s):
+        return False
+    ticker, mkt = parse_underlying(s)
+    if mkt == "HK" and ticker.isdigit() and len(ticker) == 5 and ticker[0] in ("1", "2", "5", "6"):
+        return False
+    return True
+
+
+def get_watchlist_groups(group: str | None = None, market: str | None = None) -> list[dict]:
+    """获取只读自选股分组与成分。
+
+    Args:
+        group: 可选分组 ID 或名称(不区分大小写子串匹配)
+        market: 可选市场过滤 US|HK|CN|SG(None/ALL 不过滤)
+    """
+    data = run_cli("watchlist")
+    if is_empty(data) or not isinstance(data, list):
+        return []
+    mkt_filter = market.strip().upper() if (market and market.strip().upper() != "ALL") else None
+    grp_filter = str(group).strip() if group is not None and str(group).strip() else None
+    out = []
+    for g in data:
+        if not isinstance(g, dict):
+            continue
+        gid = str(g.get("id") or "").strip()
+        gname = str(g.get("name") or "").strip()
+        if grp_filter:
+            if grp_filter != gid and grp_filter.lower() not in gname.lower():
+                continue
+        secs = []
+        for s in normalize_records(g.get("securities") or []):
+            sym = str(s.get("symbol") or "").strip()
+            if not is_equity_symbol(sym):
+                continue
+            smkt = str(s.get("market") or parse_underlying(sym)[1]).upper()
+            if mkt_filter and smkt != mkt_filter:
+                continue
+            secs.append(s)
+        out.append({"id": g.get("id"), "name": gname, "securities": secs})
+    return out
+
+
+def get_stock_positions(market: str | None = None) -> list[dict]:
+    """获取当前账户只读正股/ETF 持仓(过滤期权、空仓与衍生品)。"""
+    data = run_cli("positions")
+    if is_empty(data) or not isinstance(data, list):
+        return []
+    mkt_filter = market.strip().upper() if (market and market.strip().upper() != "ALL") else None
+    out = []
+    for r in normalize_records(data):
+        sym = str(r.get("symbol") or "").strip()
+        if not is_equity_symbol(sym, r.get("asset_type")):
+            continue
+        qty = to_float(r.get("quantity"))
+        if qty is None or abs(qty) <= 0:
+            continue
+        rmkt = str(r.get("market") or parse_underlying(sym)[1]).upper()
+        if mkt_filter and rmkt != mkt_filter:
+            continue
+        out.append(r)
+    return out
+
+
+def get_account_assets(currency: str = "USD") -> dict:
+    """获取只读账户净资产、现金与购买力概览(兼容 v0.32.0 数组与对象结构)。"""
+    ccy = (currency or "USD").strip().upper()
+    data = run_cli("assets", "--currency", ccy)
+    if is_empty(data):
+        return {}
+    entry = None
+    if isinstance(data, list):
+        rows = [r for r in data if isinstance(r, dict)]
+        entry = next((r for r in rows if str(r.get("currency") or "").upper() == ccy), None)
+        if entry is None and rows:
+            entry = rows[0]
+    elif isinstance(data, dict):
+        entry = data
+    if not isinstance(entry, dict):
+        return {}
+    return {
+        "currency": str(entry.get("currency") or ccy).upper(),
+        "net_assets": to_float(entry.get("net_assets")),
+        "total_cash": to_float(entry.get("total_cash")),
+        "buy_power": to_float(entry.get("buy_power")),
+        "remaining_finance_amount": to_float(entry.get("remaining_finance_amount")),
+        "risk_level": entry.get("risk_level"),
+    }
+
+
+def estimate_max_purchase_qty(symbol: str, price: float) -> dict:
+    """估算当前账户按指定限价单可买的最大股数(只读 max-qty)。"""
+    px = to_float(price)
+    if px is None or not math.isfinite(px) or px <= 0:
+        raise ValueError("price 必须为有限正数")
+    px_str = f"{px:.4f}".rstrip("0").rstrip(".") or f"{px:.2f}"
+    data = run_cli("max-qty", symbol, "--side", "buy", "--price", px_str)
+    cash_q = margin_q = None
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            fld = str(item.get("field") or "").strip().lower()
+            val = to_int(item.get("value"))
+            if "cash" in fld:
+                cash_q = val
+            elif "margin" in fld:
+                margin_q = val
+    elif isinstance(data, dict):
+        cash_q = to_int(data.get("cash_max_qty"))
+        margin_q = to_int(data.get("margin_max_qty"))
+    return {
+        "symbol": symbol,
+        "price": px,
+        "cash_max_qty": cash_q,
+        "margin_max_qty": margin_q,
+    }
 
 
 # ---------------------------------------------------------------------------
