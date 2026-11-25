@@ -25,6 +25,8 @@ from common import (  # noqa: E402
     get_option_chain,
     get_option_expirations,
     get_underlying_price,
+    get_underlying_price_info,
+    price_source_note,
     is_empty,
     print_display_table,
     print_error,
@@ -88,6 +90,7 @@ def analyze(symbol: str, date: str | None = None, output_json: bool = False) -> 
         "symbol": symbol,
         "expiry": date,
         "underlying_price": price,
+        "underlying_price_source": get_underlying_price_info(symbol),
         "weight_mode": mode,
         "max_pain": max_pain,
         "distance_pct": round(dist_pct, 2),
@@ -102,7 +105,7 @@ def analyze(symbol: str, date: str | None = None, output_json: bool = False) -> 
         print_json(result)
         return result
 
-    print(f"{symbol} Max Pain(到期 {date},现价 {price})")
+    print(f"{symbol} Max Pain(到期 {date},现价 {price}{price_source_note(symbol)})")
     print(f"  权重口径: {'✅ ' + '真实 OI' if mode == 'oi' else '⚠️ 成交量近似(回退)'}"
           f"({len(weights)} 档行权价)")
     print(f"  Max Pain 行权价: {max_pain}(距现价 {dist_pct:+.2f}%)")

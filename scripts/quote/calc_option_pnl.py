@@ -9,6 +9,8 @@
 
 注:本脚本计算"到期损益"(到期时的内在价值),不含时间价值。
     组合摆盘价(bid/ask)Longbridge 不提供,需用各腿 last price 估算净成本。
+    行权价当日无成交时 last=0(不是免费期权):依次改用腿内 "price"(手动指定,
+    如 {"price": 0.15})或 chain IV 反推的 BS 理论价(标注为估算),都没有则报错。
     支持正股腿(type=STOCK,成本与到期价值直接用正股价),
     可直接分析 get_option_strategy.py 生成的 COLLAR / COVERED_CALL。
 
@@ -28,8 +30,12 @@ import sys
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
 from common import (  # noqa: E402
+    bs_price,
+    days_to_years,
     get_option_chain,
     get_underlying_price,
+    get_underlying_price_info,
+    price_source_note,
     print_error,
     print_json,
     to_float,
@@ -47,7 +53,43 @@ def _intrinsic(S: float, strike: float, cp: str) -> float:
     return max(S - strike, 0) if cp == "C" else max(strike - S, 0)
 
 
-def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
+def _resolve_leg_price(row, last_key, iv_key, leg, spot, strike, cp, expiry, rate) -> tuple[float, str]:
+    """期权腿的成本价 → (价格, 来源: manual / last / bs_from_iv)。
+
+    chain 只有最新成交价、没有买卖价:行权价当日无成交时 last 为 0(实测 AAPL
+    2026-11-24 的 80 档里有 16 档),那不是"免费期权"。依次取:
+      ① 腿里显式给的 price —— 实际成交价,或自己假设的价格;
+      ② chain 的 last(> 0);
+      ③ chain IV 反推的 BS 理论价(标注为估算)。
+    都没有则报错。
+    """
+    manual = leg.get("price")
+    if manual is not None:
+        value = to_float(manual)
+        if value is None or not math.isfinite(value) or value < 0:
+            raise ValueError(f"腿 {strike} {leg.get('type')} 的 price 必须为非负有限数")
+        return value, "manual"
+    if row is None:
+        raise ValueError(
+            f"chain 中没有 {strike} {leg.get('type')} 这一档(非标准合约或已摘牌),无法取成本;"
+            f"请在该腿 JSON 里用 \"price\" 指定,如 {{\"price\": 0.15}}")
+    last = to_float(row.get(last_key))
+    if last is not None and last > 0:
+        return last, "last"
+    iv = to_float(row.get(iv_key))
+    if iv and iv > 0 and spot and spot > 0:
+        T = days_to_years(expiry)
+        if T > 0:
+            try:
+                return bs_price(spot, strike, T, rate, iv, cp), "bs_from_iv"
+            except ValueError:
+                pass
+    raise ValueError(
+        f"chain 中 {strike} {leg.get('type')} 无有效成交价(last=0,当日无成交),"
+        f"也没有可用 IV,无法估算该腿成本;请在该腿 JSON 里用 \"price\" 指定,如 {{\"price\": 0.15}}")
+
+
+def analyze_pnl(legs: list[dict], output_json: bool = False, rate: float = 0.045) -> dict:
     if not legs:
         raise ValueError("腿列表为空")
 
@@ -63,7 +105,7 @@ def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
     if not price:
         raise ValueError(f"无法获取 {underlying} 现价")
 
-    # 取各腿的 last price 作为成本/收入
+    # 各腿成本/收入:成交价 last → 腿内 price → chain IV 的 BS 估算(见 _resolve_leg_price)
     chain = get_option_chain(underlying, expiry)
     sign_map = {"BUY": 1, "SELL": -1}
 
@@ -91,23 +133,22 @@ def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
             cost = last * sign * qty * 100
             raw_costs.append(cost)
             leg_costs.append({"leg": f"{action} {qty}× 正股 @{last:.2f}",
-                              "last": last, "cost": round(cost, 2)})
+                              "last": last, "cost": round(cost, 2), "price_source": "last"})
             continue
 
         last_key = "call_last" if cp == "C" else "put_last"
-        last = None
-        for r in chain:
-            if r.get("standard") is False:
-                continue
-            s = to_float(r.get("strike"))
-            if s is not None and abs(s - strike) < 0.001:
-                last = to_float(r.get(last_key))
-                break
-        if last is None:
-            raise ValueError(f"chain 中无 {strike} 行权价的 {last_key}")
+        iv_key = "call_iv" if cp == "C" else "put_iv"
+        row = next((r for r in chain
+                    if r.get("standard") is not False
+                    and to_float(r.get("strike")) is not None
+                    and abs(to_float(r.get("strike")) - strike) < 0.001), None)
+        last, source = _resolve_leg_price(row, last_key, iv_key, leg, price, strike, cp,
+                                          expiry, rate)
         cost = last * sign * qty * 100  # 美股期权每张 100 股
         raw_costs.append(cost)
-        leg_costs.append({"leg": f"{action} {qty}× {strike} {leg['type']}", "last": last, "cost": round(cost, 2)})
+        tag = {"manual": "(手动指定价)", "bs_from_iv": "(BS估算,当日无成交)"}.get(source, "")
+        leg_costs.append({"leg": f"{action} {qty}× {strike} {leg['type']}{tag}",
+                          "last": last, "cost": round(cost, 2), "price_source": source})
 
     total_cost = math.fsum(raw_costs)
 
@@ -147,6 +188,10 @@ def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
         "underlying": underlying,
         "expiry": expiry,
         "underlying_price": price,
+        "underlying_price_source": get_underlying_price_info(underlying),
+        "cost_basis": ("各腿成本价: chain 的 last;last 无成交时依次用腿内 price(手动指定)、"
+                       "chain IV 的 BS 估算,见 legs_detail.price_source"),
+        "estimated_legs": sum(1 for lc in leg_costs if lc["price_source"] != "last"),
         "total_cost": round(total_cost, 2),
         "cost_per_share": round(total_cost / 100, 4),
         "net_credit": total_cost < 0,  # 净收入(卖方策略)
@@ -157,7 +202,8 @@ def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
         "legs_detail": leg_costs,
         "curve_points": len(curve),
         "note": "到期损益(基于各腿 last price 估算成本,不含时间价值/组合摆盘价;"
-                "最大盈亏覆盖所有非负结算价)",
+                "最大盈亏覆盖所有非负结算价。last=0(当日无成交)不算免费期权:"
+                "依次改用腿内 price 或 BS 估算,见 legs_detail.price_source)",
     }
 
     if output_json:
@@ -165,16 +211,19 @@ def analyze_pnl(legs: list[dict], output_json: bool = False) -> dict:
         return result
 
     print(f"组合损益分析({len(legs)} 腿,到期 {expiry})")
-    print(f"  正股现价: {price}")
+    print(f"  正股现价: {price}{price_source_note(underlying)}")
     print(f"  净成本:   ${total_cost} ({'净支出' if total_cost > 0 else '净收入'})")
     print(f"  盈亏平衡: {break_evens}")
     if flat_ranges:
         print(f"  盈亏平衡区间: {flat_ranges}")
     print(f"  最大盈利: {result['max_profit']}")
     print(f"  最大亏损: {result['max_loss']}")
+    if result["estimated_legs"]:
+        print(f"  ⚠️ {result['estimated_legs']} 腿无当日成交价(不是免费期权),成本为估算值,"
+              f"损益数字仅供参考")
     print(f"  各腿: ")
     for lc in leg_costs:
-        print(f"    {lc['leg']}  last={lc['last']}  成本={lc['cost']}")
+        print(f"    {lc['leg']}  价={lc['last']}  成本={lc['cost']}")
     return result
 
 
@@ -182,10 +231,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="期权组合到期损益分析")
     parser.add_argument("legs", help="腿列表:JSON 字符串或 .json 文件路径")
     parser.add_argument("--json", action="store_true", dest="output_json", help="输出 JSON 格式")
+    parser.add_argument("--rate", type=float, default=0.045,
+                        help="无风险利率(年化,默认 0.045),仅用于 last=0 时的 BS 估算")
     args = parser.parse_args()
     try:
         legs = _load_legs(args.legs)
-        analyze_pnl(legs, output_json=args.output_json)
+        analyze_pnl(legs, output_json=args.output_json, rate=args.rate)
     except Exception as e:
         print_error("损益分析", str(e))
         sys.exit(1)

@@ -28,6 +28,8 @@ from common import (
     get_option_chain,
     get_option_expirations,
     get_underlying_price,
+    get_underlying_price_info,
+    price_source_note,
     print_display_table,
     print_error,
     print_json,
@@ -87,6 +89,7 @@ def analyze(symbol: str, count: int = 8, output_json: bool = False) -> dict:
     result = {
         "symbol": symbol,
         "underlying_price": price,
+        "underlying_price_source": get_underlying_price_info(symbol),
         "term_structure": rows,
         "slope_pp": round(slope, 2),
         "shape": shape,
@@ -98,7 +101,7 @@ def analyze(symbol: str, count: int = 8, output_json: bool = False) -> dict:
         print_json(result)
         return result
 
-    print(f"{symbol} IV 期限结构(现价 {price})")
+    print(f"{symbol} IV 期限结构(现价 {price}{price_source_note(symbol)})")
     print_display_table(
         [{"到期日": r["expiry"], "剩余天数": r["days"], "ATM": r["atm_strike"],
           "Call IV": r["call_iv_pct"], "Put IV": r["put_iv_pct"], "ATM IV": r["atm_iv_pct"]}

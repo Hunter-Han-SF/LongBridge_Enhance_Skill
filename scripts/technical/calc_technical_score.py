@@ -106,6 +106,8 @@ def _score_volume(ind: dict) -> tuple[float, list[str]]:
     elif vr is not None and vr >= 0.8:
         s += 3
         notes.append(f"量比 {vr:.2f}(温和)+3")
+    elif ind.get("intraday_bar"):
+        notes.append("量比 当日未收盘,未计分 +0")
     m = ind.get("mfi14")
     if m is not None:
         if 40 <= m <= 80:
@@ -166,7 +168,10 @@ def score(symbol: str, count: int = 300, output_json: bool = False,
         "量能": _score_volume(ind),
         "位置": _score_position(ind),
     }
-    total = round(sum(d[0] for d in dims.values()), 1)
+    raw = sum(d[0] for d in dims.values())
+    # 当日未收盘时量比(5 分)无法评估:按可得满分折算,避免盘中总分被系统性压低 5 分
+    basis = 95 if ind.get("intraday_bar") else 100
+    total = round(raw / basis * 100, 1)
     if total >= 70:
         label = "🔥 强势"
     elif total >= 50:
@@ -182,6 +187,9 @@ def score(symbol: str, count: int = 300, output_json: bool = False,
         "technical_score": total,
         "label": label,
         "max_score": 100,
+        "raw_score": round(raw, 1),
+        "score_basis": basis,
+        "intraday_bar": bool(ind.get("intraday_bar")),
         "dimensions": {
             name: {"score": d[0], "detail": d[1]} for name, d in dims.items()
         },
@@ -197,6 +205,8 @@ def score(symbol: str, count: int = 300, output_json: bool = False,
 
     print(f"{symbol} 技术面综合评分")
     print(f"  总分: {total}/100  {label}")
+    if result["intraday_bar"]:
+        print("  (当日 K 线未收盘: 量比未计分,总分按可得满分 95 折算;OBV / MFI 截至上一根收盘)")
     for name, d in dims.items():
         print(f"  [{name}] {d[0]:.0f} 分")
         for n in d[1]:

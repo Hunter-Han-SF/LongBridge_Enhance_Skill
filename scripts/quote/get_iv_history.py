@@ -34,6 +34,7 @@ from common import (  # noqa: E402
     get_underlying_price,
     print_error,
     print_json,
+    regular_session_price,
     to_float,
 )
 
@@ -77,7 +78,10 @@ IV_TENOR_DAYS = 30
 
 def get_current_atm_iv(symbol: str) -> tuple[float | None, dict | None]:
     """按期限插值总方差，返回恒定 30 日 ATM IV。"""
-    spot = get_underlying_price(symbol)
+    latest = get_underlying_price(symbol)
+    # chain 的 IV 是上一个常规时段的:盘前/盘后/夜盘运行时要用常规时段的 last 选 ATM,
+    # 否则今天的样本会按延长时段的价格选行权价,与 IV 不在同一时点(见 common.regular_session_price)
+    spot = regular_session_price(symbol, latest)
     if not spot or spot <= 0:
         return None, None
     expirations = get_option_expirations(symbol)

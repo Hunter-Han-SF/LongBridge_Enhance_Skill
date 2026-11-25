@@ -25,6 +25,8 @@ from common import (  # noqa: E402
     get_chain_oi,
     get_option_expirations,
     get_underlying_price,
+    get_underlying_price_info,
+    price_source_note,
     print_display_table,
     print_error,
     print_json,
@@ -79,6 +81,7 @@ def analyze(symbol: str, date: str | None = None, near_atm_pct: float = 0.25,
         "symbol": symbol,
         "expiry": date,
         "underlying_price": price,
+        "underlying_price_source": get_underlying_price_info(symbol),
         "strikes_queried": data["strikes_queried"],
         "total_call_oi": data["total_call_oi"],
         "total_put_oi": data["total_put_oi"],
@@ -94,7 +97,7 @@ def analyze(symbol: str, date: str | None = None, near_atm_pct: float = 0.25,
         print_json(result)
         return result
 
-    print(f"{symbol} 期权 OI 分布(到期 {date},现价 {price},查询 {data['strikes_queried']} 档)")
+    print(f"{symbol} 期权 OI 分布(到期 {date},现价 {price}{price_source_note(symbol)},查询 {data['strikes_queried']} 档)")
     print(f"  Call OI 合计: {data['total_call_oi']:,}   Put OI 合计: {data['total_put_oi']:,}"
           f"   P/C OI 比率: {pc} → {pc_label}")
     if put_wall:

@@ -26,6 +26,8 @@ sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath
 from common import (  # noqa: E402
     get_dividend_history,
     get_underlying_price,
+    get_underlying_price_info,
+    price_source_note,
     market_date,
     print_display_table,
     print_error,
@@ -134,6 +136,7 @@ def analyze(symbol: str, output_json: bool = False, quiet: bool = False) -> dict
     result = {
         "symbol": symbol,
         "price": price,
+        "underlying_price_source": get_underlying_price_info(symbol),
         "currency": currency,
         "quote_currency": quote_currency,
         "quote_currency_source": "market_counter_convention" if quote_currency else None,
@@ -157,7 +160,7 @@ def analyze(symbol: str, output_json: bool = False, quiet: bool = False) -> dict
     if quiet:
         return result
 
-    print(f"{symbol} 股息质量(现价 {price} {quote_currency or ''}，截至 {as_of})")
+    print(f"{symbol} 股息质量(现价 {price} {quote_currency or ''}{price_source_note(symbol)}，截至 {as_of})")
     yield_text = f"{ttm_yield:.2f}%" if ttm_yield is not None else "N/A"
     print(f"  TTM 股息: 每股 {result['ttm_dividend_per_share']} {currency or ''} → 股息率 {yield_text}")
     print(f"  连续分红: {consecutive} 年 | 最新年增长: "

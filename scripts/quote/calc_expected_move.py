@@ -25,6 +25,8 @@ from common import (  # noqa: E402
     get_option_chain,
     get_option_expirations,
     get_underlying_price,
+    get_underlying_price_info,
+    price_source_note,
     is_empty,
     print_display_table,
     print_error,
@@ -102,6 +104,7 @@ def analyze(symbol: str, date: str | None = None, show_all: bool = False,
     result = {
         "symbol": symbol,
         "underlying_price": price,
+        "underlying_price_source": get_underlying_price_info(symbol),
         "expected_moves": rows,
         "main": rows[0],
         "note": "跨式成本幅度以现价为中心展示。跨式盈亏平衡价按行权价计算，IV 标准差尺度单独列示。",
@@ -111,7 +114,7 @@ def analyze(symbol: str, date: str | None = None, show_all: bool = False,
         print_json(result)
         return result
 
-    print(f"{symbol} 隐含波动幅度(现价 {price})")
+    print(f"{symbol} 隐含波动幅度(现价 {price}{price_source_note(symbol)})")
     print()
     print_display_table(
         [{"到期日": r["expiry"], "剩余天数": r["days"], "ATM": r["atm_strike"],

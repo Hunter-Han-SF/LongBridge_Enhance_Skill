@@ -18,6 +18,12 @@ OBV(20期回归斜率)/MFI/量比/ROC/Williams %R/CCI/唐奇安/52周位置/最�
 - EMA 种子 = 前 n 个的 SMA;KDJ 种子 K=D=50;BOLL 用总体方差(ddof=0)
 - Beta 基于与基准按真实市场日期对齐后的日收益(US 默认 SPY / HK 2800 / A股 510300)；缺日期拒绝对齐，Beta=0保留。
 - 量比基准为之前5根(不含当日)，缺量不会制造缩量；唐奇安突破阈值只含前20根。
+- 当日未收盘的 K 线(0.6.3):常规时段内 `kline --period day` 会带上当日未完成的 bar
+  (实测 2026-11-24 TSLA 09:31 ET 的成交量 214 万,约为全天的 4.5%)。其成交量视为未定:
+  量比不计算(JSON `volume_ratio: null`、`intraday_bar: true`),OBV / MFI 用已收盘的 K 线,
+  技术评分按可得满分 95 折算。没有做成交量外推——开盘后的成交节奏并不均匀。
+  0.6.3 之前半天的量直接算量比,一律判成「缩量」(同一份实盘数据 0700.HK 11:00 HKT:
+  修复前量比 0.23、MFI 11.7;修复后量比不可得、MFI 24.3 截至上一根收盘)。
 - 单元测试:单边涨跌边界值、Wilder RSI 对称序列=50、BOLL 与 statistics.pstdev 一致、
   Beta(2×市场)=2 等约束全部通过
 
@@ -72,8 +78,14 @@ institution_up/down/total}`。分歧度 = (highest-lowest)/mean。
 
 ### `depth` — L2 盘口
 
-`{asks:[{position, price, volume, order_num}], bids:[...]}`(卖档价格升序,买档降序)。
-⚠️ 休市时通常只剩 1 档(最后快照),失衡指标此时参考意义有限。
+`{asks:[{position, price, volume, order_num}], bids:[...]}`,CLI 说明为最多 10 档。
+
+⚠️ **档位随行情权限而变**(2026-11-24/25 实测):美股默认行情为 LV1,只有买一/卖一各 1 档
+(AAPL、TSLA、SPY、NVDA 均如此,`order_num` 为 0),多档需美股 LV2 行情卡;港股 LV2 为 10 档。
+只有买卖一时,「最大挂单墙」恒等于买一/卖一,失衡率只是这两档挂量的对比——
+`get_orderbook_pressure.py` 在买卖两侧不足 5 档时(JSON `depth_sufficient: false`)不给失衡
+结论、挂单墙和加权中枢,只保留价差与可见挂量。0.6.3 之前把「1 档」归因于休市快照,
+并照常给出「买盘/卖盘显著占优」的结论。
 
 ### `trades` — 逐笔成交
 
@@ -185,6 +197,14 @@ longbridge broker-holding daily <SYM> --broker <ID>         # 单经纪商历史
 ⚠️ **字段名陷阱**:`short-positions` 美股文档说 `short_interest`,**实际返回字段是 `current_shares_short`**。
 - US `days_to_cover` ≥5 提示逼空风险
 - HK `cost` 是平均沽空成本价
+- **两个市场 `rate` 的含义不同**(0.6.3):实测美股 `rate = (nus_amount + ny_amount) / total_amount`,
+  是 FINRA 每日空头成交报告里带空头标记的成交量占比,包含做市商对冲和提供流动性的空头成交,
+  各股常态水平不同(2026-11 实测 MSFT 23%~31%、GOOG 17%~29%、XOM 41%~49%,JNJ 八个交易日
+  里 18%~61%),高低不代表看空情绪。`get_short_sale.py` 对美股只报数值、与此前均值比较
+  (偏离 20% 以上才记高/低;JSON `ratio_basis`、每行 `prior_mean_rate`),港股才按
+  40% / 25% / 10% 分档;仪表盘资金面对美股空头成交占比只展示、不计分。美股空头持仓看
+  `short-positions`(FINRA 双周 short interest、`days_to_cover`)。实测 AAPL、JNJ 的
+  `ny_amount` 均为 0
 
 ---
 
@@ -522,7 +542,17 @@ heat-rank(D10,**返回键名是 `lists` 复数**)。规则引擎为纯函数(合
 - **D12 时区与语义**:HK 按 UTC+8,US 尝试 zoneinfo(America/New_York),失败退
   纯算法夏令时;**周末与 closed-calendar 休市日直接 clear**(港股台风临时停市
   不在日历内);**语义经用户确认(2026-09-29):「开盘前半小时不买」= 盘前
-  30 分钟(当地 9:00-9:30),不是开盘后的前 30 分钟**
+  30 分钟(当地 9:00-9:30),不是开盘后的前 30 分钟**。休市日历里的半日市条目
+  (`date_type: 半天`、`ext.holiday_type: half_day`,如 2026-11-27 感恩节翌日、12-24)
+  不算休市日(0.6.3):那天 9:30 照常开盘、只是提前 13:00 收盘,此前 D12 会在当天
+  9:00-9:30 误报「为休市日」放行
+- **入场参考价**(0.6.3):取常规时段的 last(常规时段内即实时价)。常规时段之外
+  quote 的 `last` 是上一个常规时段的收盘价,延长时段最新价在 `pre_market` / `post_market` /
+  `overnight` 块里;`get_underlying_price` 返回的是延长时段最新价,不用于日 K 规则,
+  输出以 `price_note` 提示
+- **盘中运行**(0.6.3):最后一根是当日未收盘的 bar 时,价格照用、成交量按未定处理——
+  量比显示「当日未收盘,待定」,缩量/放量类条件(D4、U1 及各买点的量能确认)按未知处理,
+  `data_quality.volume` 说明原因,收盘后复核
 - **D10 小市值**(v0.5.2):static 的 total_shares × 现价,阈值 --smallcap-usd
   默认 20 亿美元(HK 按 7.8 折算);小市值是该规则必要条件,大市值+热度+大跌
   判 clear;市值查询失败退回「触发+提示自行确认」

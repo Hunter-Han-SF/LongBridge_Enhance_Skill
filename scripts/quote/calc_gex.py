@@ -32,6 +32,8 @@ from common import (  # noqa: E402
     get_chain_oi,
     get_option_chain,
     get_underlying_price,
+    get_underlying_price_info,
+    price_source_note,
     is_empty,
     print_display_table,
     print_error,
@@ -140,6 +142,7 @@ def calc_gex(
         "symbol": symbol,
         "expiry": date,
         "underlying_price": price,
+        "underlying_price_source": get_underlying_price_info(symbol),
         "rate": rate,
         "T_years": round(T, 4),
         "weight_mode": mode,
@@ -156,7 +159,7 @@ def calc_gex(
         print_json(result)
         return result
 
-    print(f"{symbol} Gamma Exposure 分析(到期 {date},现价 {price})")
+    print(f"{symbol} Gamma Exposure 分析(到期 {date},现价 {price}{price_source_note(symbol)})")
     print(f"  权重口径: {weight_note}")
     print(f"  gamma 来源: {gamma_note}")
     print(f"  剩余时间: {T*365:.0f} 天")

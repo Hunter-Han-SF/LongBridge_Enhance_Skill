@@ -32,6 +32,8 @@ from common import (  # noqa: E402
     get_option_chain,
     get_option_expirations,
     get_underlying_price,
+    get_underlying_price_info,
+    price_source_note,
     nearest_tenor_expiry,
     print_error,
     print_json,
@@ -104,6 +106,7 @@ def analyze(
         "expiry": expiry,
         "iv_days": round(iv_days, 1),
         "underlying_price": price,
+        "underlying_price_source": get_underlying_price_info(symbol),
         "option_type": option_type,
         "implied_volatility": iv,           # 小数,如 0.234
         "iv_pct": round(iv * 100, 2),       # 百分比,如 23.4
@@ -130,7 +133,7 @@ def analyze(
         return result
 
     print(f"{symbol} 期权波动率分析(到期 {expiry},剩余 {iv_days:.1f} 天,HV 窗口 {window} 日)")
-    print(f"  正股现价:     {price}")
+    print(f"  正股现价:     {price}{price_source_note(symbol)}")
     print(f"  ATM IV({option_type}):  {result['iv_pct']}%")
     print(f"  HV({window}日年化):    {result['hv_pct'] if result['hv_pct'] is not None else 'N/A'}%")
     print(f"  IV/HV 比率:   {result['iv_hv_ratio']}")

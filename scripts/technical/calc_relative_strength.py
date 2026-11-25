@@ -40,30 +40,12 @@ DEFAULT_BENCHMARK = {"US": "SPY.US", "HK": "2800.HK", "SH": "510300.SH", "SZ": "
 
 
 def trading_date(value, symbol: str) -> date | None:
-    """Parse explicit dates or timestamped bars, using the instrument market."""
-    raw = str(value).strip()
-    if re.fullmatch(r"\d{8}", raw):
-        try:
-            return datetime.strptime(raw, "%Y%m%d").date()
-        except ValueError:
-            return None
-    if re.match(r"^\d{4}[-/]\d{2}[-/]\d{2}(?:$|[T ])", raw):
-        try:
-            dt = datetime.fromisoformat(raw.replace("/", "-").replace("Z", "+00:00"))
-            return common.market_date(symbol, dt) if dt.tzinfo else dt.date()
-        except ValueError:
-            return None
-    try:
-        ts = float(raw)
-        if not math.isfinite(ts):
-            return None
-        if abs(ts) >= 1e11:
-            ts /= 1000
-        if abs(ts) < 1e8:
-            return None
-        return common.market_date(symbol, datetime.fromtimestamp(ts, timezone.utc))
-    except (TypeError, ValueError, OverflowError, OSError):
-        return None
+    """Parse explicit dates or timestamped bars, using the instrument market.
+
+    实现已上移到 common.bar_market_date(K 线交易日解析的唯一样式),这里保留函数名
+    以兼容既有调用方。
+    """
+    return common.bar_market_date(value, symbol)
 
 
 def _dated_closes(rows: list[dict], symbol: str) -> dict:
