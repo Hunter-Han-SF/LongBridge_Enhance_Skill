@@ -1,6 +1,10 @@
 """盘口买卖压力(L2 深度失衡分析)。
 
 数据源: longbridge depth(买卖五档/多档梯子)。
+⚠️ 档位随行情权限而变:美股默认只有 LV1(买一/卖一各 1 档,2026-11-24/25 实测
+   AAPL/TSLA/SPY/NVDA 均为 1 档),港股 LV2 为 10 档。可见档位不足 MIN_DEPTH_LEVELS 时
+   不下「买盘/卖盘占优」结论、不给挂单墙和加权中枢:只有买一卖一时,「最大挂单墙」
+   恒等于买一/卖一,失衡率只是这两档挂量的对比。
 
 指标:
   - 买卖盘量比 = Σ买档挂量 / Σ卖档挂量(>1 买盘厚,<1 卖盘厚)
@@ -31,6 +35,9 @@ from common import (  # noqa: E402
 )
 
 
+MIN_DEPTH_LEVELS = 5  # 「买卖五档」:买卖两侧都至少有这么多档,失衡率/挂单墙才有意义
+
+
 def analyze(symbol: str, output_json: bool = False) -> dict:
     book = get_depth(symbol)
     bids, asks = book.get("bids", []), book.get("asks", [])
@@ -44,6 +51,8 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
         return [to_float(r.get("price")) for r in rows]
 
     bid_vols, ask_vols = _vol(bids), _vol(asks)
+    levels = min(len(bids), len(asks))
+    sufficient = levels >= MIN_DEPTH_LEVELS
     total_bid, total_ask = sum(bid_vols), sum(ask_vols)
     ratio = total_bid / total_ask if total_ask else None
     imbalance = ((total_bid - total_ask) / (total_bid + total_ask)
@@ -63,6 +72,9 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
               sum(v for p, v in zip(_px(asks), ask_vols) if p)
         center = num / den if den else None
 
+    if not sufficient:
+        bid_wall = ask_wall = center = None  # 档位不足:挂单墙/中枢不成立,不输出
+
     # 买卖价差
     spread = None
     spread_pct = None
@@ -75,6 +87,8 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
 
     if imbalance is None:
         verdict = "⚪ 无有效挂单"
+    elif not sufficient:
+        verdict = f"⚪ 报价档位不足({levels} 档),无法判断盘口压力"
     elif imbalance > 0.3:
         verdict = "🟢 买盘显著占优(下方承接厚)"
     elif imbalance > 0.1:
@@ -86,9 +100,18 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
     else:
         verdict = "⚪ 买卖盘均衡"
 
+    note = "瞬时快照,收盘后为最后盘口。挂单可随时撤单,仅反映意愿。"
+    if not sufficient:
+        note += (f"当前买卖两侧只有 {levels} 档(买 {len(bids)} / 卖 {len(asks)}),不足 {MIN_DEPTH_LEVELS} 档:"
+                 "量比与失衡率只是可见挂量的对比,不构成盘口压力结论。"
+                 "美股默认行情为 LV1(仅买一/卖一),多档需美股 LV2 行情卡;港股 LV2 为 10 档。")
+
     result = {
         "symbol": symbol,
         "levels": {"bids": len(bids), "asks": len(asks)},
+        "depth_levels": levels,
+        "depth_sufficient": sufficient,
+        "min_depth_levels": MIN_DEPTH_LEVELS,
         "total_bid_volume": total_bid,
         "total_ask_volume": total_ask,
         "bid_ask_volume_ratio": round(ratio, 2) if ratio else None,
@@ -99,7 +122,7 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
         "spread": spread,
         "spread_pct": round(spread_pct, 3) if spread_pct is not None else None,
         "verdict": verdict,
-        "note": "瞬时快照,收盘后为最后盘口。挂单可随时撤单,仅反映意愿。",
+        "note": note,
     }
 
     if output_json:
@@ -109,12 +132,12 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
     print(f"{symbol} 盘口压力(买 {len(bids)} 档 / 卖 {len(asks)} 档)")
     print(f"  买盘总量: {total_bid:,.0f}   卖盘总量: {total_ask:,.0f}   "
           f"量比: {ratio:.2f}" if ratio else "  盘口单边为空")
-    print(f"  失衡率: {imbalance:+.2f}(-1 全卖盘 ~ +1 全买盘)"
+    print(f"  失衡率: {imbalance:+.2f}(-1 全卖盘 ~ +1 全买盘){'' if sufficient else ',仅可见档位'}"
           if imbalance is not None else "  失衡率: N/A(盘口单边为空)")
     if spread is not None:
         print(f"  买卖价差: {spread}({spread_pct:.3f}%)")
     if center:
-        print(f"  挂量加权中枢: {center}")
+        print(f"  挂量加权中枢: {center:.3f}")
     if bid_wall:
         print(f"  最大买单墙: {bid_wall.get('price')} × "
               f"{(to_float(bid_wall.get('volume')) or 0):,.0f}(隐形支撑)")
@@ -122,6 +145,10 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
         print(f"  最大卖单墙: {ask_wall.get('price')} × "
               f"{(to_float(ask_wall.get('volume')) or 0):,.0f}(隐形阻力)")
     print(f"  判断: {verdict}")
+    if not sufficient:
+        hint = "(美股默认行情仅买一/卖一)" if str(symbol).upper().endswith(".US") else ""
+        print(f"  ⚠️ 可见档位不足: 买 {len(bids)} 档 / 卖 {len(asks)} 档,判断至少需 {MIN_DEPTH_LEVELS} 档;"
+              f"量比与失衡率只是这几档挂量的对比,不代表盘口压力{hint}")
     if bids:
         print()
         print("买档:")

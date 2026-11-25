@@ -23,6 +23,8 @@ from common import (  # noqa: E402
     get_option_chain,
     get_option_expirations,
     get_underlying_price,
+    get_underlying_price_info,
+    price_source_note,
     is_empty,
     print_display_table,
     print_error,
@@ -89,6 +91,7 @@ def smile(
         "symbol": symbol,
         "expiry": expiry,
         "underlying_price": price,
+        "underlying_price_source": get_underlying_price_info(symbol),
         "atm_strike": atm_strike,
         "atm_iv_pct": atm_call_iv,
         "put_skew_pp": skew,  # OTM put IV - ATM IV,单位百分点(pp)
@@ -102,7 +105,7 @@ def smile(
         print_json(result)
         return result
 
-    print(f"{symbol} 波动率微笑(到期 {expiry},现价 {price})")
+    print(f"{symbol} 波动率微笑(到期 {expiry},现价 {price}{price_source_note(symbol)})")
     print(f"  ATM 行权价: {atm_strike}  ATM IV: {atm_call_iv}%")
     print(f"  Put 偏度(OTM put - ATM): {skew} pp  → {result['skew_shape']}")
     print()

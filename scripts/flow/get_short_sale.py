@@ -11,6 +11,13 @@
      - 港股(日频HKEX): 未平仓股数 / cost(平均沽空成本)
      - days_to_cover 高 = 空头难回补,逼空风险大
 
+⚠️ 两个市场的 rate 含义不同,解读也不同:
+  - 港股: HKEX 披露的卖空成交额 / 总成交额,按 40% / 25% / 10% 分档解读
+  - 美股: FINRA 每日空头成交报告里带空头标记的成交量 / 总成交量,含做市商对冲和提供
+    流动性的空头成交;每只股票有自己的常态水平(2026-11 实测 17%~58%),绝对高低不代表
+    看空情绪 —— 只报数值、与此前均值比较,不套港股阈值。空头持仓看 --position
+    (FINRA 双周 short interest / days_to_cover)。
+
 字段差异(自动识别市场):
   美股 trades:  nus_amount/ny_amount/total_amount/rate/close
   港股 trades:  amount/balance/total_amount/rate/close
@@ -52,11 +59,34 @@ def _ts_to_date(ts) -> str:
     return datetime.fromtimestamp(n, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
-def _rate_label(rate: float) -> str:
-    """沽空比率解读。"""
+US_BASELINE_MIN_POINTS = 3  # 美股:此前至少有这么多天有效 rate,才与自身均值比较
+
+# 两个市场 rate 的口径,写进输出提醒使用者
+RATIO_BASIS = {
+    "US": ("FINRA 每日空头成交报告: 带空头标记的成交量 / 总成交量,含做市商对冲与提供流动性的"
+           "空头成交;各股有自身的常态水平(实测 17%~58%),绝对高低不代表看空情绪,"
+           "rate_label 只与此前均值比较(偏离 20% 以上才记高/低)。"
+           "空头持仓看 --position(FINRA 双周 short interest / days_to_cover)"),
+    "HK": "HKEX 披露的卖空成交额 / 总成交额;rate_label 按 40% / 25% / 10% 分档",
+}
+
+
+def _rate_label(rate: float, market: str | None = None, baseline: float | None = None) -> str:
+    """沽空比率解读。
+
+    港股(HKEX 卖空成交占比)按 40 / 25 / 10 阈值分档。美股(FINRA 空头成交量占比)含做市
+    对冲,各股常态水平不同,阈值没有意义:只报数值,并与此前均值 baseline 比较
+    (偏离 20% 以上才记高/低);没有基线时只报数值。
+    """
     if rate is None:
         return ""
     pct = rate * 100
+    if market == "US":
+        if baseline is None or baseline <= 0:
+            return f"{pct:.1f}%"
+        base_pct = baseline * 100
+        relation = "高于" if pct > base_pct * 1.2 else "低于" if pct < base_pct * 0.8 else "接近"
+        return f"{pct:.1f}%({relation}此前均值 {base_pct:.1f}%)"
     if pct >= 40:
         return f"{pct:.1f}% 🔴(做空极活跃)"
     if pct >= 25:
@@ -84,16 +114,28 @@ def _trade_mode(symbol: str, count: int, output_json: bool) -> dict:
     if is_empty(rows):
         raise ValueError(f"无沽空成交量数据。确认 {symbol} 支持沽空查询。")
 
+    is_us = market == "US" or (market is None and str(symbol).upper().endswith(".US"))
+    label_market = "US" if is_us else market
     rows = sorted(rows, key=lambda r: to_float(r.get("timestamp")) or 0)
+    seen_rates: list[float] = []  # 当前行之前的有效 rate;美股用它作自身基线
     for r in rows:
         r["date_utc"] = _ts_to_date(r.get("timestamp"))
-        r["rate_label"] = _rate_label(to_float(r.get("rate")))
+        rate = to_float(r.get("rate"))
+        baseline = None
+        if is_us and len(seen_rates) >= US_BASELINE_MIN_POINTS:
+            baseline = sum(seen_rates) / len(seen_rates)
+        r["rate_label"] = _rate_label(rate, label_market, baseline)
+        if is_us:
+            r["prior_mean_rate"] = round(baseline, 4) if baseline is not None else None
+        if rate is not None:
+            seen_rates.append(rate)
 
     rates = [to_float(r.get("rate")) for r in rows]
     timestamps = [to_float(r.get("timestamp")) for r in rows]
     dated = all(t is not None and t > 0 for t in timestamps)
     latest = rates[-1] if dated else None
-    trend = "数据不足，无法判断沽空比率趋势"
+    term = "空头成交占比" if is_us else "沽空比率"
+    trend = f"数据不足，无法判断{term}趋势"
     distinct_dates = len({r["date_utc"] for r in rows}) == len(rows)
     if len(rates) >= 6 and dated and distinct_dates:
         recent = rates[-3:]
@@ -103,11 +145,11 @@ def _trade_mode(symbol: str, count: int, output_json: bool) -> dict:
             recent_avg = sum(recent) / len(recent)
             earlier_avg = sum(earlier_valid) / len(earlier_valid)
             if recent_avg > earlier_avg * 1.2:
-                trend = "↑ 沽空比率走高"
+                trend = f"↑ {term}走高"
             elif recent_avg < earlier_avg * 0.8:
-                trend = "↓ 沽空比率走低"
+                trend = f"↓ {term}走低"
             else:
-                trend = "→ 沽空比率平稳"
+                trend = f"→ {term}平稳"
 
     result = {
         "symbol": symbol,
@@ -116,6 +158,7 @@ def _trade_mode(symbol: str, count: int, output_json: bool) -> dict:
         "points": len(rows),
         "trend": trend,
         "latest_rate": latest,
+        "ratio_basis": RATIO_BASIS["US" if is_us else "HK"],
         "valid_rate_points": sum(rate is not None for rate in rates),
         "data": rows,
     }
@@ -124,9 +167,16 @@ def _trade_mode(symbol: str, count: int, output_json: bool) -> dict:
         print_json(result)
         return result
 
-    print(f"{symbol} 日沽空成交量({market}市场,{len(rows)} 个交易日)")
+    title = "日空头成交量(FINRA)" if is_us else "日沽空成交量"
+    print(f"{symbol} {title}({market}市场,{len(rows)} 个交易日)")
     print(f"  趋势: {trend}")
-    print(f"  最新沽空比率: {_rate_label(latest) or 'N/A'}")
+    print(f"  最新{term}: "
+          f"{_rate_label(latest, label_market, rows[-1].get('prior_mean_rate')) or 'N/A'}")
+    if is_us:
+        print("  注: 美股空头成交占比 = FINRA 每日空头成交报告里带空头标记的成交量 / 总成交量,"
+              "含做市商对冲与提供流动性的空头成交;")
+        print("      各股有自身的常态水平,绝对高低不代表看空情绪,上表只与此前均值比较。"
+              "空头持仓请用 --position(FINRA 双周 short interest / days_to_cover)")
     print()
     # 列因市场而异
     if market == "US":

@@ -24,6 +24,8 @@ from common import (  # noqa: E402
     get_forecast_eps,
     get_institution_rating,
     get_underlying_price,
+    get_underlying_price_info,
+    price_source_note,
     print_display_table,
     print_error,
     print_json,
@@ -105,6 +107,7 @@ def analyze(symbol: str, output_json: bool = False, quiet: bool = False) -> dict
     result = {
         "symbol": symbol,
         "price": price,
+        "underlying_price_source": get_underlying_price_info(symbol),
         "rating": {
             "buy": ev.get("buy"), "over": ev.get("over"), "hold": ev.get("hold"),
             "under": ev.get("under"), "sell": ev.get("sell"), "total": ev.get("total"),
@@ -135,7 +138,7 @@ def analyze(symbol: str, output_json: bool = False, quiet: bool = False) -> dict
     if quiet:
         return result
 
-    print(f"{symbol} 分析师共识(现价 {price})")
+    print(f"{symbol} 分析师共识(现价 {price}{price_source_note(symbol)})")
     r = result["rating"]
     print(f"  评级分布: 买入 {r['buy']} / 跑赢 {r['over']} / 持有 {r['hold']} "
           f"/ 跑输 {r['under']} / 卖出 {r['sell']}(共 {r['total']} 家)→ {r['label']}")

@@ -204,13 +204,14 @@ class TestOrderbookCenterSameBasis(unittest.TestCase):
     def test_invalid_price_level_excluded_from_denominator(self):
         orig = gob.get_depth
         try:
+            # 五档起步才有中枢(档位不足时不下盘口结论,见 v0.6.3);买一档价格缺失,不进加权
             gob.get_depth = lambda s: {
-                "bids": [{"position": 1, "price": "", "volume": 100},
-                         {"position": 2, "price": "99", "volume": 100}],
-                "asks": [{"position": 1, "price": "101", "volume": 100}],
+                "bids": [{"position": 1, "price": "", "volume": 100}] +
+                        [{"position": i, "price": "99", "volume": 125} for i in range(2, 6)],
+                "asks": [{"position": i, "price": "101", "volume": 100} for i in range(1, 6)],
             }
             r = gob.analyze("X.US", output_json=True)
-            # (99×100 + 101×100) / 200 = 100.0;旧分母含无效档 → 66.667
+            # (99×500 + 101×500) / 1000 = 100.0;旧分母含无效档 → 90.909
             self.assertAlmostEqual(r["volume_weighted_center"], 100.0, places=6)
         finally:
             gob.get_depth = orig

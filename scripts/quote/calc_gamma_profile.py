@@ -31,7 +31,8 @@ from calc_gex import _nearest_sign_crossing  # noqa: E402
 
 from common import (  # noqa: E402
     bs_greeks, days_to_years, get_chain_oi, get_option_expirations,
-    get_underlying_price, print_display_table, print_error, print_json,
+    get_underlying_price, get_underlying_price_info, price_source_note,
+    print_display_table, print_error, print_json,
 )
 
 FLIP_T_FLOOR_DAYS = 0.5  # 避免当日到期链的 gamma 爆炸(除零)
@@ -180,6 +181,7 @@ def analyze(symbol: str, window_days: int = 60, range_pct: float = 0.20,
     result = {
         "symbol": symbol,
         "underlying_price": spot,
+        "underlying_price_source": get_underlying_price_info(symbol),
         "window_days": window_days,
         "expiries_aggregated": used,
         "legs": len(legs),
@@ -200,7 +202,7 @@ def analyze(symbol: str, window_days: int = 60, range_pct: float = 0.20,
 
     print(f"{symbol} Gamma Profile(聚合 {len(used)} 个到期日 / {window_days} 天窗口,"
           f"{len(legs):,} 条腿,总 OI {total_oi:,.0f})")
-    print(f"  现价: {spot}   总 GEX@现价: {gex_now:,.0f}")
+    print(f"  现价: {spot}{price_source_note(symbol)}   总 GEX@现价: {gex_now:,.0f}")
     print(f"  Gamma Flip(插值): {flip}")
     print(f"  机制: {regime}")
     print()

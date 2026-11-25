@@ -173,7 +173,9 @@ class TestEarningsNearest(unittest.TestCase):
     def test_unordered_takes_nearest(self):
         orig = dash.get_finance_calendar
         try:
-            base = datetime.now()
+            # 被测代码按「市场日期」取今天(_dim_event 用 common.market_date);本机时间在
+            # 跨日时段会与美东差一天(如北京时间 11-25 上午 = 美东 11-24 晚上),测试须同口径
+            base = dash.common.market_now("US")
             today = base.strftime("%Y.%m.%d")
             month_later_m = base.month % 12 + 1
             month_later_y = base.year + (1 if base.month == 12 else 0)

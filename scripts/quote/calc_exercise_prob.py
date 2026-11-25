@@ -27,6 +27,8 @@ from common import (  # noqa: E402
     days_to_years,
     get_option_chain,
     get_underlying_price,
+    get_underlying_price_info,
+    price_source_note,
     print_error,
     print_json,
     to_float,
@@ -72,6 +74,7 @@ def exercise_prob(
             "strike": strike,
             "type": "CALL" if cp == "C" else "PUT",
             "underlying_price": price,
+        "underlying_price_source": get_underlying_price_info(underlying),
             "iv_pct": round(iv * 100, 2),
             "days_to_expiry": 0,
             "exercise_prob_bs": p,
@@ -105,6 +108,7 @@ def exercise_prob(
         "strike": strike,
         "type": "CALL" if cp == "C" else "PUT",
         "underlying_price": price,
+        "underlying_price_source": get_underlying_price_info(underlying),
         "iv_pct": round(iv * 100, 2),
         "days_to_expiry": round(T * 365),
         "exercise_prob_bs": round(prob_bs * 100, 2),       # BS 闭式解(%)
@@ -117,7 +121,7 @@ def exercise_prob(
         return result
 
     print(f"行权概率: {result['occ_symbol']}")
-    print(f"  到期 {expiry}({result['days_to_expiry']:.0f}天)  现价 {price}  IV {result['iv_pct']}%")
+    print(f"  到期 {expiry}({result['days_to_expiry']:.0f}天)  现价 {price}{price_source_note(underlying)}  IV {result['iv_pct']}%")
     print(f"  BS 闭式解:   {result['exercise_prob_bs']}%")
     print(f"  |delta| 近似: {result['exercise_prob_delta']}%")
     print(f"  注: 风险中性概率,与真实世界概率不同")

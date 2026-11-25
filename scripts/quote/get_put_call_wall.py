@@ -28,6 +28,8 @@ from common import (  # noqa: E402
     get_chain_oi,
     get_option_chain,
     get_underlying_price,
+    get_underlying_price_info,
+    price_source_note,
     is_empty,
     print_display_table,
     print_error,
@@ -122,6 +124,7 @@ def analyze_walls(
         "symbol": symbol,
         "expiry": date,
         "underlying_price": price,
+        "underlying_price_source": get_underlying_price_info(symbol),
         "atm_strike": atm,
         "weight_mode": mode,
         "primary_put_wall": put_wall_top,
@@ -135,7 +138,7 @@ def analyze_walls(
         print_json(result)
         return result
 
-    print(f"{symbol} Put/Call Wall 分析(到期 {date},现价 {price})")
+    print(f"{symbol} Put/Call Wall 分析(到期 {date},现价 {price}{price_source_note(symbol)})")
     print(f"  口径: {'✅ 真实 OI' if mode == 'oi' else '⚠️ 成交量近似'}")
     print(f"  ATM 行权价: {atm}")
     print()

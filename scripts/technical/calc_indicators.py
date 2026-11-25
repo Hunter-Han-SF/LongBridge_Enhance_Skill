@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from common import (  # noqa: E402
     get_kline_adjusted,
+    kline_last_bar_in_progress,
     print_display_table,
     print_error,
     print_json,
@@ -67,6 +68,16 @@ def compute_all(symbol: str, count: int = 300) -> dict:
     if not closes or len(closes) < 30:
         raise ValueError(f"K 线数据不足,无法计算指标({symbol})")
 
+    # 当日未收盘的 bar:价格照用(盘中值),成交量未定 —— 半天的量拿去算量比会一律
+    # 判成「缩量」(2026-11-24 实测 09:30 ET 刚开盘时量比 0.07)。量比因此不可得;
+    # 依赖成交量存量的 OBV / MFI 改按已收盘的 K 线算(截至上一根收盘)。
+    intraday = bool(kline_last_bar_in_progress(klines, symbol)
+                    and rows[-1][0] == to_float(klines[-1].get("close")))
+    if intraday:
+        vols[-1] = None
+    used = len(closes) - 1 if intraday else len(closes)
+    closes_v, highs_v, lows_v, vols_v = (closes[:used], highs[:used], lows[:used], vols[:used])
+
     price = closes[-1]
 
     # 均线族
@@ -78,10 +89,10 @@ def compute_all(symbol: str, count: int = 300) -> dict:
     k9 = kdj(highs, lows, closes)
     boll = bollinger(closes)
     a = atr(highs, lows, closes)
-    ob = (obv(closes, vols) if None not in vols and any(v > 0 for v in vols[-20:])
+    ob = (obv(closes_v, vols_v) if None not in vols_v and any(v > 0 for v in vols_v[-20:])
           else {"obv": None, "slope_20": None, "rising_20": None})
-    mfi_window = vols[-14:]
-    ratio_window = vols[-6:]
+    mfi_window = vols_v[-14:]
+    ratio_window = vols[-6:]  # 含最后一根:当日未收盘时最后一根的量为 None → 量比不可得
     pos = position_in_range(highs, lows, closes)
     dc = donchian(highs, lows, 20)
     prior_dc = donchian(highs[:-1], lows[:-1], 20)
@@ -99,9 +110,10 @@ def compute_all(symbol: str, count: int = 300) -> dict:
         "atr14": a,
         "atr_pct": (a / price * 100) if a is not None and price > 0 else None,
         "obv": ob,
-        "mfi14": (mfi(highs, lows, closes, vols)
+        "mfi14": (mfi(highs_v, lows_v, closes_v, vols_v)
                   if None not in mfi_window and any(v > 0 for v in mfi_window) else None),
         "volume_ratio": volume_ratio(ratio_window) if None not in ratio_window else None,
+        "intraday_bar": intraday,
         "roc20": roc(closes, 20),
         "williams_r14": williams_r(highs, lows, closes),
         "cci20": cci(highs, lows, closes),
@@ -191,6 +203,9 @@ def show_indicators(symbol: str, count: int = 300, output_json: bool = False) ->
         return ind
 
     print(f"{symbol} 技术指标全景(现价 {ind['price']},{ind['bars']} 根日K,前复权)")
+    if ind.get("intraday_bar"):
+        print("  ⚠️ 最后一根为当日未收盘 K 线: 价格类指标为盘中值;成交量未定,量比不计算,"
+              "OBV / MFI 按已收盘 K 线(截至上一根收盘)")
     print()
     print("【均线】")
     ma_rows = [{"均线": k.upper(), "值": round(v, 2) if v is not None else "N/A",
@@ -230,8 +245,11 @@ def show_indicators(symbol: str, count: int = 300, output_json: bool = False) ->
         ob_text += f"(20期斜率{direction})"
     rows = [
         {"指标": "OBV", "值": ob_text},
-        {"指标": "MFI(14)", "值": f"{ind['mfi14']:.1f}" if ind["mfi14"] is not None else "N/A"},
-        {"指标": "量比(5日)", "值": f"{ind['volume_ratio']:.2f}" if ind["volume_ratio"] is not None else "N/A"},
+        {"指标": "MFI(14)" + (",截至上根收盘" if ind.get("intraday_bar") else ""),
+         "值": f"{ind['mfi14']:.1f}" if ind["mfi14"] is not None else "N/A"},
+        {"指标": "量比(5日)",
+         "值": (f"{ind['volume_ratio']:.2f}" if ind["volume_ratio"] is not None
+                else "N/A(当日未收盘)" if ind.get("intraday_bar") else "N/A")},
     ]
     print_display_table(rows, columns=["指标", "值"])
     print()

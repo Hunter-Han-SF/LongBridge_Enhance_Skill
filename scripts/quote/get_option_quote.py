@@ -36,6 +36,8 @@ from common import (  # noqa: E402
     get_option_contract_metrics,
     get_option_chain,
     get_underlying_price,
+    get_underlying_price_info,
+    price_source_note,
     is_empty,
     parse_underlying,
     print_error,
@@ -151,6 +153,7 @@ def get_quote(
         "strike": strike,
         "type": "CALL" if cp == "C" else "PUT",
         "underlying_price": price,
+        "underlying_price_source": get_underlying_price_info(underlying),
         "implied_volatility": iv,
         "iv_pct": round(iv * 100, 2) if iv else None,
         "open_interest": oi,
@@ -178,7 +181,7 @@ def get_quote(
     print(f"  类型: {'CALL' if cp == 'C' else 'PUT'}  行权价 {strike}  到期 {expiry}({result['days_to_expiry']:.0f}天)")
     if expired:
         print(f"  ⚠️ {result['warning']}")
-    print(f"  正股现价:    {price}")
+    print(f"  正股现价:    {price}{price_source_note(underlying)}")
     print(f"  隐含波动率:  {result['iv_pct']}%")
     print(f"  未平仓量OI:  {oi if oi is not None else 'N/A'}")
     print(f"  最新成交价:  {last}")

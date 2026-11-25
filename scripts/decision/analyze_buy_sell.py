@@ -39,7 +39,8 @@ import common
 from common import (  # noqa: E402
     calc_hv, get_atm_iv, get_capital_flow_snapshot, get_finance_calendar,
     get_kline_adjusted, get_option_chain, get_option_expirations, get_option_volume_realtime,
-    get_short_trades, get_underlying_price, nearest_tenor_expiry, print_error, print_json,
+    get_short_trades, get_underlying_price, get_underlying_price_info, nearest_tenor_expiry,
+    price_source_note, print_error, print_json,
     to_float,
 )
 from calc_technical_score import score as tech_score  # noqa: E402
@@ -101,21 +102,37 @@ def _dim_capital(symbol: str, bulls: list, bears: list) -> tuple[float | None, s
                 (bulls if ratio > 0 else bears).append(
                     f"资金: 大单净额 {amount}，占大单总流量 {ratio:+.0%}"
                 )
-        # 沽空压力
+        # 沽空: 港股卖空成交占比按阈值计分。美股是 FINRA 空头成交量占比,含做市商对冲,
+        # 各股常态水平不同(2026-11 实测 17%~58%),绝对值不反映看空情绪 —— 只展示、不计分
         try:
             st = get_short_trades(symbol, count=10)
-            latest = to_float(st["data"][-1].get("rate")) if st.get("data") else None
+            given = st.get("data") or []
+            dated = [r for r in given if to_float(r.get("timestamp"))]
+            rows = sorted(dated, key=lambda r: to_float(r["timestamp"])) if dated else list(given)
+            latest = to_float(rows[-1].get("rate")) if rows else None
             if latest is not None and 0 <= latest <= 1:
-                s = 50 if s is None else s
-                detail.append(f"沽空率 {latest:.0%}")
-                if latest >= 0.3:
-                    s -= 10
-                    bears.append(f"沽空: 最新沽空成交占比 {latest:.0%}")
-                elif latest <= 0.1:
-                    s += 5
+                is_us = st.get("market") == "US" or (
+                    st.get("market") is None and symbol.upper().endswith(".US"))
+                if is_us:
+                    earlier = [v for v in (to_float(r.get("rate")) for r in rows[:-1]) if v is not None]
+                    text = f"空头成交占比 {latest:.0%}(FINRA,含做市对冲,不计分"
+                    if len(earlier) >= 3:
+                        text += f",此前均值 {sum(earlier) / len(earlier):.0%}"
+                    detail.append(text + ")")
+                else:
+                    s = 50 if s is None else s
+                    detail.append(f"沽空率 {latest:.0%}")
+                    if latest >= 0.3:
+                        s -= 10
+                        bears.append(f"沽空: 最新沽空成交占比 {latest:.0%}")
+                    elif latest <= 0.1:
+                        s += 5
         except Exception:
             pass
-        return (max(min(s, 100), 0), ", ".join(detail)) if s is not None else (None, "无数据")
+        if s is not None:
+            return max(min(s, 100), 0), ", ".join(detail)
+        # 没有可计分的资金数据时仍带出已取得的明细(如美股空头成交占比,只展示不计分)
+        return None, ", ".join(detail) or "无数据"
     except Exception as e:
         return None, f"数据失败({str(e)[:30]})"
 
@@ -261,6 +278,7 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
     result = {
         "symbol": symbol,
         "price": price,
+        "underlying_price_source": get_underlying_price_info(symbol),
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "dimensions": dim_out,
         "composite_score": composite,
@@ -281,7 +299,7 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
         return result
 
     print(f"{'='*56}")
-    print(f"  {symbol} 买卖决策仪表盘  现价 {price}  {result['generated_at']}")
+    print(f"  {symbol} 买卖决策仪表盘  现价 {price}{price_source_note(symbol)}  {result['generated_at']}")
     print(f"{'='*56}")
     print(f"\n  综合信号: {signal}  (综合分 {composite}/100)\n")
     print(f"方向评分覆盖权重 {total_w:g}/{applicable_weight}（至少 {MIN_COVERAGE_WEIGHT}，须含技术面）")

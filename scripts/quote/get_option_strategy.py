@@ -33,6 +33,8 @@ sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath
 from common import (  # noqa: E402
     get_option_chain,
     get_underlying_price,
+    get_underlying_price_info,
+    price_source_note,
     print_error,
     print_json,
     to_float,
@@ -111,6 +113,7 @@ def build_strategy(
         "underlying": underlying,
         "expiry": expiry,
         "underlying_price": price,
+        "underlying_price_source": get_underlying_price_info(underlying),
         "atm_strike": atm,
         "otm_call_strike": otm_call,
         "otm_put_strike": otm_put,
@@ -124,7 +127,7 @@ def build_strategy(
         print_json(result)
         return result
 
-    print(f"策略: {strat}  标的 {underlying}(现价 {price})  到期 {expiry}")
+    print(f"策略: {strat}  标的 {underlying}(现价 {price}{price_source_note(underlying)})  到期 {expiry}")
     print(f"  ATM={atm}  OTM Call={otm_call}  OTM Put={otm_put}")
     print(f"  {_describe(strat)}")
     print(f"  组合腿:")

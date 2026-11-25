@@ -19,7 +19,7 @@ description: |
 license: MIT
 metadata:
   author: community
-  version: "0.6.2"
+  version: "0.6.3"
   risk_level: read_only
   requires_login: true
   default_install: true
@@ -69,7 +69,7 @@ earnings calendar,market temperature,expected move,risk reversal,order flow,
 
 ### 已知限制（历史接口观测与当前实现）
 
-0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.1 修复 calc-index theta 死值（自动 BS 补算 + `theta_source` 溯源）及 chain 同行权价重复行，实证与设计见 [theta 死字段修复记录](docs/fixes-2026-11-10-theta-dead-field.md)。0.6.2 修复五项实盘验证的高优先级问题：chain 重复行权价改在 `get_option_chain` 入口统一合并(此前仅 get_option_quote 自保，其余按行权价取首个匹配行的脚本会随机拿到零值/垃圾值)、入场规则支撑阻力聚类(高低点分开、簇宽受限、按区间取止损与目标)、财务健康科目名的币种后缀匹配、IV/HV 期限对齐、分析师共识取最新快照与共识目标价，见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。
+0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.1 修复 calc-index theta 死值（自动 BS 补算 + `theta_source` 溯源）及 chain 同行权价重复行，实证与设计见 [theta 死字段修复记录](docs/fixes-2026-11-10-theta-dead-field.md)。0.6.2 修复五项实盘验证的高优先级问题：chain 重复行权价改在 `get_option_chain` 入口统一合并(此前仅 get_option_quote 自保，其余按行权价取首个匹配行的脚本会随机拿到零值/垃圾值)、入场规则支撑阻力聚类(高低点分开、簇宽受限、按区间取止损与目标)、财务健康科目名的币种后缀匹配、IV/HV 期限对齐、分析师共识取最新快照与共识目标价，见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项中优先级问题:盘中未收盘 K 线的成交量不再用于量比(技术指标、技术评分、入场规则)、期权到期损益的零成交腿不再按零成本、常规时段之外的现价取延长时段最新价并标注来源、半日市不再被 D12 当作休市日、美股空头成交占比不再套用港股阈值或参与仪表盘计分、盘口可见档位不足时不下结论,见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。
 1. **`option quote` 单合约查询返回空** → 原生 Greeks/OI 改经 calc-index 按合约获取,Black-Scholes 作回退
 2. **`option chain` 无法查历史** → IV Rank/Percentile 靠 `get_iv_history.py` 本地累积,需多日运行
 3. **仅支持美股 OPRA** → 港股/A 股期权数据可能为空(港股衍生品用 `warrant` 涡轮)
@@ -77,8 +77,8 @@ earnings calendar,market temperature,expected move,risk reversal,order flow,
 5. ~~chain 无按行权价的 OI~~ → **已解决**:calc-index 可按合约查真实 OI + 原生 Greeks
    (Wall/GEX/MaxPain/P-C OI 均已升级真 OI 口径,成交量仅作回退;注意 OI 逐合约查询有限频成本)
 6. **broker-holding/brokers 仅港股** → 美股调用会优雅报错
-7. **short 数据 US/HK 字段不同** → 脚本按字段存在性自动识别市场
-8. **盘口/逐笔为瞬时快照** → 休市时为最后快照,逐笔价格方向样本取决于时段
+7. **short 数据 US/HK 字段不同** → 脚本按字段存在性自动识别市场;美股 `rate` 是 FINRA 空头成交量占比,含做市商对冲、各股常态水平不同(实测 17%~58%),只与自身此前均值比较,不套港股 40/25/10 阈值,也不参与仪表盘计分;空头持仓看 `--position`
+8. **盘口/逐笔为瞬时快照** → 休市时为最后快照,逐笔价格方向样本取决于时段;美股默认行情为 LV1,盘口只有买一/卖一(港股 LV2 为 10 档),买卖两侧不足 5 档时盘口脚本不给失衡结论、挂单墙和加权中枢
 9. **估值历史美股常见只有 PE** → 部分标的才有 PB/PS,脚本按实际返回处理
 10. **技术面打分权重/灯号阈值为设计选择** → 可按风格调整,输出已标注
 11. ~~`quant run` 服务端故障~~ → **已解决(pine 方案)**:Navi 路径服务端 500(实测 2026-08-21,
@@ -86,6 +86,9 @@ earnings calendar,market temperature,expected move,risk reversal,order flow,
     (JSON 模式的 events_json 不含 plot 值,CLI 0.27.1 缺口),脚本已自动解析;回测走 report_json
 12. **warrant list 的 type 字段不可信** → 真实方向以 quote 的 type 为准(Call/Bull=认购,Bear/Put=认沽),
     `get_warrant.py --enrich` 已按此处理
+13. **常规时段之外 quote 的 `last` 是昨收** → 盘前/盘后/夜盘的最新价在 `pre_market` / `post_market` / `overnight`
+    块里。各脚本的「现价」取最新时段的价格并在文本里标注来源(JSON `underlying_price_source`);
+    需要与期权链 IV、日 K 处在同一时点的场合(IV 历史选 ATM、入场规则参考价)用常规时段价
 
 ## 前提条件
 
@@ -194,6 +197,7 @@ python scripts/quote/get_iv_history.py AAPL.US --no-append
 ```
 - ⚠️ Longbridge 不提供历史 IV,靠本地累积(`~/.lbr_iv_history/<symbol>.json`)
 - 数据存到 `~/.lbr_iv_history/AAPL_US.json`
+- 选 ATM 行权价用常规时段的 last(chain 的 IV 是上一常规时段的),盘前/盘后/夜盘运行时不拿延长时段价去配
 
 #### IV Rank
 ```bash
@@ -231,6 +235,7 @@ python scripts/quote/calc_option_greeks.py legs.json
 python scripts/quote/calc_option_pnl.py '<JSON腿列表>' [--json]
 ```
 - 同标的、同到期日组合；按零价、行权价拐点和右尾斜率解析最大盈亏与盈亏平衡，扫描仅用于绘图。STOCK 数量1代表100股
+- 各腿成本价取 chain 的 last;行权价当日无成交时 last=0(不是免费期权,实测 AAPL 2026-12-04 的 80 档里有 16 档),依次改用腿内的 `"price"`(手动指定)或 chain IV 反推的 BS 理论价(`--rate`,默认 0.045),都没有则报错。`legs_detail[].price_source`(last / manual / bs_from_iv)和 `estimated_legs` 标明哪些腿是估算的
 
 #### 生成标准策略腿(8 种)
 ```bash
@@ -322,8 +327,8 @@ python scripts/flow/get_broker_holding.py 700.HK [--period rct_1|5|20|60] [--det
 ```bash
 python scripts/flow/get_short_sale.py AAPL.US [--position] [--count 20] [--json]
 ```
-- 默认:日沽空成交量比率(趋势判断)
-- `--position`:未平仓持仓(美股 days_to_cover / 港股 cost)
+- 默认:日沽空成交量比率(趋势判断)。港股(HKEX 卖空成交占比)按 40% / 25% / 10% 分档解读;美股是 FINRA 每日空头成交量占比,含做市商对冲、各股常态水平不同(实测 17%~58%),只报数值并与此前均值比较(偏离 20% 以上才记高/低),不代表看空情绪
+- `--position`:未平仓持仓(美股 days_to_cover / 港股 cost)。美股空头持仓看这里(FINRA 双周 short interest);仪表盘资金面对美股空头成交占比只展示、不计分
 
 #### 港股经纪商买卖队列(⚠️仅HK)
 ```bash
@@ -407,14 +412,14 @@ python scripts/sentiment/get_macro_data.py --code 30771936 --count 12 [--json]  
 ```bash
 python scripts/technical/calc_indicators.py AAPL.US [--count 300] [--json]
 ```
-- MA5/10/20/60/120/250、EMA、MACD、RSI、KDJ、BOLL、ATR、OBV、MFI、量比、ROC、Williams %R、CCI、52周位置、最大回撤(前复权 K 线计算)。量比以最新量除以前五根均量，基准排除最新一根；缺量保留不可用
+- MA5/10/20/60/120/250、EMA、MACD、RSI、KDJ、BOLL、ATR、OBV、MFI、量比、ROC、Williams %R、CCI、52周位置、最大回撤(前复权 K 线计算)。量比以最新量除以前五根均量，基准排除最新一根；缺量保留不可用。盘中运行时最后一根是当日未收盘的 K 线:价格类指标为盘中值,成交量未定,量比不计算(JSON `volume_ratio: null`、`intraday_bar: true`),OBV / MFI 按已收盘的 K 线计算
 - 信号:均线多空排列、MA5/20 与 MACD 金叉死叉、KDJ 超买卖、20日新高新低、年线上下
 
 #### 技术面综合评分(0-100)
 ```bash
 python scripts/technical/calc_technical_score.py AAPL.US [--json]
 ```
-- 四维:趋势(30)/动量(25)/量能(20)/位置(25),≥70 强势 / 50-70 偏多 / 30-50 偏弱
+- 四维:趋势(30)/动量(25)/量能(20)/位置(25),≥70 强势 / 50-70 偏多 / 30-50 偏弱。当日 K 线未收盘时量比不计分,总分按可得满分 95 折算(JSON `raw_score` / `score_basis`),避免盘中总分被系统性压低 5 分
 
 #### 相对强度 + Beta(vs 大盘)
 ```bash
@@ -548,7 +553,7 @@ python scripts/intraday/get_vwap_analysis.py AAPL.US [--date 20260819] [--json]
 ```bash
 python scripts/intraday/get_orderbook_pressure.py AAPL.US [--json]
 ```
-- L2 深度失衡率、买卖盘量比、最大挂单墙(隐形支撑/阻力)、加权中枢
+- L2 深度失衡率、买卖盘量比、最大挂单墙(隐形支撑/阻力)、加权中枢。买卖两侧可见档位不足 5 档时(美股默认行情仅买一/卖一)不给失衡结论、挂单墙和加权中枢,只保留价差与可见挂量(JSON `depth_sufficient: false`)
 
 #### 逐笔价格方向比(Order Flow)
 ```bash
@@ -610,6 +615,8 @@ python scripts/decision/analyze_buy_sell.py AAPL.US [--json]
 ```
 - 技术面必须可用，方向维度有效权重至少为 60 才给信号。方向权重为技术 30、估值 15、资金 20、美股期权 10、分析师 15。财报在 7 天内最多将偏多分扣 7 分至中性，单独列示且不计覆盖。
 - 输出方向维度、覆盖权重、独立事件风险、多空对照与综合信号(看多/偏多/中性/偏空/看空)
+- 资金面的沽空部分只对港股计分(卖空成交占比 ≥30% 扣 10、≤10% 加 5);美股空头成交占比含做市对冲、不代表看空情绪,只展示并标明「不计分」
+- 现价为最新时段的价格:盘前/盘后/夜盘运行时取延长时段最新价,并标注来源和常规时段收盘价(JSON `underlying_price_source`)
 - 信号补充:内部人交易/13F变动/基金持仓可作额外独立参考(get_insider_trades 等)
 
 #### 入场纪律检查器(28条军规)
@@ -631,6 +638,7 @@ python scripts/decision/check_entry_rules.py --demo     # 离线自检,无需登
   B8 自动仅配对同一市场日期的个股突破与板块涨幅；证据不齐时可用 --sector-breakout 手动确认对应日期
 - 止损距离和盈亏比使用同一入场参考价。缺实时参考价、量能或最新日 K 有效价格，以及 B0 或必要人工项待确认时，候选形态不能判为纪律通过。可用 `--target-price` 指定 B0 目标。 形态识别和方向分为启发式，未经样本外收益验证
 - 支撑/压力是**区间**:止损取最近支撑区间的下沿,目标取最近压力区间的下沿(两边都取保守一侧);现价回落进支撑区间内仍算该区间为支撑,收盘跌破区间下沿才算「跌破」,收盘站上压力区间上沿才算「突破」。0.6.2 之前高低点混在一个聚类里且逐点链式合并,一年 K 线常被并成 2~5 个巨型价位
+- 盘中运行时最后一根是当日未收盘的 K 线:价格为盘中值、成交量按未定处理 —— 量比显示「当日未收盘,待定」,缩量/放量类条件(D4、U1 及各买点的量能确认)按未知处理,收盘后复核。参考价取常规时段的 last(常规时段内即实时价),盘前/盘后/夜盘运行时会提示延长时段价未被日 K 规则采用。休市日历里的半日市(如感恩节翌日)不算休市日,D12 照常适用
 
 #### 单标的异动综合打分
 ```bash

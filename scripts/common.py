@@ -14,11 +14,12 @@ import json
 import math
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from typing import Any, Iterable
 
 # ---------------------------------------------------------------------------
@@ -703,14 +704,191 @@ def find_atm_strike(chain: list[dict], underlying_price: float) -> float | None:
     return best
 
 
-def get_underlying_price(symbol: str) -> float | None:
-    """获取正股最新价。"""
+def _parse_utc(value: Any) -> datetime | None:
+    """ISO 时间戳(如 2026-11-24T14:16:31Z)→ aware UTC;解析不了返回 None。"""
+    try:
+        moment = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
+# quote 里延长时段的三个块:盘前(04:00-09:30 ET)、盘后(16:00-20:00 ET)、夜盘(20:00-04:00 ET)
+_EXTENDED_SESSIONS = (("pre_market", "盘前"), ("post_market", "盘后"), ("overnight", "夜盘"))
+_ET_OPEN, _ET_CLOSE, _ET_HALF_DAY_CLOSE = dt_time(9, 30), dt_time(16, 0), dt_time(13, 0)
+# 本机与行情端的时钟可能差几十秒: 略晚于"此刻"的延长时段报价照常接受
+_CLOCK_SKEW = timedelta(minutes=5)
+
+
+def get_underlying_quote(symbol: str) -> dict | None:
+    """正股报价摘要(一次 quote 调用)。
+
+    ⚠️ 实测(2026-11-24):常规时段之外 `last` 是上一个常规时段的收盘价,盘前/盘后/
+    夜盘的最新价在 pre_market / post_market / overnight 三个块里(各带 UTC 时间戳)。
+    只读 `last` 会把昨收当成"现价"。
+
+    Returns:
+        {symbol, market, regular_price, regular_prev_close,
+         extended: [{source, source_label, price, time}]}   # extended 按时间升序,
+        只含价格为正且时间戳可解析的时段;无数据返回 None
+    """
     data = run_cli("quote", symbol)
-    if is_empty(data) or not isinstance(data, list):
+    if is_empty(data) or not isinstance(data, list) or not data:
         return None
-    if not data:
+    quote = data[0] if isinstance(data[0], dict) else {}
+    extended = []
+    for key, label in _EXTENDED_SESSIONS:
+        block = quote.get(key)
+        if not isinstance(block, dict):
+            continue
+        price = to_float(block.get("last"))
+        moment = _parse_utc(block.get("timestamp"))
+        if price is not None and price > 0 and moment is not None:
+            extended.append({"source": key, "source_label": label, "price": price, "time": moment})
+    extended.sort(key=lambda item: item["time"])
+    return {
+        "symbol": symbol,
+        "market": symbol.upper().rsplit(".", 1)[-1] if "." in symbol else "US",
+        "regular_price": to_float(quote.get("last")),
+        "regular_prev_close": to_float(quote.get("prev_close")),
+        "extended": extended,
+    }
+
+
+def _regular_session_state(market: str, now: datetime, extended: list[dict]) -> tuple[bool, datetime | None]:
+    """→ (常规时段是否进行中, 最近一次常规收盘的时刻)。now 为市场当地时间。
+
+    只有美股的 quote 带延长时段块,其他市场按常规时段处理(返回 (False, None))。
+    收盘时刻按周一至周五推算、不查休市日历:休市日没有更新的延长时段报价,
+    「晚于收盘」这一条件自然不成立,不会误用旧报价。
+    """
+    if market != "US":
+        return False, None
+    if now.tzinfo is None:
+        now = market_now(market, now=now)
+    in_session = now.weekday() < 5 and _ET_OPEN <= now.time() < _ET_CLOSE
+    now_utc = now.astimezone(timezone.utc)
+    for item in extended:
+        stamp = item["time"].astimezone(now.tzinfo)
+        # 半日市 13:00 收盘后当天就会出现盘后报价 → 常规时段已结束
+        if (item["source"] == "post_market" and stamp.date() == now.date()
+                and stamp.time() >= _ET_HALF_DAY_CLOSE and item["time"] <= now_utc + _CLOCK_SKEW):
+            in_session = False
+    close = now.replace(hour=_ET_CLOSE.hour, minute=_ET_CLOSE.minute, second=0, microsecond=0)
+    while close > now or close.weekday() >= 5:
+        close -= timedelta(days=1)
+    return in_session, close
+
+
+def latest_underlying_price(quote: dict | None, now: datetime | None = None) -> tuple[float | None, dict | None]:
+    """从报价摘要取最新价 → (价格, 来源信息)。
+
+    常规时段内就是 last;常规时段之外(盘后、夜盘、次日盘前),延长时段里确实晚于
+    最近一次常规收盘的报价比 last 新,取其中时间最新的一笔。期权链的 IV 仍是上一
+    常规时段的,但价内外、ATM、GEX@现价这些以现价为基准的量应当用最新价。
+    """
+    if not quote:
+        return None, None
+    regular = quote.get("regular_price")
+    market = quote.get("market") or "US"
+    current = now if now is not None else market_now(market)
+    if current.tzinfo is None:
+        current = market_now(market, now=current)
+    extended = quote.get("extended") or []
+    in_session, last_close = _regular_session_state(market, current, extended)
+    chosen = None
+    if not in_session and last_close is not None:
+        now_utc = current.astimezone(timezone.utc)
+        for item in extended:
+            if last_close < item["time"] <= now_utc + _CLOCK_SKEW:
+                chosen = item
+    if chosen is not None:
+        return chosen["price"], {
+            "price": chosen["price"], "source": chosen["source"],
+            "source_label": chosen["source_label"], "time": chosen["time"],
+            "regular_price": regular,
+        }
+    if regular is None:
+        return None, None
+    return regular, {"price": regular, "source": "regular", "source_label": "常规时段",
+                     "time": None, "regular_price": regular}
+
+
+_LAST_PRICE_INFO: dict[str, dict] = {}
+
+
+def get_underlying_price(symbol: str, *, session: str = "latest") -> float | None:
+    """获取正股价格。
+
+    session="latest"(默认): 常规时段内为 last;盘后/夜盘/盘前若延长时段有更新的
+      报价则用它(实测 2026-11-24 盘前: last=349.08 是昨收,pre_market.last=347.80)。
+    session="regular": 只取常规时段的 last —— 需要让价格与期权链 IV、日 K 处在同一
+      时点时用(IV 历史采样、按日 K 判定的入场规则),避免拿盘前价去配昨天的 IV。
+
+    每次调用都会请求 CLI(不缓存价格)。价格来源用 get_underlying_price_info /
+    price_source_note 取,它们只读不请求。
+    """
+    quote = get_underlying_quote(symbol)
+    if quote is None:
         return None
-    return to_float(data[0].get("last"))
+    if session == "regular":
+        price = quote.get("regular_price")
+        info = ({"price": price, "source": "regular", "source_label": "常规时段",
+                 "time": None, "regular_price": price} if price is not None else None)
+    elif session == "latest":
+        price, info = latest_underlying_price(quote)
+    else:
+        raise ValueError("session 必须为 latest 或 regular")
+    if info is not None:
+        _LAST_PRICE_INFO[symbol] = info
+    return price
+
+
+def get_underlying_price_info(symbol: str) -> dict | None:
+    """最近一次 get_underlying_price 取到的价格来源(只读,不调用 CLI)。
+
+    {price, source: regular/pre_market/post_market/overnight, source_label, time,
+     regular_price};该标的还没取过价时返回 None。
+    """
+    info = _LAST_PRICE_INFO.get(symbol)
+    return dict(info) if info else None
+
+
+def regular_session_price(symbol: str, latest: float | None = None) -> float | None:
+    """把 get_underlying_price 取到的价格换成常规时段的 last。
+
+    用在价格必须与期权链 IV、日 K 处在同一时点的场合(IV 历史采样选 ATM、按日 K
+    判定的入场规则):盘前/盘后/夜盘运行时 get_underlying_price 返回的是延长时段
+    最新价,拿它去配上一个常规时段的 IV 或日 K 会错位。
+    latest 传 get_underlying_price(symbol) 的返回值。常规时段内两者相同,不产生
+    额外调用;只有 latest 取自延长时段时才再取一次常规时段价格。
+    """
+    info = _LAST_PRICE_INFO.get(symbol)
+    if not info or info.get("source") == "regular":
+        return latest
+    quote = get_underlying_quote(symbol)
+    regular = quote.get("regular_price") if quote else None
+    return regular if regular is not None else latest
+
+
+def price_source_note(symbol: str, info: dict | None = None) -> str:
+    """价格来源的可读后缀,直接拼在"现价"后面。
+
+    延长时段的价: "(盘前价 美东 09:16,常规时段收盘 349.08)";
+    常规时段的价: ""。
+    """
+    info = info if info is not None else get_underlying_price_info(symbol)
+    if not info or info.get("source") == "regular":
+        return ""
+    moment = info.get("time")
+    clock = ""
+    if moment is not None:
+        clock = " 美东 " + moment.astimezone(_market_tz("US", moment)).strftime("%H:%M")
+    regular = info.get("regular_price")
+    tail = f",常规时段收盘 {regular:g}" if regular else ""
+    return f"({info.get('source_label') or info.get('source')}价{clock}{tail})"
 
 
 def get_atm_iv(chain: list[dict], underlying_price: float, option_type: str = "CALL") -> float | None:
@@ -1467,6 +1645,77 @@ def get_kline_adjusted(symbol: str, count: int = 260, period: str = "day") -> li
     data = run_cli("kline", symbol, "--period", period, "--count", str(count),
                    "--adjust", "forward")
     return normalize_records(data)
+
+
+def bar_market_date(value: Any, symbol: str = "US") -> date | None:
+    """K 线时间戳 → 该市场当地的交易日期;解析不了返回 None。
+
+    支持 YYYYMMDD、ISO 字符串(如 2026-11-24T05:00:00Z,按市场时区取日期)、
+    Unix 秒或毫秒。
+    """
+    raw = str(value).strip()
+    if re.fullmatch(r"\d{8}", raw):
+        try:
+            return datetime.strptime(raw, "%Y%m%d").date()
+        except ValueError:
+            return None
+    if re.match(r"^\d{4}[-/]\d{2}[-/]\d{2}(?:$|[T ])", raw):
+        try:
+            moment = datetime.fromisoformat(raw.replace("/", "-").replace("Z", "+00:00"))
+            return market_date(symbol, moment) if moment.tzinfo else moment.date()
+        except ValueError:
+            return None
+    try:
+        ts = float(raw)
+        if not math.isfinite(ts):
+            return None
+        if abs(ts) >= 1e11:
+            ts /= 1000
+        if abs(ts) < 1e8:
+            return None
+        return market_date(symbol, datetime.fromtimestamp(ts, timezone.utc))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+# 各市场常规时段的收盘时刻(当地时间)。未列出的市场不做「未收盘」判断。
+_SESSION_CLOSE = {"US": dt_time(16, 0), "HK": dt_time(16, 0), "SH": dt_time(15, 0),
+                  "SZ": dt_time(15, 0), "CN": dt_time(15, 0), "SG": dt_time(17, 0)}
+
+
+def is_bar_in_progress(value: Any, symbol: str = "US", now: datetime | None = None) -> bool:
+    """这根日 K 是否为当日尚未收盘的 bar。
+
+    ⚠️ 实测(2026-11-24):美股常规时段内 `kline --period day` 会带上当日未完成的 bar
+    (09:31 ET 时成交量 214 万,约为全天的 4.5%)。它的价格是盘中实时值,成交量却
+    只是半天——拿去算量比会一律判成「缩量」。收盘后(含盘后、夜盘、次日盘前)
+    该 bar 已完整或不出现,本函数返回 False。
+    半日市仍按 16:00 判定(收盘后多算 3 小时「未收盘」,只会更保守)。
+    """
+    day = bar_market_date(value, symbol)
+    if day is None:
+        return False
+    market = symbol.upper().rsplit(".", 1)[-1] if "." in symbol else symbol.upper()
+    close_at = _SESSION_CLOSE.get(market)
+    if close_at is None:
+        return False
+    current = now if now is not None else market_now(market)
+    if current.tzinfo is None:
+        current = market_now(market, now=current)
+    if current.date() != day:
+        return False
+    return current < current.replace(hour=close_at.hour, minute=close_at.minute,
+                                     second=0, microsecond=0)
+
+
+def kline_last_bar_in_progress(bars: list[dict] | None, symbol: str = "US",
+                               now: datetime | None = None) -> bool:
+    """K 线序列的最后一根是否为当日未收盘的 bar(空序列返回 False)。"""
+    if not bars:
+        return False
+    last = bars[-1]
+    stamp = last.get("time") or last.get("timestamp") or last.get("date")
+    return is_bar_in_progress(stamp, symbol, now)
 
 
 # ---- 期权合约级指标(calc-index:真实 OI + 服务端原生 Greeks) ----

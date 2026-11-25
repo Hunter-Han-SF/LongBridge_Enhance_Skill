@@ -44,8 +44,9 @@ for _p in (os.path.normpath(os.path.join(_HERE, "..")), _HERE,
 import common
 from common import (  # noqa: E402
     get_finance_calendar, get_heat_rank, get_heat_rank_keys, get_industry_rank,
-    get_kline_adjusted, get_underlying_price, is_empty, normalize_records,
-    print_error, print_json, run_cli, to_float,
+    get_kline_adjusted, get_underlying_price, get_underlying_price_info, is_empty,
+    kline_last_bar_in_progress, normalize_records, print_error, print_json,
+    regular_session_price, run_cli, to_float,
 )
 from indicators import atr as _atr  # noqa: E402
 from calc_relative_strength import trading_date  # noqa: E402
@@ -404,7 +405,8 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
     # D4: 缩量反弹(反弹 + 仍处弱势区 + 缩量)
     weak_pos = (f["ma20"][-1] is not None and last < f["ma20"][-1]) or f["dd250"] >= 0.10
     shrink_now = ratios[-1] is not None and ratios[-1] < SHRINK_VOL
-    ratio_text = f"{ratios[-1]:.2f}" if ratios[-1] is not None else "不可用"
+    ratio_text = (f"{ratios[-1]:.2f}" if ratios[-1] is not None
+                  else "当日未收盘,待定" if opts.get("intraday_bar") else "不可用")
     rebound = last > c[-2]
     R["D4"] = _r("manual" if rebound and weak_pos and ratios[-1] is None else
                  "triggered" if rebound and weak_pos and shrink_now else "clear",
@@ -575,7 +577,10 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
     data_quality = {}
     if opts.get("quote_available") is False:
         data_quality["quote"] = "未取得有效实时参考价，当前止损及盈亏比仍待核实"
-    if ratios[-1] is None or v[-1] <= 0:
+    if opts.get("intraday_bar"):
+        data_quality["volume"] = ("最新 K 线为当日未收盘 bar,成交量未定:缩量/放量类条件"
+                                 "(D4、U1 及各买点的量能确认)按未知处理,收盘后复核")
+    elif ratios[-1] is None or v[-1] <= 0:
         data_quality["volume"] = "最新成交量或前五根均量不足，量能纪律仍待核实"
     if opts.get("latest_bar_valid") is False:
         data_quality["latest_bar"] = "最新日K价格数据不完整，形态仍待核实"
@@ -952,13 +957,29 @@ def _in_heat_rank(symbol: str) -> bool | None:
         return None
 
 
+def _is_half_day(info: dict) -> bool:
+    """休市日历里的半日市条目:ext.holiday_type=half_day(或 date_type 标「半天」)。"""
+    ext = info.get("ext") or {}
+    kind = str(ext.get("holiday_type") or "").strip().lower()
+    if kind:
+        return kind == "half_day"
+    return "半" in str(info.get("date_type") or "")
+
+
 def _closed_dates(market: str) -> set[str]:
-    """近端休市日(closed-calendar),D12 排除节假日。失败返回空集(仅剩周末规则)。"""
+    """近端休市日(closed-calendar),D12 排除节假日。失败返回空集(仅剩周末规则)。
+
+    ⚠️ 只收全日休市。日历里也有半日市条目(实测 2026-11-27、12-24 的
+    holiday_type=half_day):那天市场照常 9:30 开盘、只是提前收盘,把它当休市日
+    会让 D12 在半日市当天 9:00-9:30 误报「休市日放行」。
+    """
     try:
         buckets = get_finance_calendar(category="closed", market=market, count=30)
         out: set[str] = set()
         for b in buckets or []:
             for info in b.get("infos", []):
+                if not isinstance(info, dict) or _is_half_day(info):
+                    continue
                 ext = info.get("ext") or {}
                 d = str(ext.get("holiday_date") or b.get("date") or "")[:10]
                 d = d.replace(".", "-")
@@ -1034,11 +1055,28 @@ _ICON = {"triggered": "❌", "clear": "✅", "manual": "❓", "matched": "🎯",
          "none": "—", "pass": "✅", "fail": "❌", "na": "—"}
 
 
+def _price_note(info: dict | None) -> str | None:
+    """延长时段有更新的报价时,提示该报价未被日 K 规则采用。"""
+    if not info or info.get("source") == "regular":
+        return None
+    clock = ""
+    if info.get("time") is not None:
+        clock = " 美东 " + info["time"].astimezone(common._market_tz("US", info["time"])).strftime("%H:%M")
+    return (f"参考价为最近常规时段价格;延长时段最新价 {info.get('price')}"
+            f"({info.get('source_label')}价{clock})未用于日 K 规则")
+
+
 def render(symbol: str, result: dict, price, generated: str) -> None:
     R = result["rules"]
     print(f"{'=' * 60}")
-    source = "实时参考价" if result["price_source"] == "quote" else "最近日K收盘参考价"
+    # 参考价是常规时段的 last:常规时段内为实时价,盘前/盘后/夜盘为最近常规时段的收盘价
+    source = "常规时段参考价" if result["price_source"] == "quote" else "最近日K收盘参考价"
     print(f"  {symbol} 入场纪律检查(28条军规)  {source} {price}  {generated}")
+    if result.get("price_note"):
+        print(f"  ℹ️ {result['price_note']}")
+    if result.get("intraday_bar"):
+        print("  ⚠️ 当日 K 线未收盘: 价格为盘中值,成交量未定 —— 量能类条件按未知处理,"
+              "形态类判定为盘中暂定,收盘后复核")
     print(f"{'=' * 60}")
     print(f"\n  趋势背景: {result['context']}\n")
     print("  ◆ 下跌过程 12 不买:")
@@ -1081,13 +1119,24 @@ def analyze(symbol: str, args) -> dict:
             if all(to_float(b.get(k)) is not None for k in ("open", "close", "high", "low"))]
     if len(bars) < 30:
         raise RuntimeError(f"K线不足 30 根(实际 {len(bars)}),无法检查")
+    latest_bar_valid = bars[-1] is latest_bar
+    now = (datetime.strptime(args.now, "%Y-%m-%d %H:%M") if args.now
+           else common.market_now(market))
+    # 当日未收盘的 bar:价格照用(盘中实时值),成交量视为未定 —— 半天的量拿去算量比
+    # 会一律判成「缩量」(2026-11-24 实测 09:31 ET 的量比 0.07),见 check_rules 的 data_quality
+    intraday = kline_last_bar_in_progress(bars, symbol, now)
+    if intraday:
+        bars = bars[:-1] + [dict(bars[-1], volume=None)]
     f = build_features(bars, symbol)
-    quote = to_float(get_underlying_price(symbol))
+    # 入场规则以日 K 为准:参考价取常规时段的 last(常规时段内即实时价)。盘前/盘后/夜盘
+    # 的延长时段报价不用于日 K 规则 —— 支撑阻力、新低新高都是按常规时段收盘序列算的
+    quote = to_float(regular_session_price(symbol, get_underlying_price(symbol)))
+    price_info = get_underlying_price_info(symbol)
     live = quote is not None and math.isfinite(quote) and quote > 0
     price = quote if live else f["last"]
     opts = {
         "entry_price": price, "target_price": target, "quote_available": live,
-        "latest_bar_valid": bars[-1] is latest_bar,
+        "latest_bar_valid": latest_bar_valid, "intraday_bar": intraday,
         "lookback": args.lookback, "max_stop_pct": args.max_stop_pct,
         "sector_top_decline": args.sector_top_decline,
         "recent_stopout": args.recent_stopout,
@@ -1099,10 +1148,7 @@ def analyze(symbol: str, args) -> dict:
         "closed_dates": _closed_dates(market),
         "market": market,
     }
-    if args.now:
-        opts["now"] = datetime.strptime(args.now, "%Y-%m-%d %H:%M")
-    else:
-        opts["now"] = common.market_now(market)
+    opts["now"] = now
     if opts["earnings_days"] is None:
         opts["earnings_days"] = _days_to_earnings(symbol, opts["now"])
     # B8 板块半边: 用户显式回答优先;否则尝试 industry-rank 自动判定
@@ -1118,6 +1164,9 @@ def analyze(symbol: str, args) -> dict:
     result = check_rules(f, opts)
     result.update({"symbol": symbol, "price": price,
                    "price_source": "quote" if live else "last_daily_close",
+                   "price_note": _price_note(price_info),
+                   "underlying_price_info": price_info,
+                   "intraday_bar": intraday,
                    "last_daily_close": f["last"],
                    "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                    "smallcap": opts["smallcap"],
