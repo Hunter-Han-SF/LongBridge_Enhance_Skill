@@ -1,4 +1,4 @@
-# LongBridge Enhance Skill (longbridge-pro) · 0.6.3
+# LongBridge Enhance Skill (longbridge-pro) · 0.6.4
 
 [English](README.md) | **[中文](README.zh-CN.md)**
 
@@ -195,7 +195,7 @@ python scripts/decision/check_entry_rules.py AAPL.US       # 28条军规入场�
 python -m unittest discover -s tests -v
 ```
 
-完整命令参考见 [`SKILL.md`](SKILL.md)；全部27项映射、兼容性变化和验证记录见 [0.6.0 审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.2 修复五项经实盘验证的高优先级问题(chain 重复行权价、入场规则支撑阻力聚类、财务健康科目匹配、IV/HV 期限对齐、分析师共识),见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项经实盘验证的中优先级问题(盘中量比用了未收盘的当日 K 线、零成交腿被当成免费期权、盘前盘后现价为昨收且无标注、半日市被 D12 误放行、美股沽空占比套用港股阈值、美股盘口只有一档却给出结论),见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。
+完整命令参考见 [`SKILL.md`](SKILL.md)；全部27项映射、兼容性变化和验证记录见 [0.6.0 审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.2 修复五项经实盘验证的高优先级问题(chain 重复行权价、入场规则支撑阻力聚类、财务健康科目匹配、IV/HV 期限对齐、分析师共识),见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项经实盘验证的中优先级问题(盘中量比用了未收盘的当日 K 线、零成交腿被当成免费期权、盘前盘后现价为昨收且无标注、半日市被 D12 误放行、美股沽空占比套用港股阈值、美股盘口只有一档却给出结论),见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。0.6.4 修复低优先级审计项(GEX 改用合约 IV 的 BS gamma 优先、组合 Greeks 传导 `theta_source`、A/H 溢价日期改用港股时区、估值同行改用 `industry-valuation dist` 全行业排名、Put/Call 墙位置与剖面自适应去重、规则半日市 T、统一 70/50/30 温度档位、异动榜涨跌幅百分比格式化),见 [0.6.4 修复记录](docs/fixes-2026-11-25-low-priority.md)。
 
 ## 已知限制
 

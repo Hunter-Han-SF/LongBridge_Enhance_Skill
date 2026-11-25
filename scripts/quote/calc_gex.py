@@ -4,7 +4,7 @@
   ✅ 优先 **真实 OI**(calc-index 按合约查询,存量持仓口径,与主流 GEX 一致)
   ⬇️ OI 不可用时回退 **成交量代理**(输出已标注)
 
-gamma 口径:优先服务端原生 gamma(calc-index),缺失时回退 BS(chain IV 作输入)。
+gamma 口径:优先用合约 IV / chain IV 按 BS 重算(服务端 calc-index 的 gamma 仅 3 位小数,有持仓的虚值腿会被舍入成 0),缺失 IV 时才以服务端 gamma 兜底。
 
 GEX 含义:
   - Gamma 衡量 delta 对标的价格变化的敏感度
@@ -60,33 +60,36 @@ def calc_gex(
         raise ValueError(f"到期日 {date} 已过期或为今天,GEX 计算无意义")
 
     # 权重口径:优先真实 OI(calc-index),回退成交量代理
-    # gamma 口径:优先服务端原生 gamma,回退 BS(chain IV 作输入)
+    # gamma 口径:优先 BS(合约 IV → chain IV),仅缺 IV 时以服务端 gamma 兜底(仅 3 位小数)
     oi_data = get_chain_oi(symbol, date)
     mode = "oi" if oi_data.get("oi_mode") else "volume"
 
     rows = []
     total_gex = 0.0
-    native_gamma_used = 0
+    gamma_sources = {"bs_contract_iv": 0, "bs_chain_iv": 0, "native": 0, "none": 0}
     if mode == "oi":
         for strike_s, v in sorted(oi_data["strikes"].items()):
             call_oi, put_oi = float(v["call_oi"]), float(v["put_oi"])
             if call_oi == 0 and put_oi == 0:
                 continue
-            # 原生 gamma 缺失时回退 BS(chain IV)
             chain_row = next((r for r in chain
                               if abs((to_float(r.get("strike")) or 0) - strike_s) < 0.001), {})
             def _gamma(native, iv, cp):
-                if native is not None:
-                    return native, True
+                iv_contract = to_float(iv)
+                if iv_contract and iv_contract > 0:
+                    return bs_greeks(price, strike_s, T, rate, iv_contract, cp)["gamma"], "bs_contract_iv"
                 # IV 回退按方向取同侧 chain IV(偏斜下 call_iv ≠ put_iv,
                 # put 侧回退用 call_iv 会失真)
-                iv_val = iv if iv is not None else to_float(
-                    chain_row.get("call_iv" if cp == "C" else "put_iv"))
-                return (bs_greeks(price, strike_s, T, rate, iv_val, cp)["gamma"]
-                        if iv_val and iv_val > 0 else 0.0), False
-            call_gamma, ok1 = _gamma(v["call_gamma"], v["call_iv"], "C")
-            put_gamma, ok2 = _gamma(v["put_gamma"], v["put_iv"], "P")
-            native_gamma_used += int(ok1) + int(ok2)
+                iv_chain = to_float(chain_row.get("call_iv" if cp == "C" else "put_iv"))
+                if iv_chain and iv_chain > 0:
+                    return bs_greeks(price, strike_s, T, rate, iv_chain, cp)["gamma"], "bs_chain_iv"
+                if native is not None:
+                    return native, "native"
+                return 0.0, "none"
+            call_gamma, src1 = _gamma(v["call_gamma"], v["call_iv"], "C")
+            put_gamma, src2 = _gamma(v["put_gamma"], v["put_iv"], "P")
+            gamma_sources[src1] += 1
+            gamma_sources[src2] += 1
 
             call_gex = call_gamma * call_oi * 100 * price * price * 0.01
             put_gex = -put_gamma * put_oi * 100 * price * price * 0.01
@@ -135,8 +138,18 @@ def calc_gex(
 
     weight_note = ("✅ 真实 OI 加权(calc-index)" if mode == "oi"
                    else "⚠️ 成交量加权(近似,Longbridge chain 无按行权价 OI)")
-    gamma_note = (f"原生 gamma {native_gamma_used}/{len(rows) * 2} 条"
-                  if (mode == "oi" and rows) else "BS 计算 gamma")
+    if mode == "oi" and rows:
+        _src_labels = [
+            ("bs_contract_iv", "BS gamma(合约IV)"),
+            ("bs_chain_iv", "chain IV"),
+            ("native", "服务端 gamma(仅3位小数,仅作兜底)"),
+            ("none", "无IV"),
+        ]
+        gamma_note = " / ".join(
+            f"{label} {gamma_sources[k]} 条" for k, label in _src_labels if gamma_sources[k] > 0
+        )
+    else:
+        gamma_note = "BS 计算 gamma"
 
     result = {
         "symbol": symbol,
@@ -146,6 +159,7 @@ def calc_gex(
         "rate": rate,
         "T_years": round(T, 4),
         "weight_mode": mode,
+        "gamma_sources": gamma_sources if mode == "oi" else {"bs_chain_iv": len(rows) * 2},
         "total_gex": round(total_gex, 0),
         "total_gex_label": _gex_label(total_gex),
         "zero_gamma_level": zero_gamma,

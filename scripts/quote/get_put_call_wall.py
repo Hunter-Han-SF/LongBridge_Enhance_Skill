@@ -159,7 +159,13 @@ def analyze_walls(
             columns=["行权价", weight_name, "IV", "位置"])
     print()
     if put_wall_top and call_wall_top:
-        print(f"预计区间: {put_wall_top}(支撑) ~ {call_wall_top}(阻力)")
+        put_desc = "支撑" if put_wall_top < price else _wall_label(put_wall_top, price)
+        call_desc = "阻力" if call_wall_top > price else _wall_label(call_wall_top, price)
+        print(f"预计区间: {put_wall_top}({put_desc}) ~ {call_wall_top}({call_desc})")
+        if put_wall_top > price:
+            print(f"  ⚠️ 现价下方无 Put 持仓,Put Wall 已回退到全部行权价({put_wall_top})")
+        if call_wall_top < price:
+            print(f"  ⚠️ 现价上方无 Call 持仓,Call Wall 已回退到全部行权价({call_wall_top})")
         if put_wall_top < price < call_wall_top:
             print(f"  现价 {price} 在区间内,Wall 形成箱体震荡")
         elif price <= put_wall_top:

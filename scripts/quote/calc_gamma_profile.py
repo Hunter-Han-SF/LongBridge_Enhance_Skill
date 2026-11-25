@@ -119,7 +119,7 @@ def _sr_levels(legs: list[dict], spot: float, top_n: int = 3) -> dict:
     def _density(side: str):
         ks = [l["strike"] for l in legs if l["side"] == side]
         if not ks:
-            return [], []
+            return [], [], 1.0
         ks_sorted = sorted(ks)
         gaps = [b - a for a, b in zip(ks_sorted, ks_sorted[1:]) if b > a]
         h = (sorted(gaps)[len(gaps) // 2] if gaps else 1.0) * 1.0
@@ -133,9 +133,9 @@ def _sr_levels(legs: list[dict], spot: float, top_n: int = 3) -> dict:
             xs.append(x)
             ys.append(y)
             x += dx
-        return xs, ys
+        return xs, ys, h
 
-    def _peaks(xs, ys, below: bool):
+    def _peaks(xs, ys, below: bool, min_sep: float):
         peaks = []
         for i in range(1, len(xs) - 1):
             if ys[i] > ys[i - 1] and ys[i] >= ys[i + 1] and ys[i] > 0:
@@ -148,7 +148,7 @@ def _sr_levels(legs: list[dict], spot: float, top_n: int = 3) -> dict:
         peaks.sort(key=lambda p: p[1], reverse=True)
         out, seen = [], []
         for px, py in peaks:
-            if all(abs(px - s) > 2.0 for s in seen):  # 去重:间距>2
+            if all(abs(px - s) > min_sep for s in seen):  # 去重:间距>行权价间距中位数 h
                 out.append({"price": round(px, 2), "density": round(py, 0)})
                 seen.append(px)
             if len(out) >= top_n:
@@ -156,10 +156,10 @@ def _sr_levels(legs: list[dict], spot: float, top_n: int = 3) -> dict:
         out.sort(key=lambda p: p["price"], reverse=below)
         return out
 
-    xs_c, ys_c = _density("C")
-    xs_p, ys_p = _density("P")
-    return {"support": _peaks(xs_p, ys_p, below=True),
-            "resistance": _peaks(xs_c, ys_c, below=False)}
+    xs_c, ys_c, h_c = _density("C")
+    xs_p, ys_p, h_p = _density("P")
+    return {"support": _peaks(xs_p, ys_p, below=True, min_sep=h_p),
+            "resistance": _peaks(xs_c, ys_c, below=False, min_sep=h_c)}
 
 
 def analyze(symbol: str, window_days: int = 60, range_pct: float = 0.20,

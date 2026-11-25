@@ -63,9 +63,27 @@ def analyze(symbol: str, date: str | None = None, near_atm_pct: float = 0.25,
             "put_delta": v["put_delta"],
         })
 
-    # OI 墙(持仓量最大的行权价)
-    put_wall = max(rows, key=lambda r: r["put_oi"]) if rows else None
-    call_wall = max(rows, key=lambda r: r["call_oi"]) if rows else None
+    # OI 墙(优先价外持仓:Put 取 <=现价,Call 取 >=现价;该侧无数据时放宽到全部行权价)
+    put_candidates = [r for r in rows if r["strike"] <= price] or rows
+    call_candidates = [r for r in rows if r["strike"] >= price] or rows
+    put_wall = max(put_candidates, key=lambda r: r["put_oi"]) if put_candidates else None
+    call_wall = max(call_candidates, key=lambda r: r["call_oi"]) if call_candidates else None
+
+    def _wall_pos(strike: float, side: str) -> str:
+        if strike == price or not price:
+            return "ATM"
+        if side == "put":
+            if strike < price:
+                return "下方支撑"
+            pct = (strike - price) / price * 100
+            return f"位于现价上方 {pct:.1f}%,非下方支撑"
+        if strike > price:
+            return "上方阻力"
+        pct = (price - strike) / price * 100
+        return f"位于现价下方 {pct:.1f}%,非上方阻力"
+
+    put_wall_pos = _wall_pos(put_wall["strike"], "put") if put_wall else None
+    call_wall_pos = _wall_pos(call_wall["strike"], "call") if call_wall else None
     pc = data.get("pc_oi_ratio")
 
     if pc is None:
@@ -87,8 +105,8 @@ def analyze(symbol: str, date: str | None = None, near_atm_pct: float = 0.25,
         "total_put_oi": data["total_put_oi"],
         "pc_oi_ratio": pc,
         "pc_oi_label": pc_label,
-        "put_oi_wall": {"strike": put_wall["strike"], "oi": put_wall["put_oi"]} if put_wall else None,
-        "call_oi_wall": {"strike": call_wall["strike"], "oi": call_wall["call_oi"]} if call_wall else None,
+        "put_oi_wall": {"strike": put_wall["strike"], "oi": put_wall["put_oi"], "position": put_wall_pos} if put_wall else None,
+        "call_oi_wall": {"strike": call_wall["strike"], "oi": call_wall["call_oi"], "position": call_wall_pos} if call_wall else None,
         "oi_table": rows,
         "note": "OI 为存量持仓口径(与成交量口径的 P/C 比率含义不同:持仓=倾向,成交=情绪)。",
     }
@@ -101,9 +119,9 @@ def analyze(symbol: str, date: str | None = None, near_atm_pct: float = 0.25,
     print(f"  Call OI 合计: {data['total_call_oi']:,}   Put OI 合计: {data['total_put_oi']:,}"
           f"   P/C OI 比率: {pc} → {pc_label}")
     if put_wall:
-        print(f"  🟢 Put OI 墙: {put_wall['strike']}(持仓 {put_wall['put_oi']:,},下方支撑)")
+        print(f"  🟢 Put OI 墙: {put_wall['strike']}(持仓 {put_wall['put_oi']:,},{put_wall_pos})")
     if call_wall:
-        print(f"  🔴 Call OI 墙: {call_wall['strike']}(持仓 {call_wall['call_oi']:,},上方阻力)")
+        print(f"  🔴 Call OI 墙: {call_wall['strike']}(持仓 {call_wall['call_oi']:,},{call_wall_pos})")
     print()
     # 只显示 OI 最大的前 15 档
     top = sorted(rows, key=lambda r: r["total_oi"], reverse=True)[:15]

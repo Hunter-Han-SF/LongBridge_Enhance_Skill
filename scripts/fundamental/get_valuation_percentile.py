@@ -25,11 +25,13 @@ sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath
 
 from common import (  # noqa: E402
     counter_id_to_symbol,
+    get_industry_valuation_dist,
     get_valuation,
     print_display_table,
     print_error,
     print_json,
     to_float,
+    to_int,
 )
 
 
@@ -82,8 +84,9 @@ def analyze(symbol: str, output_json: bool = False, quiet: bool = False) -> dict
     if not metrics_out:
         raise ValueError(f"{symbol} 无可用估值历史序列(valuation.history.metrics 为空)")
 
-    # 2. 同行对比(第一可用 metric)
-    peers = (data.get("peers") or {}).get(metrics_out[0]["metric"].lower()) or {}
+    # 2. 同行预览(valuation.peers 仅少量样例) + 完整行业排名(industry-valuation dist)
+    main = metrics_out[0]
+    peers = (data.get("peers") or {}).get(main["metric"].lower()) or {}
     peer_rows = []
     for p in (peers.get("list") or []):
         peer_rows.append({
@@ -92,23 +95,56 @@ def analyze(symbol: str, output_json: bool = False, quiet: bool = False) -> dict
             "value": to_float(p.get("value")),
             "is_target": p.get("counter_id", "").upper().endswith(symbol.split(".")[0].upper()),
         })
-    # 目标在同行中的排名
-    target_rank = None
-    for i, r in enumerate(peer_rows, 1):
-        if r["is_target"]:
-            target_rank = i
-            break
 
-    # 综合:取第一 metric(通常 PE)作为主结论
-    main = metrics_out[0]
+    try:
+        dist = get_industry_valuation_dist(symbol) or {}
+    except Exception:
+        dist = {}
+    d = dist.get(main["metric"].lower()) if isinstance(dist, dict) else None
+    rank_idx = to_int(d.get("rank_index")) if isinstance(d, dict) else None
+    rank_tot = to_int(d.get("rank_total")) if isinstance(d, dict) else None
+    if isinstance(d, dict) and rank_idx and rank_tot and rank_tot > 0:
+        dist_median = to_float(d.get("median"))
+        industry_rank = {
+            "metric": main["metric"],
+            "rank_index": rank_idx,
+            "rank_total": rank_tot,
+            "ranking": to_float(d.get("ranking")),
+            "median": dist_median,
+            "low": to_float(d.get("low")),
+            "high": to_float(d.get("high")),
+            "order": "由低到高",
+        }
+        target_rank = rank_idx
+        total_peers = rank_tot
+        rank_basis = "industry-valuation dist(全行业)"
+        industry_median = dist_median
+    else:
+        industry_rank = None
+        target_rank = None
+        total_peers = None
+        rank_basis = "unavailable"
+        industry_median = None
+
     result = {
         "symbol": symbol,
         "metrics": metrics_out,
-        "peers": {"metric": main["metric"], "industry_median": to_float(peers.get("industry_median")),
-                  "target_rank": target_rank, "total_peers": len(peer_rows), "list": peer_rows},
+        "peers": {
+            "metric": main["metric"],
+            "industry_median": industry_median,
+            "preview_industry_median_raw": to_float(peers.get("industry_median")),
+            "target_rank": target_rank,
+            "total_peers": total_peers,
+            "rank_basis": rank_basis,
+            "industry_rank": industry_rank,
+            "preview_count": len(peer_rows),
+            "list": peer_rows,
+        },
         "main": {"metric": main["metric"], "current": main["current"],
                  "percentile": main["percentile"], "verdict": main["label"]},
-        "note": "分位基于 valuation 历史(约5年)序列;越低越便宜。同行对比来自 peers 字段。",
+        "note": ("分位基于 valuation 历史(约5年)序列;越低越便宜。"
+                 "同行对比 list 仅服务端返回的预览样本;完整行业排名与中位数取自 industry-valuation dist"
+                 "(preview_industry_median_raw 与 dist 不一致时不采用)。"),
     }
 
     if output_json:
@@ -124,12 +160,16 @@ def analyze(symbol: str, output_json: bool = False, quiet: bool = False) -> dict
         print(f"    → 当前处于历史 {m['percentile']}% 分位  {m['label']}")
     if peer_rows:
         print()
-        print(f"同行对比({main['metric']},行业中位数 {result['peers']['industry_median']}):")
+        print(f"同行预览(服务端仅返回 {len(peer_rows)} 家,非完整行业,{main['metric']}):")
         rows = [{"同行": ("→ " if r["is_target"] else "") + f"{r['symbol']}",
                  "名称": r["name"], "值": r["value"]} for r in peer_rows]
         print_display_table(rows, columns=["同行", "名称", "值"])
-        if target_rank:
-            print(f"  {symbol.split('.')[0]} 在同行中排第 {target_rank}/{len(peer_rows)}(按估值从高到低)")
+    if industry_rank:
+        pctl_txt = f"分位 {industry_rank['ranking']*100:.1f}%," if industry_rank["ranking"] is not None else ""
+        med_txt = f"行业中位 {industry_rank['median']:.2f}" if industry_rank["median"] is not None else "行业中位 N/A"
+        print(f"  {symbol.split('.')[0]} {main['metric']} 行业内由低到高第 {target_rank}/{total_peers}({pctl_txt}{med_txt})")
+    elif peer_rows:
+        print(f"  完整行业排名不可得;预览 {len(peer_rows)} 家不作排名")
     return result
 
 

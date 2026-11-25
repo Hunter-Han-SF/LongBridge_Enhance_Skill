@@ -1035,17 +1035,36 @@ def market_date(symbol_or_market: str = "US", now: datetime | None = None):
     return market_now(symbol_or_market, now=now).date()
 
 
-def days_to_years(expiry: str, today: str | None = None, *, now: datetime | None = None) -> float:
-    """ACT/365 to regular US equity-option close (16:00 ET).
+def us_early_close(d: date) -> bool:
+    """按 NYSE/Cboe 规则推算美股是否 13:00 ET 提前收盘(半日市)。
 
-    Explicit today retains date-only calculations. Early closes and special
-    settlement times require contract/session data and are not inferred here.
+    规则覆盖:感恩节次日(11 月第 4 个周四次日)、平安夜(12-24 周一至周四)、
+    独立日前夕(07-03 周一至周四)。属于规则推算,交易所临时调整或例外以日历为准。
+    """
+    nov1 = date(d.year, 11, 1)
+    thanksgiving = date(d.year, 11, 22 + (3 - nov1.weekday()) % 7)
+    if d == thanksgiving + timedelta(days=1):
+        return True
+    if d.month == 12 and d.day == 24 and d.weekday() < 4:
+        return True
+    if d.month == 7 and d.day == 3 and d.weekday() < 4:
+        return True
+    return False
+
+
+def days_to_years(expiry: str, today: str | None = None, *, now: datetime | None = None) -> float:
+    """ACT/365 to US equity-option close (16:00 ET, or 13:00 ET on rule-based early-close days).
+
+    Explicit today retains date-only calculations. Rule-based early closes cover
+    day-after-Thanksgiving and Mon-Thu Jul 3 / Dec 24; calendar exceptions and
+    special settlement times require contract/session data and are not inferred here.
     """
     e = datetime.strptime(expiry, "%Y-%m-%d")
     if today is not None:
         return max((e - datetime.strptime(today, "%Y-%m-%d")).days, 0) / 365.0
     probe = e.replace(hour=20, tzinfo=timezone.utc)
-    close = e.replace(hour=16, tzinfo=_market_tz("US", probe))
+    close_hour = 13 if us_early_close(e.date()) else 16
+    close = e.replace(hour=close_hour, tzinfo=_market_tz("US", probe))
     current = now if now is not None else market_now("US")
     if current.tzinfo is None:
         current = market_now("US", now=current)
@@ -1420,6 +1439,20 @@ def get_finance_calendar(
 
 # ---- 模块⑤市场情绪 ----
 
+def market_temp_label(temp: Any) -> str:
+    """统一市场温度档位标签(0-100): >=70 偏热, >=50 偏暖, >=30 偏凉, <30 偏冷;无效返回空串。"""
+    t = to_float(temp)
+    if t is None:
+        return ""
+    if t >= 70:
+        return "🔥 偏热(贪婪)"
+    if t >= 50:
+        return "🌡️ 偏暖"
+    if t >= 30:
+        return "❄️ 偏凉"
+    return "🥶 偏冷(恐惧)"
+
+
 def get_market_temp(market: str = "HK", history: bool = False,
                     start: str | None = None, end: str | None = None) -> dict | list[dict]:
     """市场温度指数(0-100,越高越乐观)。
@@ -1690,7 +1723,7 @@ def is_bar_in_progress(value: Any, symbol: str = "US", now: datetime | None = No
     (09:31 ET 时成交量 214 万,约为全天的 4.5%)。它的价格是盘中实时值,成交量却
     只是半天——拿去算量比会一律判成「缩量」。收盘后(含盘后、夜盘、次日盘前)
     该 bar 已完整或不出现,本函数返回 False。
-    半日市仍按 16:00 判定(收盘后多算 3 小时「未收盘」,只会更保守)。
+    美股按规则推算的半日市(us_early_close)以 13:00 ET 判定收盘。
     """
     day = bar_market_date(value, symbol)
     if day is None:
@@ -1699,6 +1732,8 @@ def is_bar_in_progress(value: Any, symbol: str = "US", now: datetime | None = No
     close_at = _SESSION_CLOSE.get(market)
     if close_at is None:
         return False
+    if market == "US" and us_early_close(day):
+        close_at = dt_time(13, 0)
     current = now if now is not None else market_now(market)
     if current.tzinfo is None:
         current = market_now(market, now=current)
