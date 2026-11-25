@@ -45,11 +45,12 @@ for _p in (os.path.normpath(os.path.join(_HERE, "..")), _HERE,
 
 import common
 from common import (  # noqa: E402
-    counter_id_to_symbol, get_batch_quotes, get_finance_calendar, get_heat_rank,
-    get_heat_rank_keys, get_industry_rank, get_institution_rating, get_kline_adjusted,
-    get_symbol_news, get_underlying_price, get_underlying_price_info, get_valuation,
-    is_empty, kline_last_bar_in_progress, normalize_records, parse_underlying,
-    print_error, print_json, regular_session_price, run_cli, to_float,
+    counter_id_to_symbol, estimate_max_purchase_qty, get_account_assets, get_batch_quotes,
+    get_finance_calendar, get_heat_rank, get_heat_rank_keys, get_industry_rank,
+    get_institution_rating, get_kline_adjusted, get_symbol_news, get_underlying_price,
+    get_underlying_price_info, get_valuation, is_empty, kline_last_bar_in_progress,
+    normalize_records, parse_underlying, print_error, print_json, regular_session_price,
+    run_cli, to_float, to_int,
 )
 from indicators import atr as _atr  # noqa: E402
 from calc_relative_strength import trading_date  # noqa: E402
@@ -1200,6 +1201,149 @@ def _auto_d6(symbol: str, f: dict, intraday_bar: bool,
 
 
 # ---------------------------------------------------------------------------
+# 风险定仓计算器 (Position Sizing)
+# ---------------------------------------------------------------------------
+
+def calc_position_sizing(
+    entry_price: float | None,
+    stop_price: float | None,
+    capital: float | None,
+    *,
+    risk_pct: float = 1.0,
+    max_pos_pct: float = 20.0,
+    lot_size: int = 1,
+    currency: str = "USD",
+    buy_power: float | None = None,
+    cash_max_qty: int | None = None,
+    margin_max_qty: int | None = None,
+    capital_source: str = "manual",
+    ext_price: float | None = None,
+) -> dict:
+    """按单笔最大止损风险比例与单票仓位上限计算建议买入股数(含每手取整与账户可买核对)。"""
+    if not math.isfinite(risk_pct) or not 0 < risk_pct <= 100:
+        raise ValueError("risk-pct 必须在 (0, 100] 之间")
+    if not math.isfinite(max_pos_pct) or not 0 < max_pos_pct <= 100:
+        raise ValueError("max-pos-pct 必须在 (0, 100] 之间")
+    lot = max(1, int(lot_size or 1))
+    if capital is None or not math.isfinite(capital) or capital <= 0:
+        return {
+            "status": "unavailable", "currency": currency,
+            "capital_source": capital_source, "recommended_shares": 0,
+            "reason": "未取得有效总资金", "warnings": [],
+        }
+
+    risk_budget = capital * (risk_pct / 100.0)
+    max_notional = capital * (max_pos_pct / 100.0)
+    if (entry_price is None or not math.isfinite(entry_price) or entry_price <= 0
+            or stop_price is None or not math.isfinite(stop_price) or stop_price <= 0
+            or stop_price >= entry_price):
+        return {
+            "status": "no_valid_stop", "capital": round(capital, 2),
+            "currency": currency, "capital_source": capital_source,
+            "risk_pct": risk_pct, "max_pos_pct": max_pos_pct, "lot_size": lot,
+            "risk_budget": round(risk_budget, 2), "recommended_shares": 0,
+            "reason": "缺少低于入场价的有效止损位,无法按风险定仓", "warnings": [],
+        }
+
+    risk_per_share = entry_price - stop_price
+    by_risk = int(math.floor(risk_budget / risk_per_share))
+    by_cap = int(math.floor(max_notional / entry_price))
+    limiting = "risk_budget" if by_risk <= by_cap else "max_position_cap"
+    raw_shares = max(0, min(by_risk, by_cap))
+    rec_shares = (raw_shares // lot) * lot
+    pos_val = round(rec_shares * entry_price, 2)
+    pos_pct = round(pos_val / capital * 100.0, 2)
+    max_loss = round(rec_shares * risk_per_share, 2)
+    actual_risk_pct = round(max_loss / capital * 100.0, 2)
+
+    warnings: list[str] = []
+    if raw_shares > 0 and rec_shares == 0 and lot > 1:
+        warnings.append(f"理论股数 {raw_shares} 不足 1 手({lot} 股)")
+    if cash_max_qty is not None and cash_max_qty < rec_shares:
+        m_txt = f",融资可买 {margin_max_qty} 股" if margin_max_qty is not None else ""
+        warnings.append(f"当前账户现金可买上限 {cash_max_qty} 股{m_txt},低于模型建议 {rec_shares} 股")
+    if ext_price is not None and ext_price <= stop_price:
+        warnings.append(f"延长时段最新价 {ext_price} 已跌破止损 {stop_price:.2f},开盘前须重算止损与仓位")
+
+    return {
+        "status": "ok",
+        "capital": round(capital, 2),
+        "currency": currency,
+        "capital_source": capital_source,
+        "entry_price": round(entry_price, 4),
+        "stop_price": round(stop_price, 4),
+        "risk_per_share": round(risk_per_share, 4),
+        "risk_pct": risk_pct,
+        "max_pos_pct": max_pos_pct,
+        "lot_size": lot,
+        "risk_budget": round(risk_budget, 2),
+        "shares_by_risk": by_risk,
+        "shares_by_cap": by_cap,
+        "limiting_factor": limiting,
+        "recommended_shares": rec_shares,
+        "position_value": pos_val,
+        "position_pct": pos_pct,
+        "max_loss_amount": max_loss,
+        "actual_risk_pct": actual_risk_pct,
+        "buy_power": buy_power,
+        "cash_max_qty": cash_max_qty,
+        "margin_max_qty": margin_max_qty,
+        "warnings": warnings,
+    }
+
+
+def _resolve_sizing_for_symbol(
+    symbol: str,
+    market: str,
+    entry_price: float | None,
+    stop_price: float | None,
+    ext_price: float | None,
+    capital: float | None,
+    use_account: bool,
+    risk_pct: float,
+    max_pos_pct: float,
+) -> dict | None:
+    if capital is None and not use_account:
+        return None
+    inst_ccy = {"US": "USD", "HK": "HKD", "CN": "CNY", "SH": "CNY", "SZ": "CNY", "SG": "SGD"}.get(market, "USD")
+    lot = 1
+    if market != "US":
+        try:
+            s_rows = normalize_records(run_cli("static", symbol))
+            if s_rows:
+                lot = to_int(s_rows[0].get("lot_size")) or 1
+        except Exception:
+            lot = 1
+
+    cap = capital
+    cap_src = "manual"
+    buy_power = cash_max_qty = margin_max_qty = None
+    if cap is None and use_account:
+        try:
+            assets = get_account_assets(inst_ccy)
+        except Exception:
+            assets = {}
+        cap = to_float(assets.get("net_assets"))
+        buy_power = to_float(assets.get("buy_power"))
+        inst_ccy = str(assets.get("currency") or inst_ccy)
+        cap_src = "account_net_assets"
+        if entry_price and entry_price > 0:
+            try:
+                mq = estimate_max_purchase_qty(symbol, entry_price)
+                cash_max_qty = mq.get("cash_max_qty")
+                margin_max_qty = mq.get("margin_max_qty")
+            except Exception:
+                pass
+
+    return calc_position_sizing(
+        entry_price, stop_price, cap,
+        risk_pct=risk_pct, max_pos_pct=max_pos_pct, lot_size=lot,
+        currency=inst_ccy, buy_power=buy_power, cash_max_qty=cash_max_qty,
+        margin_max_qty=margin_max_qty, capital_source=cap_src, ext_price=ext_price,
+    )
+
+
+# ---------------------------------------------------------------------------
 # 输出渲染
 # ---------------------------------------------------------------------------
 
@@ -1254,6 +1398,25 @@ def render(symbol: str, result: dict, price, generated: str) -> None:
     print(f"  结论: {result['verdict']}")
     for why in result["verdict_reasons"]:
         print(f"    · {why}")
+    sz = result.get("position_sizing")
+    if isinstance(sz, dict):
+        print(f"\n  ◆ 风险定仓测算:")
+        if sz.get("status") == "ok":
+            lim = "单笔风险预算" if sz.get("limiting_factor") == "risk_budget" else "单票仓位上限"
+            print(
+                f"    建议股数: {sz['recommended_shares']} 股  |  "
+                f"仓位金额: {sz['position_value']:,.2f} {sz['currency']} ({sz['position_pct']}%)"
+            )
+            print(
+                f"    止损风险: -{sz['max_loss_amount']:,.2f} {sz['currency']} ({sz['actual_risk_pct']}%, 预算上限 {sz['risk_pct']}%)  |  "
+                f"制约因素: {lim} (风控 {sz['shares_by_risk']} 股 / 仓限 {sz['shares_by_cap']} 股)"
+            )
+            if sz.get("cash_max_qty") is not None:
+                print(f"    账户购买力上限: 现金可买 {sz['cash_max_qty']} 股 / 融资可买 {sz.get('margin_max_qty')}")
+            for w in sz.get("warnings") or []:
+                print(f"    ⚠️ {w}")
+        else:
+            print(f"    {sz.get('reason', '未生成定仓')}")
     print(f"\n  ⚠️ 纪律参考非投资建议;形态识别为算法近似,请人工复核。")
     print(f"  人工项回答方式: --sector-top-decline/--recent-stopout/--familiar/")
     print(f"                 --prepost-move/--sector-breakout yes|no;")
@@ -1345,11 +1508,25 @@ def analyze(symbol: str, args) -> dict:
                 opts["regime_block"] = f"{regime_info.get('label', '')}: {regime_info.get('summary', '')}"
 
     result = check_rules(f, opts)
+    cap_arg = getattr(args, "capital", None)
+    use_acc = bool(getattr(args, "use_account", False))
+    risk_pct = float(getattr(args, "risk_pct", 1.0) or 1.0)
+    max_pos_pct = float(getattr(args, "max_pos_pct", 20.0) or 20.0)
+    if cap_arg is not None and (not math.isfinite(cap_arg) or cap_arg <= 0):
+        raise ValueError("capital 必须为有限正数")
+    ext_px = (to_float(price_info.get("price"))
+              if isinstance(price_info, dict) and price_info.get("source") != "regular"
+              else None)
+    sizing = _resolve_sizing_for_symbol(
+        symbol, market, price, result["levels"]["support"], ext_px,
+        cap_arg, use_acc, risk_pct, max_pos_pct,
+    )
     result.update({"symbol": symbol, "price": price,
                    "price_source": "quote" if live else "last_daily_close",
                    "price_note": _price_note(price_info, result["levels"]["support"]),
                    "underlying_price_info": price_info,
                    "market_regime": regime_info,
+                   "position_sizing": sizing,
                    "intraday_bar": intraday,
                    "last_daily_close": f["last"],
                    "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -1447,6 +1624,14 @@ if __name__ == "__main__":
                         help="跳过大盘环境与 3 星宏观催化评估(加速)")
     parser.add_argument("--strict-regime", action="store_true", default=False,
                         help="严控模式: 当大盘处于 Risk-Off 或 24h 内有 Tier-1 宏观时直接阻断买入")
+    parser.add_argument("--capital", type=float, default=None,
+                        help="风险定仓: 指定账户总资金(按 --risk-pct 与止损距算建议股数)")
+    parser.add_argument("--use-account", action="store_true", default=False,
+                        help="风险定仓: 自动读取只读 Longbridge 账户净资产与 max-qty 可买上限")
+    parser.add_argument("--risk-pct", type=float, default=1.0,
+                        help="风险定仓: 单笔止损最多亏总资金百分比(默认 1.0%%)")
+    parser.add_argument("--max-pos-pct", type=float, default=20.0,
+                        help="风险定仓: 单票最大仓位占总资金百分比(默认 20.0%%)")
     parser.add_argument("--now", help="覆盖当前市场当地时间,格式 'YYYY-MM-DD HH:MM'")
     parser.add_argument("--demo", action="store_true", help="离线合成数据自检")
     args = parser.parse_args()
