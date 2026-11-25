@@ -1843,8 +1843,10 @@ def get_chain_oi(underlying: str, expiry: str, near_atm_pct: float = 0.25,
     strikes = sorted({to_float(r.get("strike")) for r in chain if to_float(r.get("strike"))})
     if not strikes:
         return {"oi_mode": False, "strikes": {}}
+    total_strikes = len(strikes)
     if price:
         strikes = [s for s in strikes if abs(s - price) / price <= near_atm_pct]
+    in_range_strikes = len(strikes)
     if len(strikes) > max_strikes:
         strikes = sorted(strikes, key=lambda s: abs(s - (price or strikes[0])))[:max_strikes]
         strikes.sort()
@@ -1878,6 +1880,9 @@ def get_chain_oi(underlying: str, expiry: str, near_atm_pct: float = 0.25,
         "total_put_oi": total_p,
         "pc_oi_ratio": round(total_p / total_c, 3) if total_c else None,
         "strikes_queried": len(strikes),
+        "strikes_in_range": in_range_strikes,
+        "strikes_total": total_strikes,
+        "truncated": in_range_strikes > len(strikes),
     }
 
 

@@ -11,6 +11,8 @@
   8. 美股规则半日市(感恩节翌日/平安夜/独立日前夕)T 与未收盘 bar 按 13:00 ET 收盘
   9. 市场温度档位统一为 70/50/30(get_market_temp 与 daily_briefing 一致)
  10. 异动榜涨跌幅小数转百分比(如 -0.0831 → -8.31%)
+ 11. 资金流分钟线时间统一标注 UTC(兼容带偏移 ISO/Unix 时间戳,无时区不伪造 UTC)
+ 12. Gamma 剖面扩域扫描同步扩大行权价采样窗与每链档位上限(±40%→±50%/120 档),截断不足时告警
 
 运行: python -m unittest tests.test_fixes_v064 -v
 """
@@ -26,7 +28,7 @@ from unittest.mock import patch
 
 _HERE = os.path.dirname(__file__)
 _SCRIPTS = os.path.normpath(os.path.join(_HERE, "..", "scripts"))
-for _sub in ("", "fundamental", "market", "quote", "sentiment", "technical"):
+for _sub in ("", "flow", "fundamental", "market", "quote", "sentiment", "technical"):
     sys.path.insert(0, os.path.join(_SCRIPTS, _sub))
 
 import calc_gamma_profile as cgp  # noqa: E402
@@ -36,6 +38,7 @@ import calc_option_greeks as cog  # noqa: E402
 import common  # noqa: E402
 import daily_briefing as dbf  # noqa: E402
 import get_ah_premium as ahp  # noqa: E402
+import get_capital_flow as gcf  # noqa: E402
 import get_market_temp as gmt  # noqa: E402
 import get_option_oi as goi  # noqa: E402
 import get_put_call_wall as gpcw  # noqa: E402
@@ -331,6 +334,154 @@ class TestTopMoversPctFormatting(unittest.TestCase):
         self.assertIn("$47.720 (-8.31%)", txt)
         self.assertIn("0700.HK 腾讯控股 400.00 (+2.50%)", txt)
         self.assertNotIn("$400.00", txt)
+
+
+class TestCapitalFlowUtcTime(unittest.TestCase):
+    """资金流分钟线时间统一标注 UTC,偏移自动折算,无时区不伪造 UTC。"""
+
+    def test_ts_to_hm_formats_utc_offset_unix_and_naive(self):
+        self.assertEqual(gcf._ts_to_hm("2026-11-24T14:30:00Z"), "14:30 UTC")
+        self.assertEqual(gcf._ts_to_hm("2026-11-25T01:30:00Z"), "01:30 UTC")
+        self.assertEqual(gcf._ts_to_hm("2026-11-24T09:30:00-05:00"), "14:30 UTC")
+        self.assertEqual(gcf._ts_to_hm("2026-11-25T09:30:00+08:00"), "01:30 UTC")
+        # 2026-11-24 14:30:00 UTC 的秒/毫秒时间戳
+        ts = int(datetime(2026, 11, 24, 14, 30, tzinfo=timezone.utc).timestamp())
+        self.assertEqual(gcf._ts_to_hm(ts), "14:30 UTC")
+        self.assertEqual(gcf._ts_to_hm(str(ts * 1000)), "14:30 UTC")
+        # 无时区 ISO 不伪造 UTC;纯时分或空值安全回退
+        self.assertEqual(gcf._ts_to_hm("2026-01-02 13:30:00"), "13:30（来源时区未标明）")
+        self.assertEqual(gcf._ts_to_hm("10:00"), "10:00")
+        self.assertEqual(gcf._ts_to_hm(""), "")
+        self.assertEqual(gcf._ts_to_hm(None), "")
+
+    def test_flow_mode_output_carries_utc_labels(self):
+        series = [
+            {"time": "2026-11-24T14:30:00Z", "inflow": 100.0, "minute_delta": 100.0,
+             "cumulative_inflow": 100.0, "flow_mode": "cumulative", "unit_verified": True},
+            {"time": "2026-11-24T14:31:00Z", "inflow": 40.0, "minute_delta": -60.0,
+             "cumulative_inflow": 40.0, "flow_mode": "cumulative", "unit_verified": True},
+        ]
+        with patch.object(gcf, "get_capital_flow_series", return_value=series):
+            res, txt = _capture(gcf.fetch_capital_flow, "AAPL.US", flow=True, output_json=False)
+        self.assertEqual(res["peak_inflow"]["time"], "14:30 UTC")
+        self.assertEqual(res["max_outflow"]["time"], "14:31 UTC")
+        self.assertEqual([r["time_str"] for r in res["series"]], ["14:30 UTC", "14:31 UTC"])
+        self.assertIn("最大流入: 14:30 UTC", txt)
+        self.assertIn("最大流出: 14:31 UTC", txt)
+
+
+class TestGammaProfileSamplingWindow(unittest.TestCase):
+    """Gamma 剖面扩域与大范围扫描同步扩大采样窗与档位上限,截断不足时告警。"""
+
+    def test_sampling_budget_scales_with_range(self):
+        self.assertEqual(cgp._sampling_budget(0.20), (0.25, 60))
+        self.assertEqual(cgp._sampling_budget(0.30), (0.375, 90))
+        self.assertEqual(cgp._sampling_budget(0.40), (0.50, 120))
+        self.assertEqual(cgp._sampling_budget(0.40, max_strikes=200), (0.50, 200))
+        with self.assertRaises(ValueError):
+            cgp._sampling_budget(0.20, max_strikes=0)
+
+    def test_auto_expand_refetches_wider_window_and_finds_deep_flip(self):
+        # 现价 100: ATM 附近全为 Call OI,深虚 Put 墙在 68(-32%)
+        # 81 档密集链(60..140,步长 1):旧逻辑只采 ±23% 且上限 60 档,永远采不到 68
+        spot = 100.0
+        full_strikes = [float(k) for k in range(60, 141)]
+        calls = []
+
+        def fake_chain_oi(symbol, exp, near_atm_pct=0.25, max_strikes=60):
+            calls.append((near_atm_pct, max_strikes))
+            in_range = [k for k in full_strikes if abs(k - spot) / spot <= near_atm_pct]
+            chosen = sorted(in_range, key=lambda k: abs(k - spot))[:max_strikes]
+            chosen.sort()
+            smap = {}
+            for k in chosen:
+                call_oi = 2000 if k == 100.0 else 0
+                put_oi = 50000 if k == 68.0 else 0
+                smap[k] = {
+                    "call_oi": call_oi, "put_oi": put_oi,
+                    "call_iv": 0.30, "put_iv": 0.30,
+                    "call_gamma": None, "put_gamma": None,
+                    "call_delta": None, "put_delta": None,
+                }
+            return {
+                "oi_mode": True,
+                "strikes": smap,
+                "strikes_queried": len(chosen),
+                "strikes_in_range": len(in_range),
+                "strikes_total": len(full_strikes),
+                "truncated": len(in_range) > len(chosen),
+            }
+
+        with patch.object(cgp, "get_underlying_price", return_value=spot), \
+             patch.object(cgp, "get_underlying_price_info", return_value={"source": "regular"}), \
+             patch.object(cgp, "get_option_expirations", return_value=["2026-12-18"]), \
+             patch.object(cgp, "days_to_years", return_value=30 / 365.0), \
+             patch.object(cgp, "get_chain_oi", side_effect=fake_chain_oi):
+            res, txt = _capture(cgp.analyze, "TEST.US", window_days=60, range_pct=0.20, output_json=False)
+
+        # 首轮 (±20% → 采样 ±25%/60档) 找不到过零,扩域至 ±30%(采样 ±37.5%/90档)采到 68 并找到翻转点
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(calls[0], (0.25, 60))
+        self.assertEqual(calls[1], (0.375, 90))
+        self.assertEqual(res["scan_range_pct"], 0.30)
+        self.assertEqual(res["max_strikes_per_expiry"], 90)
+        self.assertIsNotNone(res["gamma_flip"])
+        self.assertLess(res["gamma_flip"], 95.0)
+        self.assertGreater(res["gamma_flip"], 68.0)
+        self.assertIsNone(res["coverage_warning"])
+        self.assertIn("采样窗 ±38%", txt)
+
+    def test_explicit_40pct_range_raises_strike_cap_and_warns_when_truncated(self):
+        # 显式 --range 0.40 → 采样 ±50%,每链上限升至 120 档;若仍被截断且未达扫描边缘则告警
+        spot = 100.0
+        seen = []
+
+        def fake_truncated_oi(symbol, exp, near_atm_pct=0.25, max_strikes=60):
+            seen.append((near_atm_pct, max_strikes))
+            # 模拟超高密度链(如 SPY $1 间距):仅覆盖 [90..110],远窄于 ±40%
+            smap = {
+                90.0: {"call_oi": 100, "put_oi": 5000, "call_iv": 0.25, "put_iv": 0.25,
+                       "call_gamma": None, "put_gamma": None, "call_delta": None, "put_delta": None},
+                110.0: {"call_oi": 5000, "put_oi": 100, "call_iv": 0.25, "put_iv": 0.25,
+                        "call_gamma": None, "put_gamma": None, "call_delta": None, "put_delta": None},
+            }
+            return {
+                "oi_mode": True,
+                "strikes": smap,
+                "strikes_queried": 2,
+                "strikes_in_range": 200,
+                "strikes_total": 250,
+                "truncated": True,
+            }
+
+        with patch.object(cgp, "get_underlying_price", return_value=spot), \
+             patch.object(cgp, "get_underlying_price_info", return_value={"source": "regular"}), \
+             patch.object(cgp, "get_option_expirations", return_value=["2026-12-18"]), \
+             patch.object(cgp, "days_to_years", return_value=30 / 365.0), \
+             patch.object(cgp, "get_chain_oi", side_effect=fake_truncated_oi):
+            res, txt = _capture(cgp.analyze, "SPY.US", window_days=60, range_pct=0.40, output_json=False)
+
+        self.assertEqual(seen, [(0.50, 120)])
+        self.assertEqual(res["truncated_expiries"], ["2026-12-18"])
+        self.assertIsNotNone(res["coverage_warning"])
+        self.assertIn("--max-strikes", res["coverage_warning"])
+        self.assertIn("⚠️", txt)
+
+    def test_common_get_chain_oi_reports_truncation_metadata(self):
+        chain = [{"strike": float(k)} for k in range(80, 121, 5)]  # 9 档均在 ±25% 内
+        with patch.object(common, "get_option_chain", return_value=chain), \
+             patch.object(common, "get_underlying_price", return_value=100.0), \
+             patch.object(common, "get_option_contract_metrics", return_value={
+                 "TEST261218C100000.US": {"oi": 10, "iv": 0.25},
+             }):
+            res_trunc = common.get_chain_oi("TEST.US", "2026-12-18", near_atm_pct=0.25, max_strikes=5)
+            res_full = common.get_chain_oi("TEST.US", "2026-12-18", near_atm_pct=0.25, max_strikes=20)
+        self.assertTrue(res_trunc["truncated"])
+        self.assertEqual(res_trunc["strikes_queried"], 5)
+        self.assertEqual(res_trunc["strikes_in_range"], 9)
+        self.assertEqual(res_trunc["strikes_total"], 9)
+        self.assertFalse(res_full["truncated"])
+        self.assertEqual(res_full["strikes_queried"], 9)
 
 
 if __name__ == "__main__":

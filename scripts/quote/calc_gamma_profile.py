@@ -36,9 +36,42 @@ from common import (  # noqa: E402
 )
 
 FLIP_T_FLOOR_DAYS = 0.5  # 避免当日到期链的 gamma 爆炸(除零)
+MAX_SCAN_RANGE = 0.40
+BASE_RANGE_PCT = 0.20
+BASE_MAX_STRIKES = 60
+
+_LAST_COLLECT_META: dict = {}
 
 
-def _collect_legs(symbol: str, window_days: int, range_pct: float) -> tuple[list[dict], float, list[str]]:
+def _sampling_budget(scan_range: float, max_strikes: int | None = None) -> tuple[float, int]:
+    """按实际扫描半径计算行权价采集范围与每到期日档位上限。
+
+    采集范围比扫描边缘至少外扩 25%(且不少于 +5% 绝对余量),
+    每链档位上限随扫描半径按比例放大(±20% → 60 档, ±30% → 90 档, ±40% → 120 档),
+    支持显式 max_strikes 覆盖。
+    """
+    near_atm_pct = round(min(max(scan_range * 1.25, scan_range + 0.05), 0.95), 4)
+    if max_strikes is not None:
+        if max_strikes < 1:
+            raise ValueError("max_strikes 必须为正整数")
+        return near_atm_pct, max_strikes
+    scaled = max(BASE_MAX_STRIKES, math.ceil(round(BASE_MAX_STRIKES * scan_range / BASE_RANGE_PCT, 9)))
+    return near_atm_pct, scaled
+
+
+def _scan_ranges(range_pct: float) -> tuple[float, ...]:
+    """从 range_pct 起逐步扩域至 MAX_SCAN_RANGE(0.40) 的去重扫描半径序列。"""
+    if not 0 < range_pct <= MAX_SCAN_RANGE:
+        raise ValueError("剖面扫描范围须在 0 至 40% 之间，步数必须为正")
+    return tuple(dict.fromkeys((range_pct, min(round(range_pct * 1.5, 4), MAX_SCAN_RANGE), MAX_SCAN_RANGE)))
+
+
+def _collect_legs(
+    symbol: str,
+    window_days: int,
+    range_pct: float,
+    max_strikes: int | None = None,
+) -> tuple[list[dict], float, list[str]]:
     """收集窗口内所有到期日的 (strike, iv, oi, T) 腿。返回 (legs, spot, expiries)。"""
     spot = get_underlying_price(symbol)
     if not spot:
@@ -47,21 +80,33 @@ def _collect_legs(symbol: str, window_days: int, range_pct: float) -> tuple[list
     if not expirations:
         raise ValueError(f"{symbol} 无可用到期日")
 
+    near_atm_pct, eff_max_strikes = _sampling_budget(range_pct, max_strikes)
     legs: list[dict] = []
     used = []
+    truncated_expiries: list[str] = []
+    expiry_bounds: dict[str, tuple[float, float]] = {}
     for exp in expirations:
         days = days_to_years(exp) * 365
         if days <= 0 or days > window_days:
             continue
-        oi = get_chain_oi(symbol, exp, near_atm_pct=range_pct * 1.15, max_strikes=60)
+        oi = get_chain_oi(symbol, exp, near_atm_pct=near_atm_pct, max_strikes=eff_max_strikes)
         if not oi.get("oi_mode"):
             continue
+        strikes_dict = oi.get("strikes") or {}
+        if oi.get("truncated") or (
+            oi.get("strikes_in_range") is not None
+            and oi["strikes_in_range"] > len(strikes_dict)
+        ):
+            truncated_expiries.append(exp)
+        valid_strikes = [s for s in strikes_dict if isinstance(s, (int, float))]
+        if valid_strikes:
+            expiry_bounds[exp] = (min(valid_strikes), max(valid_strikes))
         T = max(days, FLIP_T_FLOOR_DAYS) / 365
         # 该到期日的可用 IV 中位数(个别行权价缺 IV 时的回退值)
-        ivs = sorted(v for s in oi["strikes"].values()
+        ivs = sorted(v for s in strikes_dict.values()
                      for v in (s["call_iv"], s["put_iv"]) if v)
         med_iv = ivs[len(ivs) // 2] if ivs else None
-        for s, v in oi["strikes"].items():
+        for s, v in strikes_dict.items():
             if v["call_oi"]:
                 legs.append({"strike": s, "iv": v["call_iv"] or med_iv,
                              "oi": float(v["call_oi"]), "T": T, "side": "C"})
@@ -71,6 +116,13 @@ def _collect_legs(symbol: str, window_days: int, range_pct: float) -> tuple[list
         used.append(exp)
     if not legs:
         raise ValueError("窗口内无 OI 数据(可能非美股或权限不足)")
+    _LAST_COLLECT_META.clear()
+    _LAST_COLLECT_META.update({
+        "sampling_window_pct": round(near_atm_pct, 4),
+        "max_strikes_per_expiry": eff_max_strikes,
+        "truncated_expiries": truncated_expiries,
+        "expiry_bounds": expiry_bounds,
+    })
     return legs, spot, used
 
 
@@ -87,27 +139,40 @@ def _gex_at(legs: list[dict], S: float, rate: float) -> float:
     return total
 
 
+def _scan_profile(legs: list[dict], spot: float, rate: float,
+                  rng: float, steps: int = 160) -> tuple[float | None, list[dict]]:
+    """在 ±rng 网格上评估 GEX 剖面与最近异号过零点。"""
+    lo, hi = spot * (1 - rng), spot * (1 + rng)
+    dx = (hi - lo) / steps
+    xs = [lo + i * dx for i in range(steps + 1)]
+    ys = [_gex_at(legs, x, rate) for x in xs]
+    best = _nearest_sign_crossing(xs, ys, spot)
+    profile = [{"price": round(x, 2), "gex": y} for x, y in zip(xs, ys)]
+    return (round(best, 2) if best is not None else None), profile
+
+
 def _find_flip(legs: list[dict], spot: float, rate: float,
-               range_pct: float, steps: int = 160) -> tuple[float | None, list[dict]]:
+               range_pct: float, steps: int = 160,
+               *,
+               legs_for_range=None) -> tuple[float | None, list[dict]]:
     """在价位网格上算 GEX 剖面,返回 (插值翻转点, 剖面采样)。
 
     翻转点可能远离现价(深度价内持仓重的标的可达 -20% 以上),若在
     当前 range_pct 内无符号变化,自动扩域(×1.5、×2)重试,上限 0.40。
+    提供 legs_for_range(rng) 时,扩域同步扩大行权价采样窗与档位上限。
     """
-    if not 0 < range_pct <= 0.40 or steps < 1:
+    if not 0 < range_pct <= MAX_SCAN_RANGE or steps < 1:
         raise ValueError("剖面扫描范围须在 0 至 40% 之间，步数必须为正")
     best: float | None = None
     profile: list[dict] = []
-    for rng in dict.fromkeys((range_pct, min(range_pct * 1.5, 0.40), 0.40)):
-        lo, hi = spot * (1 - rng), spot * (1 + rng)
-        dx = (hi - lo) / steps
-        xs = [lo + i * dx for i in range(steps + 1)]
-        ys = [_gex_at(legs, x, rate) for x in xs]
-        best = _nearest_sign_crossing(xs, ys, spot)
-        profile = [{"price": round(x, 2), "gex": y} for x, y in zip(xs, ys)]
+    cur_legs = legs
+    for idx, rng in enumerate(_scan_ranges(range_pct)):
+        if idx > 0 and legs_for_range is not None:
+            cur_legs = legs_for_range(rng)
+        best, profile = _scan_profile(cur_legs, spot, rate, rng, steps=steps)
         if best is not None:
             break
-    return (round(best, 2) if best is not None else None), profile
+    return best, profile
 
 
 def _sr_levels(legs: list[dict], spot: float, top_n: int = 3) -> dict:
@@ -163,13 +228,54 @@ def _sr_levels(legs: list[dict], spot: float, top_n: int = 3) -> dict:
 
 
 def analyze(symbol: str, window_days: int = 60, range_pct: float = 0.20,
-            rate: float = 0.045, output_json: bool = False) -> dict:
-    legs, spot, used = _collect_legs(symbol, window_days, range_pct)
-    total_oi = sum(l["oi"] for l in legs)
+            rate: float = 0.045, max_strikes: int | None = None,
+            output_json: bool = False) -> dict:
+    _scan_ranges(range_pct)
+    if max_strikes is not None and max_strikes < 1:
+        raise ValueError("max_strikes 必须为正整数")
 
-    flip, profile = _find_flip(legs, spot, rate, range_pct)
+    def _collect(rng: float) -> tuple[list[dict], float, list[str]]:
+        _LAST_COLLECT_META.clear()
+        if max_strikes is None:
+            return _collect_legs(symbol, window_days, rng)
+        return _collect_legs(symbol, window_days, rng, max_strikes=max_strikes)
+
+    legs, spot, used = _collect(range_pct)
+    state = {"legs": legs, "used": used, "scan_range": range_pct}
+
+    def _expand_legs(next_rng: float) -> list[dict]:
+        new_legs, _, new_used = _collect(next_rng)
+        state["legs"] = new_legs
+        state["used"] = new_used
+        state["scan_range"] = next_rng
+        return new_legs
+
+    flip, profile = _find_flip(legs, spot, rate, range_pct, legs_for_range=_expand_legs)
+    legs, used, scan_range = state["legs"], state["used"], state["scan_range"]
+    total_oi = sum(l["oi"] for l in legs)
     gex_now = _gex_at(legs, spot, rate)
     sr = _sr_levels(legs, spot)
+
+    near_atm_pct, eff_max_strikes = _sampling_budget(scan_range, max_strikes)
+    meta = dict(_LAST_COLLECT_META)
+    sampling_window_pct = meta.get("sampling_window_pct", round(near_atm_pct, 4))
+    max_strikes_used = meta.get("max_strikes_per_expiry", eff_max_strikes)
+    truncated_expiries = list(meta.get("truncated_expiries") or [])
+    expiry_bounds = meta.get("expiry_bounds") or {}
+
+    leg_strikes = [l["strike"] for l in legs if isinstance(l.get("strike"), (int, float))]
+    strike_range = [min(leg_strikes), max(leg_strikes)] if leg_strikes else None
+    lo_edge, hi_edge = spot * (1 - scan_range), spot * (1 + scan_range)
+    shortfall_expiries = [
+        exp for exp in truncated_expiries
+        if exp in expiry_bounds
+        and (expiry_bounds[exp][0] > lo_edge or expiry_bounds[exp][1] < hi_edge)
+    ]
+    coverage_warning = (
+        f"{len(shortfall_expiries)}/{len(used)} 个到期日触发每链 {max_strikes_used} 档上限，"
+        f"采样未完全覆盖 ±{scan_range*100:.0f}% 扫描边缘（可传 --max-strikes 调高上限）"
+        if shortfall_expiries else None
+    )
 
     sign = "正" if gex_now > 0 else "负" if gex_now < 0 else "零"
     regime = f"按 Call 正 / Put 负假设，现价为{sign} GEX"
@@ -183,6 +289,12 @@ def analyze(symbol: str, window_days: int = 60, range_pct: float = 0.20,
         "underlying_price": spot,
         "underlying_price_source": get_underlying_price_info(symbol),
         "window_days": window_days,
+        "scan_range_pct": scan_range,
+        "sampling_window_pct": sampling_window_pct,
+        "max_strikes_per_expiry": max_strikes_used,
+        "strike_range": strike_range,
+        "truncated_expiries": truncated_expiries,
+        "coverage_warning": coverage_warning,
         "expiries_aggregated": used,
         "legs": len(legs),
         "total_oi": total_oi,
@@ -203,6 +315,9 @@ def analyze(symbol: str, window_days: int = 60, range_pct: float = 0.20,
     print(f"{symbol} Gamma Profile(聚合 {len(used)} 个到期日 / {window_days} 天窗口,"
           f"{len(legs):,} 条腿,总 OI {total_oi:,.0f})")
     print(f"  现价: {spot}{price_source_note(symbol)}   总 GEX@现价: {gex_now:,.0f}")
+    print(f"  扫描范围: ±{scan_range*100:.0f}%(行权价采样窗 ±{sampling_window_pct*100:.0f}%,每链上限 {max_strikes_used} 档)")
+    if coverage_warning:
+        print(f"  ⚠️ {coverage_warning}")
     print(f"  Gamma Flip(插值): {flip}")
     print(f"  机制: {regime}")
     print()
@@ -232,12 +347,14 @@ if __name__ == "__main__":
     parser.add_argument("--window", type=int, default=60, help="聚合窗口天数(默认 60)")
     parser.add_argument("--range", type=float, default=0.20, dest="range_pct",
                         help="剖面价位范围 ±比例(默认 0.20)")
+    parser.add_argument("--max-strikes", type=int, default=None, dest="max_strikes",
+                        help="每到期日最多查询行权价数(默认随扫描范围自动缩放: ±20%→60 档, ±40%→120 档)")
     parser.add_argument("--rate", type=float, default=0.045, help="无风险利率")
     parser.add_argument("--json", action="store_true", dest="output_json", help="输出 JSON 格式")
     args = parser.parse_args()
     try:
         analyze(args.symbol, window_days=args.window, range_pct=args.range_pct,
-                rate=args.rate, output_json=args.output_json)
+                rate=args.rate, max_strikes=args.max_strikes, output_json=args.output_json)
     except Exception as e:
         print_error("Gamma Profile", str(e))
         sys.exit(1)
