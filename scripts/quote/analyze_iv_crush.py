@@ -36,6 +36,7 @@ from common import (  # noqa: E402
 
 from get_iv_history import (  # noqa: E402
     _load_history as _load_iv_history, comparable_iv_series, get_current_atm_iv,
+    maybe_record_daily_iv,
 )
 
 
@@ -105,6 +106,8 @@ def analyze_iv_crush(symbol: str, output_json: bool = False) -> dict:
     earnings = find_next_earnings(symbol)
     # 2. 当前 IV
     current_iv = _get_current_iv(symbol)
+    # 2.5 若当日尚未采集则顺手落盘(复用本进程缓存; 单测下默认隔离)
+    maybe_record_daily_iv(symbol)
     # 3. 历史 IV
     history = sorted(comparable_iv_series(_load_iv_history(symbol)), key=lambda h: h["date"])
 

@@ -89,7 +89,15 @@ def _resolve_leg_price(row, last_key, iv_key, leg, spot, strike, cp, expiry, rat
         f"也没有可用 IV,无法估算该腿成本;请在该腿 JSON 里用 \"price\" 指定,如 {{\"price\": 0.15}}")
 
 
-def analyze_pnl(legs: list[dict], output_json: bool = False, rate: float = 0.045) -> dict:
+def analyze_pnl(
+    legs: list[dict],
+    output_json: bool = False,
+    rate: float = 0.045,
+    *,
+    quiet: bool = False,
+    underlying_price: float | None = None,
+    chain: list[dict] | None = None,
+) -> dict:
     if not legs:
         raise ValueError("腿列表为空")
 
@@ -101,12 +109,17 @@ def analyze_pnl(legs: list[dict], output_json: bool = False, rate: float = 0.045
                 "仅支持同标的、同到期日的组合(日历价差/跨标的组合暂不支持)。"
                 f"腿 {leg.get('underlying')} {leg.get('expiry')} 与首腿 {underlying} {expiry} 不一致"
             )
-    price = get_underlying_price(underlying)
+    price = (
+        underlying_price
+        if (underlying_price is not None and math.isfinite(underlying_price) and underlying_price > 0)
+        else get_underlying_price(underlying)
+    )
     if not price:
         raise ValueError(f"无法获取 {underlying} 现价")
 
     # 各腿成本/收入:成交价 last → 腿内 price → chain IV 的 BS 估算(见 _resolve_leg_price)
-    chain = get_option_chain(underlying, expiry)
+    if chain is None:
+        chain = get_option_chain(underlying, expiry)
     sign_map = {"BUY": 1, "SELL": -1}
 
     leg_costs = []
@@ -208,6 +221,8 @@ def analyze_pnl(legs: list[dict], output_json: bool = False, rate: float = 0.045
 
     if output_json:
         print_json(result)
+        return result
+    if quiet:
         return result
 
     print(f"组合损益分析({len(legs)} 腿,到期 {expiry})")

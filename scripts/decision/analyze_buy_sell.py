@@ -49,6 +49,7 @@ from calc_technical_score import score as tech_score  # noqa: E402
 from get_valuation_percentile import analyze as val_analyze  # noqa: E402
 from get_analyst_consensus import analyze as analyst_analyze  # noqa: E402
 from get_market_regime import assess_market_regime  # noqa: E402
+from get_iv_history import maybe_record_daily_iv  # noqa: E402
 
 WEIGHTS = {"技术面": 30, "估值面": 15, "资金面": 20, "期权定位": 10, "分析师": 15}
 MIN_COVERAGE_WEIGHT = 60
@@ -188,6 +189,7 @@ def _dim_options(symbol: str, bulls: list, bears: list, price: float | None = No
                         bulls.append(f"期权: IV 偏贵(IV/HV {iv/hv:.2f},卖权收租机会)")
                     elif iv / hv < 0.8:
                         s -= 5
+        maybe_record_daily_iv(symbol)
         return (max(min(s, 100), 0), ", ".join(parts)) if parts else (None, "无数据")
     except Exception as e:
         return None, f"数据失败({str(e)[:30]})"

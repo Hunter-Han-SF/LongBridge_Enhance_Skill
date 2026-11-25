@@ -1,54 +1,78 @@
-"""ATM IV 历史时间序列(B 档·本地累积)。
+"""ATM IV 历史时间序列(B 档·本地累积，支持单股/批量/自选股每日自动记录)。
 
 对应 Futu: get_option_underlying_his_volatility(IV 走势)
 
 ⚠️ 关键限制:Longbridge CLI 的 option chain 只返回实时数据,无法查询历史某天的 chain。
    因此本脚本采用"本地累积"模式:
-   - 每次运行时,把当天的 ATM IV 追加到本地数据文件(~/.lbr_iv_history/<symbol>.json)
-   - 历史序列靠多次运行逐步积累
-   - 首次运行只有 1 个数据点,需持续运行多天才能得到有意义的序列
-
-建议配合 cron / 定时任务每日运行一次。
+   - 每次运行时,把当天的恒定30日 ATM IV 追加到本地数据文件(~/.lbr_iv_history/<symbol>.json，
+     可通过环境变量 LBR_IV_HISTORY_DIR 自定义目录)
+   - 支持单标的、多标的以及 --watchlist / --positions 批量采集
+   - 日常问股(analyze_buy_sell / get_option_volatility / analyze_iv_crush / get_option_strategy)
+     每日首次查询某美股时也会静默顺手记录当天的恒定30日 ATM IV
 
 用法:
-    python get_iv_history.py AAPL.US          # 追加今天 + 显示历史
-    python get_iv_history.py AAPL.US --no-append  # 只读不追加
+    python get_iv_history.py AAPL.US                # 追加今天 + 显示历史
+    python get_iv_history.py AAPL.US MSFT.US NVDA.US # 批量采集多只美股
+    python get_iv_history.py --watchlist             # 采集自选股中的所有美股
+    python get_iv_history.py --positions             # 采集当前美股持仓
+    python get_iv_history.py AAPL.US --no-append     # 只读不追加
     python get_iv_history.py AAPL.US --json
 """
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 import os
 import sys
+import threading
 from datetime import date
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
 from common import (  # noqa: E402
+    LongbridgeCliError,
+    calc_hv,
     days_to_years,
+    get_batch_quotes,
+    get_kline_adjusted,
     get_option_chain,
-    market_now,
     get_option_expirations,
+    get_stock_positions,
     get_underlying_price,
+    get_watchlist_groups,
+    is_equity_symbol,
+    market_now,
+    print_display_table,
     print_error,
     print_json,
     regular_session_price,
     to_float,
 )
 
-_HISTORY_DIR = os.path.join(os.path.expanduser("~"), ".lbr_iv_history")
+_DEFAULT_HISTORY_DIR = os.path.join(os.path.expanduser("~"), ".lbr_iv_history")
+_HISTORY_DIR = _DEFAULT_HISTORY_DIR
+_SAVE_LOCK = threading.Lock()
+
+
+def _effective_history_dir() -> str:
+    """历史目录解析：优先测试用例 monkeypatch 的 _HISTORY_DIR，其次 LBR_IV_HISTORY_DIR。"""
+    if _HISTORY_DIR != _DEFAULT_HISTORY_DIR:
+        return _HISTORY_DIR
+    env_dir = os.environ.get("LBR_IV_HISTORY_DIR", "").strip()
+    return env_dir or _HISTORY_DIR
 
 
 def _history_path(symbol: str) -> str:
     """symbol → 历史文件路径。白名单净化(仅字母数字_-)+ 穿越防护。"""
     import re as _re
+    base_dir = _effective_history_dir()
     safe = _re.sub(r"[^A-Za-z0-9_-]", "_", str(symbol))[:64]
-    path = os.path.join(_HISTORY_DIR, f"{safe}.json")
+    path = os.path.join(base_dir, f"{safe}.json")
     # 防路径穿越:净化后文件名不得含路径分隔符,最终目录必须是历史目录本身
     if os.path.basename(path) != f"{safe}.json" or \
-            os.path.dirname(os.path.abspath(path)) != os.path.abspath(_HISTORY_DIR):
+            os.path.dirname(os.path.abspath(path)) != os.path.abspath(base_dir):
         raise ValueError(f"非法 symbol: {symbol!r}")
     return path
 
@@ -66,11 +90,13 @@ def _load_history(symbol: str) -> list[dict]:
 
 
 def _save_history(symbol: str, data: list[dict]) -> None:
-    os.makedirs(_HISTORY_DIR, exist_ok=True)
-    # pathlib 写汇(文件名经 _history_path 白名单净化+穿越防护)
     import pathlib as _pl
-    _pl.Path(_history_path(symbol)).write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    base_dir = _effective_history_dir()
+    with _SAVE_LOCK:
+        os.makedirs(base_dir, exist_ok=True)
+        # pathlib 写盘(文件名经 _history_path 白名单净化+穿越防护)
+        _pl.Path(_history_path(symbol)).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 IV_TENOR_DAYS = 30
@@ -149,6 +175,129 @@ def comparable_iv_series(history: list[dict]) -> list[dict]:
     return [series[day] for day in sorted(series)]
 
 
+def maybe_record_daily_iv(symbol: str) -> bool:
+    """机会式自动每日采集: 当今日恒定30日 ATM IV 尚未记录时静默落盘(<1ms 快速跳过已记标的)。
+
+    任何网络/鉴权/非美股/无期权异常均静默返回 False，绝不阻塞主分析流程。
+    可通过环境变量 LBR_AUTO_IV_RECORD=0 关闭。单元测试默认隔离(未改目录时不写宿主目录)。
+    """
+    try:
+        sym = str(symbol or "").strip()
+        if not sym or not sym.upper().endswith(".US") or not is_equity_symbol(sym):
+            return False
+        if os.environ.get("LBR_AUTO_IV_RECORD", "1").strip().lower() in {"0", "false", "no", "off"}:
+            return False
+        if ("unittest" in sys.modules
+                and not os.environ.get("LBR_IV_HISTORY_DIR", "").strip()
+                and _HISTORY_DIR == _DEFAULT_HISTORY_DIR):
+            return False
+
+        observed_at = market_now(sym)
+        today = observed_at.date().isoformat()
+        history = _load_history(sym)
+        if any(
+            isinstance(h, dict)
+            and h.get("date") == today
+            and h.get("tenor_days") == IV_TENOR_DAYS
+            and (to_float(h.get("atm_iv_pct")) or 0) > 0
+            for h in history
+        ):
+            return False
+
+        current_iv, meta = get_current_atm_iv(sym)
+        if current_iv is None or current_iv <= 0 or not meta:
+            return False
+
+        history = [h for h in history if not isinstance(h, dict) or h.get("date") != today]
+        history.append({
+            "date": today,
+            "atm_iv_pct": round(current_iv * 100, 2),
+            "tenor_days": meta["tenor_days"],
+            "source_expiries": meta["source_expiries"],
+            "observed_at": observed_at.isoformat(),
+            "quote_freshness": "unknown",
+        })
+        history.sort(key=lambda x: _record_date(x) or date.min)
+        _save_history(sym, history)
+        return True
+    except Exception:
+        return False
+
+
+def calc_hv_proxy_metrics(
+    symbol: str,
+    current_iv_pct: float,
+    *,
+    window: int = IV_TENOR_DAYS,
+    lookback_bars: int = 285,
+    kline_fn=None,
+) -> dict | None:
+    """基于过去约 1 年(252 交易日)滚动 30 日 HV 序列计算冷启动分位代理指标。"""
+    fetch_kline = kline_fn or get_kline_adjusted
+    klines = fetch_kline(symbol, count=lookback_bars)
+    if not isinstance(klines, list) or not klines:
+        return None
+    closes = [
+        c for row in klines if isinstance(row, dict)
+        for c in [to_float(row.get("close"))]
+        if c is not None and math.isfinite(c) and c > 0
+    ]
+    if len(closes) < window + 20:
+        return None
+
+    rolling_hvs: list[float] = []
+    for idx in range(window + 1, len(closes) + 1):
+        hv = calc_hv(closes[idx - (window + 1):idx])
+        if hv is not None and math.isfinite(hv) and hv > 0:
+            rolling_hvs.append(round(hv * 100, 2))
+    if len(rolling_hvs) < 20:
+        return None
+
+    hv_current = rolling_hvs[-1]
+    hv_lo = min(rolling_hvs)
+    hv_hi = max(rolling_hvs)
+    sv = sorted(rolling_hvs)
+    n = len(sv)
+    hv_median = sv[n // 2] if n % 2 == 1 else (sv[n // 2 - 1] + sv[n // 2]) / 2
+    if hv_hi > hv_lo:
+        raw_rank = (current_iv_pct - hv_lo) / (hv_hi - hv_lo) * 100
+        hv_rank = round(min(max(raw_rank, 0.0), 100.0), 1)
+    else:
+        hv_rank = 50.0
+    hv_pct = round(sum(1 for v in rolling_hvs if v < current_iv_pct) / n * 100, 1)
+    return {
+        "hv_window_days": window,
+        "rolling_samples": n,
+        "hv_current_pct": hv_current,
+        "hv_low_pct": hv_lo,
+        "hv_high_pct": hv_hi,
+        "hv_median_pct": round(hv_median, 2),
+        "hv_proxy_rank": hv_rank,
+        "hv_proxy_percentile": hv_pct,
+        "vrp_pct": round(current_iv_pct - hv_current, 2),
+        "iv_hv_ratio": round(current_iv_pct / hv_current, 3) if hv_current > 0 else None,
+        "above_hv_52w_high": current_iv_pct > hv_hi,
+        "below_hv_52w_low": current_iv_pct < hv_lo,
+    }
+
+
+def check_series_continuity(
+    series: list[dict],
+    observed_day: str | None = None,
+    min_points: int = 20,
+) -> str | None:
+    """检查本地可比 IV 序列是否存在长断档或近期密度过低。"""
+    dates = sorted(d for row in series for d in [_record_date(row)] if d is not None)
+    if len(dates) < 2:
+        return None
+    last_gap = (dates[-1] - dates[-2]).days
+    ref_d = date.fromisoformat(observed_day) if observed_day else dates[-1]
+    recent_60d = sum(1 for d in dates if 0 <= (ref_d - d).days <= 60)
+    if last_gap > 14 or (len(dates) >= 5 and recent_60d < min(5, min_points)):
+        return f"近60日仅 {recent_60d} 个观测点(最近两次间隔 {last_gap} 天)，样本存在断档"
+    return None
+
+
 def iv_history(
     symbol: str,
     append: bool = True,
@@ -218,14 +367,168 @@ def iv_history(
     return result
 
 
+def resolve_iv_symbols(
+    symbols: list[str] | None = None,
+    *,
+    use_watchlist: bool = False,
+    group: str | None = None,
+    use_positions: bool = False,
+) -> tuple[list[str], list[str]]:
+    """合并显式代码 / 自选股 / 持仓，过滤为去重后的美股正股(.US)与被跳过清单。"""
+    raw: list[str] = [str(s or "").strip() for s in (symbols or []) if str(s or "").strip()]
+    if use_watchlist or group:
+        for grp in get_watchlist_groups(group=group, market=None) or []:
+            for sec in grp.get("securities") or []:
+                sym = str(sec.get("symbol") or "").strip()
+                if sym:
+                    raw.append(sym)
+    if use_positions:
+        for pos in get_stock_positions(market=None) or []:
+            sym = str(pos.get("symbol") or "").strip()
+            if sym:
+                raw.append(sym)
+
+    us_symbols: list[str] = []
+    skipped: list[str] = []
+    seen_us: set[str] = set()
+    seen_skip: set[str] = set()
+    for sym in raw:
+        up = sym.upper()
+        if is_equity_symbol(sym) and up.endswith(".US"):
+            if up not in seen_us:
+                seen_us.add(up)
+                us_symbols.append(sym)
+        else:
+            if up not in seen_skip:
+                seen_skip.add(up)
+                skipped.append(sym)
+    return us_symbols, skipped
+
+
+def batch_iv_history(
+    symbols: list[str],
+    *,
+    append: bool = True,
+    output_json: bool = False,
+    skipped: list[str] | None = None,
+) -> dict:
+    """批量采集或读取多只美股正股的恒定30日 ATM IV 历史。"""
+    clean_syms = [str(s).strip() for s in (symbols or []) if str(s or "").strip()]
+    if not clean_syms:
+        raise ValueError("未解析到支持期权的美股正股代码(.US)")
+
+    if append and len(clean_syms) > 1:
+        try:
+            get_batch_quotes(clean_syms)
+        except LongbridgeCliError as e:
+            if "auth login" in str(e):
+                raise
+        except Exception:
+            pass
+
+    def _collect_one(sym: str) -> dict:
+        try:
+            hist = iv_history(sym, append=append, output_json=False, quiet=True)
+            comp = comparable_iv_series(hist.get("series", []))
+            curr_iv = comp[-1]["atm_iv_pct"] if comp else None
+            delta_iv = round(curr_iv - comp[-2]["atm_iv_pct"], 2) if len(comp) >= 2 and curr_iv is not None else None
+            return {
+                "symbol": sym,
+                "ok": True,
+                "atm_iv_pct": curr_iv,
+                "delta_iv_pct": delta_iv,
+                "comparable_points": hist["comparable_points"],
+                "data_points": hist["data_points"],
+                "appended_today": hist["appended_today"],
+                "date_range": hist["date_range"],
+                "history_file": hist["history_file"],
+            }
+        except Exception as e:
+            return {"symbol": sym, "ok": False, "error": str(e)}
+
+    workers = min(3, len(clean_syms))
+    if workers <= 1:
+        rows = [_collect_one(s) for s in clean_syms]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            rows = list(pool.map(_collect_one, clean_syms))
+
+    ok_rows = [r for r in rows if r["ok"]]
+    failed_rows = [r for r in rows if not r["ok"]]
+    result = {
+        "mode": "batch",
+        "total": len(clean_syms),
+        "succeeded": len(ok_rows),
+        "failed": len(failed_rows),
+        "skipped_non_us": list(skipped or []),
+        "appended": append,
+        "history_dir": _effective_history_dir(),
+        "results": rows,
+        "note": "恒定30日 ATM IV 批量采集/读取结果，仅覆盖美股正股(.US)。",
+    }
+
+    if output_json:
+        print_json(result)
+        return result
+
+    action = "采集并落盘" if append else "只读汇总"
+    print(f"批量 ATM IV {action}({len(ok_rows)}/{len(clean_syms)} 成功,目录 {_effective_history_dir()})")
+    if skipped:
+        print(f"  已跳过非美股正股({len(skipped)}): {', '.join(skipped)}")
+    print()
+    table_rows = []
+    for r in rows:
+        if r["ok"]:
+            iv_s = f"{r['atm_iv_pct']:.2f}%" if r.get("atm_iv_pct") is not None else "N/A"
+            chg_s = f"{r['delta_iv_pct']:+.2f}%" if r.get("delta_iv_pct") is not None else "-"
+            status_s = "✓ 已记录" if r.get("appended_today") else "已读取"
+            table_rows.append({
+                "代码": r["symbol"],
+                "30日ATM IV": iv_s,
+                "较前日": chg_s,
+                "可比点数": r["comparable_points"],
+                "区间": r.get("date_range") or "-",
+                "状态": status_s,
+            })
+        else:
+            table_rows.append({
+                "代码": r["symbol"],
+                "30日ATM IV": "-",
+                "较前日": "-",
+                "可比点数": "-",
+                "区间": "-",
+                "状态": f"✗ {str(r['error'])[:36]}",
+            })
+    print_display_table(table_rows, columns=["代码", "30日ATM IV", "较前日", "可比点数", "区间", "状态"])
+    return result
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="ATM IV 历史序列(本地累积)")
-    parser.add_argument("symbol", help="正股代码,如 AAPL.US")
+    parser = argparse.ArgumentParser(description="ATM IV 历史序列(本地累积/批量采集)")
+    parser.add_argument("symbols", nargs="*", help="正股代码列表,如 AAPL.US MSFT.US")
+    parser.add_argument("--watchlist", action="store_true", help="采集自选股中的所有美股正股")
+    parser.add_argument("--group", default=None, help="仅采集指定自选分组(配合 --watchlist)")
+    parser.add_argument("--positions", action="store_true", help="采集当前账户的美股正股持仓")
     parser.add_argument("--no-append", action="store_true", help="只读不追加当天数据")
     parser.add_argument("--json", action="store_true", dest="output_json", help="输出 JSON 格式")
     args = parser.parse_args()
     try:
-        iv_history(args.symbol, append=not args.no_append, output_json=args.output_json)
+        if not args.watchlist and not args.positions and not args.group:
+            if len(args.symbols) == 1:
+                iv_history(args.symbols[0], append=not args.no_append, output_json=args.output_json)
+            elif len(args.symbols) == 0:
+                parser.error("请提供至少一个标的代码，或使用 --watchlist / --positions")
+            else:
+                us_syms, skipped = resolve_iv_symbols(args.symbols)
+                batch_iv_history(us_syms, append=not args.no_append,
+                                 output_json=args.output_json, skipped=skipped)
+        else:
+            us_syms, skipped = resolve_iv_symbols(
+                args.symbols, use_watchlist=args.watchlist,
+                group=args.group, use_positions=args.positions,
+            )
+            batch_iv_history(us_syms, append=not args.no_append,
+                             output_json=args.output_json, skipped=skipped)
     except Exception as e:
         print_error("IV 历史", str(e))
         sys.exit(1)

@@ -10,7 +10,7 @@ description: |
   ⑧日内微观(VWAP/盘口压力/逐笔价格方向/量价分布Volume Profile)
   ⑨买卖决策仪表盘 ⑩选股器(预设策略/自定义指标条件筛选)。
   信号源:内部人交易(SEC Form 4)/13F机构持仓/基金持仓/机构股东/指数成分/AH溢价。
-  Triggers: 期权策略,straddle,spread,butterfly,collar,option chain,put call ratio,capital flow,order flow,short sale,
+  Triggers: 期权策略,straddle,spread,butterfly,collar,iron condor,credit spread,option chain,put call ratio,capital flow,order flow,short sale,
   earnings calendar,market temperature,expected move,risk reversal,screener,warrant,insider,POC,
   隐含波动率,做空,均线,金叉,死叉,超买超卖,支撑阻力,52周新高,技术分析,市盈率,ROE,毛利率,净利率,
   负债率,自由现金流,股息率,收息,筹码分布,买卖盘,选股,筛选,低估值选股,权证,认购证,认沽证,
@@ -19,7 +19,7 @@ description: |
 license: MIT
 metadata:
   author: community
-  version: "0.6.7"
+  version: "0.7.0"
   risk_level: read_only
   requires_login: true
   default_install: true
@@ -69,9 +69,9 @@ earnings calendar,market temperature,expected move,risk reversal,order flow,
 
 ### 已知限制（历史接口观测与当前实现）
 
-0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.1 修复 calc-index theta 死值（自动 BS 补算 + `theta_source` 溯源）及 chain 同行权价重复行，实证与设计见 [theta 死字段修复记录](docs/fixes-2026-11-10-theta-dead-field.md)。0.6.2 修复五项实盘验证的高优先级问题：chain 重复行权价改在 `get_option_chain` 入口统一合并(此前仅 get_option_quote 自保，其余按行权价取首个匹配行的脚本会随机拿到零值/垃圾值)、入场规则支撑阻力聚类(高低点分开、簇宽受限、按区间取止损与目标)、财务健康科目名的币种后缀匹配、IV/HV 期限对齐、分析师共识取最新快照与共识目标价，见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项中优先级问题:盘中未收盘 K 线的成交量不再用于量比(技术指标、技术评分、入场规则)、期权到期损益的零成交腿不再按零成本、常规时段之外的现价取延长时段最新价并标注来源、半日市不再被 D12 当作休市日、美股空头成交占比不再套用港股阈值或参与仪表盘计分、盘口可见档位不足时不下结论,见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。0.6.4 修复低优先级审计项:GEX 改用合约 IV 的 BS gamma 优先(避免服务端 3 位小数把虚值腿舍入成 0)、组合 Greeks 传导 `theta_source` 拒绝 `dead_zero` 伪有利衰减、A/H 溢价日期改用港股时区、估值同行排名改取 `industry-valuation dist` 全行业数据、Put/Call 墙与剖面自适应间距、美股规则半日市 T 按 13:00 ET 收盘、温度档位统一为 70/50/30、异动榜涨跌幅百分比格式化,见 [0.6.4 修复记录](docs/fixes-2026-11-25-low-priority.md)。0.6.5 修复美股盘前实盘抽检（`AAPL.US`/`MSFT.US`/`BRK.B.US`）发现的四组问题:`get_trade_stats` 服务端 50 档截断防护与全样本买卖比、`get_option_volatility`/`analyze_buy_sell` 跳过尚无 IV 的新挂牌周链并统一前复权 HV、美股节假日与延长时段边界（`VWAP --session all`、异动打分延长时段涨跌幅、Expected Move/期限结构常规时段 ATM 对齐）、多点号代码与窄止损告警及选股器 `--count`,见 [0.6.5 实盘抽检修复记录](docs/fixes-2026-11-25-us-live-spotcheck.md)。0.6.6 新增大盘环境引擎 `get_market_regime.py`（`.VIX.US`+`SPY`/`QQQ`+3星Tier-1宏观）并接入买卖仪表盘/简报/入场军规，修复 `get_macro_calendar` 星级与日期，打通 `check_entry_rules` 的 `B8`/`D11`/`D6` 自动分诊及 `longbridge 0.32.0` 批量容错,见 [0.6.6 开发记录](docs/feat-2026-11-25-v066-regime-macro-autorules.md)。0.6.7 新增进程内只读 CLI TTL 缓存（默认 15s，`LBR_CACHE_TTL=0` 可关闭）与并发锁节流、批量自选股/持仓扫描器 `scan_watchlist.py`（`--fast`/`--full`），并为 `check_entry_rules.py` 与扫描器接入按单笔风险%与仓位上限算股数的风险定仓计算器（支持 `--capital` 与只读 `--use-account`）,见 [0.6.7 开发记录](docs/feat-2026-11-25-v067-scanner-cache-sizing.md)。
+0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.1 修复 calc-index theta 死值（自动 BS 补算 + `theta_source` 溯源）及 chain 同行权价重复行，实证与设计见 [theta 死字段修复记录](docs/fixes-2026-11-10-theta-dead-field.md)。0.6.2 修复五项实盘验证的高优先级问题：chain 重复行权价改在 `get_option_chain` 入口统一合并(此前仅 get_option_quote 自保，其余按行权价取首个匹配行的脚本会随机拿到零值/垃圾值)、入场规则支撑阻力聚类(高低点分开、簇宽受限、按区间取止损与目标)、财务健康科目名的币种后缀匹配、IV/HV 期限对齐、分析师共识取最新快照与共识目标价，见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项中优先级问题:盘中未收盘 K 线的成交量不再用于量比(技术指标、技术评分、入场规则)、期权到期损益的零成交腿不再按零成本、常规时段之外的现价取延长时段最新价并标注来源、半日市不再被 D12 当作休市日、美股空头成交占比不再套用港股阈值或参与仪表盘计分、盘口可见档位不足时不下结论,见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。0.6.4 修复低优先级审计项:GEX 改用合约 IV 的 BS gamma 优先(避免服务端 3 位小数把虚值腿舍入成 0)、组合 Greeks 传导 `theta_source` 拒绝 `dead_zero` 伪有利衰减、A/H 溢价日期改用港股时区、估值同行排名改取 `industry-valuation dist` 全行业数据、Put/Call 墙与剖面自适应间距、美股规则半日市 T 按 13:00 ET 收盘、温度档位统一为 70/50/30、异动榜涨跌幅百分比格式化,见 [0.6.4 修复记录](docs/fixes-2026-11-25-low-priority.md)。0.6.5 修复美股盘前实盘抽检（`AAPL.US`/`MSFT.US`/`BRK.B.US`）发现的四组问题:`get_trade_stats` 服务端 50 档截断防护与全样本买卖比、`get_option_volatility`/`analyze_buy_sell` 跳过尚无 IV 的新挂牌周链并统一前复权 HV、美股节假日与延长时段边界（`VWAP --session all`、异动打分延长时段涨跌幅、Expected Move/期限结构常规时段 ATM 对齐）、多点号代码与窄止损告警及选股器 `--count`,见 [0.6.5 实盘抽检修复记录](docs/fixes-2026-11-25-us-live-spotcheck.md)。0.6.6 新增大盘环境引擎 `get_market_regime.py`（`.VIX.US`+`SPY`/`QQQ`+3星Tier-1宏观）并接入买卖仪表盘/简报/入场军规，修复 `get_macro_calendar` 星级与日期，打通 `check_entry_rules` 的 `B8`/`D11`/`D6` 自动分诊及 `longbridge 0.32.0` 批量容错,见 [0.6.6 开发记录](docs/feat-2026-11-25-v066-regime-macro-autorules.md)。0.6.7 新增进程内只读 CLI TTL 缓存（默认 15s，`LBR_CACHE_TTL=0` 可关闭）与并发锁节流、批量自选股/持仓扫描器 `scan_watchlist.py`（`--fast`/`--full`），并为 `check_entry_rules.py` 与扫描器接入按单笔风险%与仓位上限算股数的风险定仓计算器（支持 `--capital` 与只读 `--use-account`）,见 [0.6.7 开发记录](docs/feat-2026-11-25-v067-scanner-cache-sizing.md)。0.7.0 新增期权卖方三策略（`BULL_PUT_SPREAD`/`BEAR_CALL_SPREAD`/`IRON_CONDOR`）、目标 Delta 选腿（`--delta`/`--width`）、批量 OI 流动性检视（`--check-liquidity`）与内联损益/胜率评估（`--with-pnl`），并接入问股每日静默自动记录 30D IV、`get_iv_history.py` 自选/持仓批量采集及 `calc_iv_rank`/`calc_iv_percentile` 1 年滚动 `HV30` 冷启动过渡与断档提示（`--strict` 可关）,见 [0.7.0 开发记录](docs/feat-2026-11-25-v070-option-sellers-iv-coldstart.md)。
 1. **`option quote` 单合约查询返回空** → 原生 Greeks/OI 改经 calc-index 按合约获取,Black-Scholes 作回退
-2. **`option chain` 无法查历史** → IV Rank/Percentile 靠 `get_iv_history.py` 本地累积,需多日运行
+2. **`option chain` 无法查历史** → IV Rank/Percentile 靠 `get_iv_history.py` 本地累积（问股顺手补录+自选批量），样本不足 20 天时默认以 1 年滚动 `HV30` 代理分位冷启动过渡（`--strict` 可要求严格历史）
 3. **仅支持美股 OPRA** → 港股/A 股期权数据可能为空(港股衍生品用 `warrant` 涡轮)
 4. **P/C 比率仅美股** → `option volume daily` 不支持港股
 5. ~~chain 无按行权价的 OI~~ → **已解决**:calc-index 可按合约查真实 OI + 原生 Greeks
@@ -188,26 +188,30 @@ python scripts/quote/get_vol_smile.py AAPL.US --expiry 2026-09-18 [--json]
 ```
 - 各 strike 的 IV 曲线 + Put 偏度(OTM put - ATM)
 
-#### IV 历史(本地累积)
+#### IV 历史(本地累积 + 问股自动补录 + 批量自选采集)
 ```bash
-# 追加今天数据 + 显示历史(建议每日运行)
+# 单标追加今天 + 显示历史
 python scripts/quote/get_iv_history.py AAPL.US [--json]
+# 多标的 / 自选股 / 当前持仓一键批量采集美股 30D ATM IV
+python scripts/quote/get_iv_history.py AAPL.US MSFT.US NVDA.US
+python scripts/quote/get_iv_history.py --watchlist [--group 核心池]
+python scripts/quote/get_iv_history.py --positions
 # 只读不追加
 python scripts/quote/get_iv_history.py AAPL.US --no-append
 ```
-- ⚠️ Longbridge 不提供历史 IV,靠本地累积(`~/.lbr_iv_history/<symbol>.json`)
-- 数据存到 `~/.lbr_iv_history/AAPL_US.json`
+- ⚠️ Longbridge 不提供历史 IV,靠本地累积(`~/.lbr_iv_history/<symbol>.json`，可用 `LBR_IV_HISTORY_DIR` 定制路径；日常运行 `analyze_buy_sell` / `get_option_volatility` / `analyze_iv_crush` / `get_option_strategy` 查美股时亦会每日首次静默顺手记录，`LBR_AUTO_IV_RECORD=0` 可关闭)
 - 选 ATM 行权价用常规时段的 last(chain 的 IV 是上一常规时段的),盘前/盘后/夜盘运行时不拿延长时段价去配
 
 #### IV Rank
 ```bash
-python scripts/quote/calc_iv_rank.py AAPL.US [--min-points 20] [--json]
+python scripts/quote/calc_iv_rank.py AAPL.US [--min-points 20] [--strict] [--json]
 ```
-- 采集恒定 30 日 ATM IV，以总方差作期限插值。默认至少 20 个可比观测日，Rank/Percentile 要求本次成功采集，旧口径记录保留但不参与计算。采集时间无法证明行情新鲜度。
+- 采集恒定 30 日 ATM IV，以总方差作期限插值。默认至少 20 个可比观测日，Rank/Percentile 要求本次成功采集，旧口径记录保留但不参与计算。
+- 本地样本不足 `min-points` 时默认提供 **1 年滚动 30 日 HV (`hv_52w_proxy`) 过渡分位与 `VRP = IV - HV`**（保持 `iv_rank=None`，绝不冒充真实历史 IV；`--strict` 可强制报错）；若样本存在 `>14` 天断档会输出 `coverage_warning`。
 
 #### IV Percentile
 ```bash
-python scripts/quote/calc_iv_percentile.py AAPL.US [--min-points 20] [--json]
+python scripts/quote/calc_iv_percentile.py AAPL.US [--min-points 20] [--strict] [--json]
 ```
 
 #### 行权概率
@@ -237,13 +241,17 @@ python scripts/quote/calc_option_pnl.py '<JSON腿列表>' [--json]
 - 同标的、同到期日组合；按零价、行权价拐点和右尾斜率解析最大盈亏与盈亏平衡，扫描仅用于绘图。STOCK 数量1代表100股
 - 各腿成本价取 chain 的 last;行权价当日无成交时 last=0(不是免费期权,实测 AAPL 2026-12-04 的 80 档里有 16 档),依次改用腿内的 `"price"`(手动指定)或 chain IV 反推的 BS 理论价(`--rate`,默认 0.045),都没有则报错。`legs_detail[].price_source`(last / manual / bs_from_iv)和 `estimated_legs` 标明哪些腿是估算的
 
-#### 生成标准策略腿(8 种)
+#### 生成标准策略腿(11 种 · 含卖方策略 / Delta 选腿 / 内联损益)
 ```bash
-python scripts/quote/get_option_strategy.py AAPL.US 2026-08-14 STRADDLE [--json]
+python scripts/quote/get_option_strategy.py AAPL.US 2026-12-18 STRADDLE [--json]
+python scripts/quote/get_option_strategy.py AAPL.US 2026-12-18 BULL_PUT_SPREAD --delta 0.20 --width 5 --with-pnl --check-liquidity
+python scripts/quote/get_option_strategy.py AAPL.US 2026-12-18 IRON_CONDOR --delta 0.20 --width 5 --with-pnl [--json]
 ```
 支持策略:`STRADDLE` / `STRANGLE` / `BULL_CALL_SPREAD` / `BEAR_PUT_SPREAD` /
-`BUTTERFLY` / `COLLAR` / `COVERED_CALL` / `CASH_SECURED_PUT`
-- 方向与行权价严格受约束，标准蝶式要求等宽；无有效组合时直接报错。输出的 legs JSON 可直接传给 `calc_option_greeks.py` 或 `calc_option_pnl.py`
+`BUTTERFLY` / `COLLAR` / `COVERED_CALL` / `CASH_SECURED_PUT` /
+`BULL_PUT_SPREAD` / `BEAR_CALL_SPREAD` / `IRON_CONDOR`
+- 支持 `--delta <0.02~0.49>`（零额外 API 开销按 BS |Δ| 选核心腿）与 `--width <美元翼宽>`；`--check-liquidity` 批量校验各腿 OI；`--with-pnl` 内联输出净权利金、最大盈亏、盈亏平衡点、ROR%、BS 理论胜率（POP%）与 BS 组合 Greeks。
+- 方向与行权价严格受约束，标准蝶式要求等宽；无有效组合时直接报错。输出的 `legs` JSON 保持纯结构，仍可直接传给 `calc_option_greeks.py` 或 `calc_option_pnl.py`。
 
 #### Put/Call Wall(关键支撑/阻力,真实 OI 优先)
 ```bash
@@ -701,21 +709,20 @@ python scripts/quote/get_option_volatility.py AAPL.US
 python scripts/quote/get_vol_smile.py AAPL.US
 ```
 
-### 工作流 2:评估一个期权策略
+### 工作流 2:评估一个期权策略（买方 / 卖方收租一站式）
 ```bash
-# 1. 生成策略腿
-python scripts/quote/get_option_strategy.py AAPL.US 2026-08-14 BULL_CALL_SPREAD
-# 2. 分析组合 Greeks
+# 1. 目标 Delta 选腿 + 翼宽 + 流动性校验 + 内联损益/BS胜率（卖方信用价差/铁鹰推荐）
+python scripts/quote/get_option_strategy.py AAPL.US 2026-12-18 IRON_CONDOR --delta 0.20 --width 5 --with-pnl --check-liquidity
+# 2. 若需进一步以服务端原生 Greeks 复核，可将输出的 legs JSON 传给：
 python scripts/quote/calc_option_greeks.py '<复制的 legs JSON>'
-# 3. 分析到期损益
-python scripts/quote/calc_option_pnl.py '<复制的 legs JSON>'
 ```
 
-### 工作流 3:长期跟踪 IV(配 cron 每日运行)
+### 工作流 3:跟踪 IV 与评估高/低波动（问股自动补录 + 批量自选 + 冷启动代理）
 ```bash
-# 示例使用调度器的当地时区；请按美股交易时段及夏令时安排，采集时间不证明报价实时
-0 22 * * 1-5 python scripts/quote/get_iv_history.py AAPL.US
-# 积累至少 20 个可比恒定30日观测且成功采集当前样本后计算 IV Rank
+# 方式A：日常问股（analyze_buy_sell/get_option_volatility/get_option_strategy）会自动补录当天 30D IV
+# 方式B：一键补齐整个美股自选池或持仓（可配合 cron / /schedule 在收盘后定时跑）
+0 22 * * 1-5 python scripts/quote/get_iv_history.py --watchlist
+# 样本 <20 天时自动给出 1 年滚动 HV30 冷启动参考；满 20 天自动切回真实 IV Rank
 python scripts/quote/calc_iv_rank.py AAPL.US
 ```
 
