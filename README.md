@@ -1,11 +1,11 @@
-# LongBridge Enhance Skill (longbridge-pro) · 0.6.5
+# LongBridge Enhance Skill (longbridge-pro) · 0.6.6
 
 **[English](README.md)** | [中文](README.zh-CN.md)
 
 > Community-developed multi-dimensional analytics enhancement for the [Longbridge OpenAPI](https://open.longbridge.com).
 > Ten modules: ① Options analytics (native Greeks, IV/HV, vol smile, P/C ratio, P&L, Put/Call Wall, GEX, IV Crush,
 > Expected Move, risk reversal, IV term structure, Max Pain, OI distribution, Gamma Profile + HK warrants)
-> ② Anomaly tracking (+ index constituents / sector rotation / A-H premium) ③ Capital flow / main force (+ HK broker queue)
+> ② Anomaly tracking (+ Market Regime / index constituents / sector rotation / A-H premium) ③ Capital flow / main force (+ HK broker queue)
 > ④ Event calendar (earnings/dividends/splits/IPO/macro/market holidays/new-listing profiles) ⑤ Market sentiment (+ macro indicator history)
 > ⑥ Technicals (MA/MACD/RSI/KDJ/BOLL/ATR/OBV + composite score + relative strength/Beta + server-side quant)
 > ⑦ Fundamentals (valuation percentile / analyst consensus / financial health / dividend quality / multi-stock compare /
@@ -184,7 +184,8 @@ python scripts/intraday/get_trade_stats.py 700.HK               # volume profile
 
 # === One-click daily briefing / buy-sell dashboard / entry discipline ===
 python scripts/sentiment/daily_briefing.py --market US
-python scripts/decision/analyze_buy_sell.py AAPL.US             # directional inputs + separate event risk
+python scripts/market/get_market_regime.py --market US     # Market regime + 3-star macro
+python scripts/decision/analyze_buy_sell.py AAPL.US             # directional inputs + separate event/regime risk
 python scripts/decision/check_entry_rules.py AAPL.US            # 28-rule entry checklist
 ```
 
@@ -194,7 +195,7 @@ Run the offline regression suite (mocked CLI):
 python -m unittest discover -s tests -v
 ```
 
-See [`SKILL.md`](SKILL.md) for the full command reference and [the 0.6.0 audit record](docs/audit-fixes-2026-11-03.md) for all 27 findings, compatibility changes and validation evidence. 0.6.2 fixes five live-verified high-priority defects (duplicated chain strike rows, support/resistance clustering in the entry checker, financial-health account matching, IV/HV tenor alignment, analyst consensus); see [the 0.6.2 fix record](docs/fixes-2026-11-24-high-priority.md). 0.6.3 fixes six live-verified medium-priority defects (volume ratio computed from the unfinished intraday daily bar, zero-last option legs treated as free, the stale "last price" shown outside regular hours, D12 cleared on half trading days, HK short-ratio thresholds applied to US short volume, order-book verdicts drawn from a one-level US book); see [the 0.6.3 fix record](docs/fixes-2026-11-25-medium-priority.md). 0.6.4 addresses the low-priority audit items (BS gamma priority in GEX, `theta_source` propagation in portfolio Greeks, HK timezone for A/H premium dates, full-industry ranking via `industry-valuation dist`, Put/Call wall position labels and adaptive profile dedup, rule-based US early-close T, unified 70/50/30 temperature thresholds, top-movers percentage formatting); see [the 0.6.4 fix record](docs/fixes-2026-11-25-low-priority.md). 0.6.5 fixes four groups of US pre-market live-spot-check defects verified on `AAPL.US`/`MSFT.US`/`BRK.B.US` (50-level `trade-stats` truncation guard, empty newly-listed weekly option chain fallback, US market-holiday and extended-hours session alignment for VWAP/anomaly/expected-move, multi-dot tickers, narrow-stop alerts, and screener `--count`); see [the 0.6.5 fix record](docs/fixes-2026-11-25-us-live-spotcheck.md).
+See [`SKILL.md`](SKILL.md) for the full command reference and [the 0.6.0 audit record](docs/audit-fixes-2026-11-03.md) for all 27 findings, compatibility changes and validation evidence. 0.6.2 fixes five live-verified high-priority defects (duplicated chain strike rows, support/resistance clustering in the entry checker, financial-health account matching, IV/HV tenor alignment, analyst consensus); see [the 0.6.2 fix record](docs/fixes-2026-11-24-high-priority.md). 0.6.3 fixes six live-verified medium-priority defects (volume ratio computed from the unfinished intraday daily bar, zero-last option legs treated as free, the stale "last price" shown outside regular hours, D12 cleared on half trading days, HK short-ratio thresholds applied to US short volume, order-book verdicts drawn from a one-level US book); see [the 0.6.3 fix record](docs/fixes-2026-11-25-medium-priority.md). 0.6.4 addresses the low-priority audit items (BS gamma priority in GEX, `theta_source` propagation in portfolio Greeks, HK timezone for A/H premium dates, full-industry ranking via `industry-valuation dist`, Put/Call wall position labels and adaptive profile dedup, rule-based US early-close T, unified 70/50/30 temperature thresholds, top-movers percentage formatting); see [the 0.6.4 fix record](docs/fixes-2026-11-25-low-priority.md). 0.6.5 fixes four groups of US pre-market live-spot-check defects verified on `AAPL.US`/`MSFT.US`/`BRK.B.US` (50-level `trade-stats` truncation guard, empty newly-listed weekly option chain fallback, US market-holiday and extended-hours session alignment for VWAP/anomaly/expected-move, multi-dot tickers, narrow-stop alerts, and screener `--count`); see [the 0.6.5 fix record](docs/fixes-2026-11-25-us-live-spotcheck.md). 0.6.6 adds the Market Regime engine (`get_market_regime.py`), fixes `get_macro_calendar` star/date extraction with Tier-1 catalyst classification, wires Market Regime into the dashboard/briefing/entry checker, automates `B8`/`D11`/`D6` entry triage, and hardens batch CLI parsing for `longbridge 0.32.0`; see [the 0.6.6 release record](docs/feat-2026-11-25-v066-regime-macro-autorules.md).
 
 ## Known limitations
 

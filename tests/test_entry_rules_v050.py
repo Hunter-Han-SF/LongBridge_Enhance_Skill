@@ -596,6 +596,7 @@ class TestV052Upgrades(unittest.TestCase):
 
     def test_auto_sector_breakout_paths(self):
         orig = cer.get_industry_rank
+        orig_ir = cer.get_institution_rating
         try:
             rank = [{"name": "板块涨幅榜", "lists": [
                 {"name": "海运港口-运营商", "chg": "0.1544",
@@ -604,6 +605,7 @@ class TestV052Upgrades(unittest.TestCase):
                  "leading_ticker": "NVDA", "leading_name": "英伟达"},
             ]}]
             cer.get_industry_rank = lambda market="US": rank
+            cer.get_institution_rating = lambda symbol: {}
             # ① --sector 指名,涨幅超阈值 → yes
             ans, note = cer._auto_sector_breakout("GOOG.US", "US", "半导体", 0.03)
             self.assertEqual(ans, "no")
@@ -617,6 +619,11 @@ class TestV052Upgrades(unittest.TestCase):
             ans4, note4 = cer._auto_sector_breakout("GOOG.US", "US", None, 0.03)
             self.assertIsNone(ans4)
             self.assertIn("--sector", note4)
+            # ③b institution-rating 行业名精确映射(非领涨股也可自动查板块涨幅)
+            cer.get_institution_rating = lambda symbol: {"analyst": {"industry_name": "半导体"}}
+            ans_ir, note_ir = cer._auto_sector_breakout("AMD.US", "US", None, 0.02)
+            self.assertEqual(ans_ir, "yes")
+            self.assertIn("半导体", note_ir)
             # ④ 指名但榜单没有 → None
             ans5, _ = cer._auto_sector_breakout("GOOG.US", "US", "航天", 0.03)
             self.assertIsNone(ans5)
@@ -626,6 +633,7 @@ class TestV052Upgrades(unittest.TestCase):
             self.assertIsNone(ans6)
         finally:
             cer.get_industry_rank = orig
+            cer.get_institution_rating = orig_ir
 
     def test_is_small_cap(self):
         orig_run, orig_price = cer.run_cli, cer.get_underlying_price

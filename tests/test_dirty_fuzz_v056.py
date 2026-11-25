@@ -193,6 +193,19 @@ F = {
     "get_ah_premium_intraday": FX.AH_PREMIUM_INTRADAY["klines"],
     "get_constituent": FX.CONSTITUENT,
     "get_trade_stats": FX.TRADE_STATS,
+    "get_underlying_quote": {
+        "symbol": "X.US", "market": "US", "regular_price": 100.0,
+        "regular_prev_close": 99.0, "change_percentage": 1.01,
+        "volume": 100000.0, "extended": [],
+    },
+    "get_batch_quotes": lambda syms, **k: {
+        str(s).upper(): {
+            "symbol": s, "market": "US", "regular_price": 100.0,
+            "regular_prev_close": 99.0, "change_percentage": 1.0,
+            "volume": 10000.0, "extended": [],
+        } for s in (syms or [])
+    },
+    "get_symbol_news": [{"id": "1", "title": "Headline", "published_at": "2026-11-25T12:00:00Z"}],
 }
 
 # ---------------------------------------------------------------- 变异器 --
@@ -229,9 +242,10 @@ def mutate(obj, mode):
 # ---------------------------------------------------------------- 用例表 --
 
 def _ns(**kw):
-    d = {"lookback": 250, "max_stop_pct": 0.08, "sector_top_decline": None,
-         "recent_stopout": None, "familiar": None, "prepost_move": None,
-         "sector_breakout": None, "earnings_days": None, "no_heat": False,
+    d = {"lookback": 250, "max_stop_pct": 0.08, "min_stop_pct": 0.0, "target_price": None,
+         "sector_top_decline": None, "recent_stopout": None, "familiar": None,
+         "prepost_move": None, "sector_breakout": None, "earnings_days": None,
+         "no_heat": False, "no_regime": False, "strict_regime": False,
          "smallcap_usd": 3e9, "now": None, "sector": None, "sector_chg_pct": 2.0,
          "output_json": False}
     d.update(kw)
@@ -276,6 +290,7 @@ CASES = [
     case("get_trade_stats", "fetch_trade_stats", ("AAPL.US",), {"output_json": False}),
     case("get_vwap_analysis", "analyze", ("AAPL.US",), {"date": None, "output_json": False}),
     case("calc_anomaly_score", "calc_score", ("AAPL.US",), {"market": "US", "output_json": False}),
+    case("get_market_regime", "fetch_market_regime", kwargs={"market": "US", "output_json": False}),
     case("get_ah_premium", "fetch_ah_premium", ("700.HK",), {"count": 10, "kline_type": "day", "output_json": False}),
     case("get_anomaly", "fetch_anomaly", kwargs={"market": "US", "symbol": None, "count": 20, "output_json": False}),
     case("get_constituent", "fetch_constituent", ("HKHSI",), {"limit": 20, "sort": "volume", "order": "desc", "output_json": False}),
@@ -313,7 +328,17 @@ CASES = [
 ]
 
 _QUANT_RESULT = {"series": {"EMA20": [10.0, 11.0], "RSI": [55.0, 62.0]}}
+_REGIME_FIXTURE = {
+    "market": "US", "as_of": "2026-11-25T08:00-05:00",
+    "regime": "neutral", "label": "⚪ Neutral(震荡中性)",
+    "max_bull_penalty": 0, "vix": {"symbol": ".VIX.US", "level": 18.0, "change_pct": 1.0, "state": "calm"},
+    "market_temp": None, "benchmarks": {"SPY.US": {"symbol": "SPY.US", "price": 700.0, "source_label": "常规时段", "change_pct": 0.2, "ma20": 698.0, "ma50": 690.0}},
+    "tier1_24h": [], "tier1_48h": [], "tier1_recent": [], "star3_upcoming": [],
+    "warnings": [], "summary": "VIX 18.0, SPY 700",
+}
 for _c in CASES:
+    if _c["mod"] in ("analyze_buy_sell", "check_entry_rules", "daily_briefing"):
+        _c["extra"]["assess_market_regime"] = _REGIME_FIXTURE
     if _c["mod"] in ("calc_indicators", "calc_technical_score", "calc_relative_strength"):
         _c["extra"]["calc_indicators.get_kline_adjusted"] = F["get_kline_adjusted"]
     if _c["mod"] == "run_quant_indicator":
