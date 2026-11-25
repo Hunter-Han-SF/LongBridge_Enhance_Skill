@@ -27,6 +27,7 @@ from common import (  # noqa: E402
     get_dividend_history,
     get_underlying_price,
     get_underlying_price_info,
+    parse_underlying,
     price_source_note,
     market_date,
     print_display_table,
@@ -72,10 +73,10 @@ def analyze(symbol: str, output_json: bool = False, quiet: bool = False) -> dict
                 ttm.append((amount, currency))
 
     # 仅对能识别报价币种的市场计算收益率。港股存在多币种柜台。
-    market = symbol.upper().rsplit(".", 1)[-1]
+    ticker, market = parse_underlying(symbol)
     quote_currency = {"US": "USD", "SH": "CNY", "SZ": "CNY"}.get(market)
     if market == "HK":
-        counter = symbol.split(".")[0].lstrip("0")
+        counter = ticker.lstrip("0")
         quote_currency = ("CNY" if len(counter) == 5 and counter.startswith("8")
                           else "HKD" if counter.isdigit() and len(counter) <= 4
                           else None)

@@ -22,14 +22,15 @@ import sys
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
-from common import (
-    days_to_years,  # noqa: E402
+from common import (  # noqa: E402
+    days_to_years,
     find_atm_strike,
     get_option_chain,
     get_option_expirations,
     get_underlying_price,
     get_underlying_price_info,
     price_source_note,
+    regular_session_price,
     print_display_table,
     print_error,
     print_json,
@@ -41,6 +42,7 @@ def analyze(symbol: str, count: int = 8, output_json: bool = False) -> dict:
     price = get_underlying_price(symbol)
     if not price:
         raise ValueError(f"无法获取 {symbol} 现价")
+    atm_ref = regular_session_price(symbol, price) or price
     expirations = get_option_expirations(symbol)[:count]
     if not expirations:
         raise ValueError(f"{symbol} 无可用到期日")
@@ -50,7 +52,7 @@ def analyze(symbol: str, count: int = 8, output_json: bool = False) -> dict:
         chain = get_option_chain(symbol, exp)
         if not chain:
             continue
-        atm = find_atm_strike(chain, price)
+        atm = find_atm_strike(chain, atm_ref)
         if atm is None:
             continue
         civ = piv = None
@@ -89,6 +91,7 @@ def analyze(symbol: str, count: int = 8, output_json: bool = False) -> dict:
     result = {
         "symbol": symbol,
         "underlying_price": price,
+        "atm_reference_price": atm_ref,
         "underlying_price_source": get_underlying_price_info(symbol),
         "term_structure": rows,
         "slope_pp": round(slope, 2),

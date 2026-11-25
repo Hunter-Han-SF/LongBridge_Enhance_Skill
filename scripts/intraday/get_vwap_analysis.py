@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
+import common
 from common import (  # noqa: E402
     get_intraday,
     print_error,
@@ -38,14 +39,25 @@ def _bar_time(row: dict) -> float | None:
     return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
 
 
-def analyze(symbol: str, date: str | None = None, output_json: bool = False) -> dict:
-    rows = get_intraday(symbol, date=date)
+def analyze(symbol: str, date: str | None = None, output_json: bool = False,
+            session: str = "intraday") -> dict:
+    if session not in ("intraday", "all"):
+        raise ValueError("session 必须为 intraday 或 all")
+    rows = (get_intraday(symbol, date=date) if session == "intraday"
+            else get_intraday(symbol, date=date, session=session))
     if not rows:
         raise ValueError(f"无分钟线数据。确认 {symbol} 当日(或 {date})有交易。")
 
     times = [_bar_time(row) for row in rows]
     if all(t is not None for t in times):
         times, rows = zip(*sorted(zip(times, rows), key=lambda pair: pair[0]))
+
+    last_ts = next((t for t in reversed(times) if t is not None), None)
+    bar_date = (common.market_date(symbol, datetime.fromtimestamp(last_ts, tz=timezone.utc))
+                if last_ts is not None else None)
+    today_mkt = common.market_date(symbol)
+    is_prior_session = bool(date is None and bar_date is not None and bar_date < today_mkt)
+    resolved_date = date or (bar_date.isoformat() if bar_date is not None else "today")
 
     last = rows[-1]
     price = to_float(last.get("price"))
@@ -84,7 +96,9 @@ def analyze(symbol: str, date: str | None = None, output_json: bool = False) -> 
 
     result = {
         "symbol": symbol,
-        "date": date or "today",
+        "date": resolved_date,
+        "session": session,
+        "is_prior_session": is_prior_session,
         "points": len(rows),
         "price": price,
         "vwap": round(vwap, 3),
@@ -104,8 +118,14 @@ def analyze(symbol: str, date: str | None = None, output_json: bool = False) -> 
         print_json(result)
         return result
 
-    print(f"{symbol} VWAP 分析({result['date']},{len(rows)} 分钟)")
-    print(f"  现价: {price}   VWAP: {round(vwap, 3)}   偏离: {dev_pct:+.2f}%")
+    session_tag = ",上一交易日常规时段" if is_prior_session else ""
+    if session == "all":
+        session_tag += ",含延长时段"
+    print(f"{symbol} VWAP 分析({resolved_date}{session_tag},{len(rows)} 分钟)")
+    if is_prior_session:
+        print(f"  ⚠️ 当前常规时段尚未开盘,以上为 {resolved_date} 常规时段数据;查看盘前/盘后/夜盘实时分时请加 --session all")
+    px_label = "分时末价" if (is_prior_session or date) else "现价"
+    print(f"  {px_label}: {price}   VWAP: {round(vwap, 3)}   偏离: {dev_pct:+.2f}%")
     position = f"{vwap_pos:.0f}%" if vwap_pos is not None else "N/A"
     print(f"  分时采样价区间: {day_low} ~ {day_high}(VWAP 相对位置 {position})")
     print(f"  有效分钟中价格在 VWAP 上方: {above_ratio:.0f}%(覆盖 {coverage:.0%})"
@@ -118,10 +138,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="VWAP 分析(现价 vs 当日均价)")
     parser.add_argument("symbol", help="标的代码,如 AAPL.US")
     parser.add_argument("--date", default=None, help="历史日期 YYYYMMDD(默认今天)")
+    parser.add_argument("--session", default="intraday", choices=["intraday", "all"],
+                        help="交易时段: intraday(仅常规,默认) | all(含盘前盘后夜盘)")
     parser.add_argument("--json", action="store_true", dest="output_json", help="输出 JSON 格式")
     args = parser.parse_args()
     try:
-        analyze(args.symbol, date=args.date, output_json=args.output_json)
+        analyze(args.symbol, date=args.date, output_json=args.output_json, session=args.session)
     except Exception as e:
         print_error("VWAP 分析", str(e))
         sys.exit(1)

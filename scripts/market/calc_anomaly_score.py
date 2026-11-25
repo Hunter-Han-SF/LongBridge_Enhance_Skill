@@ -28,12 +28,15 @@ import sys
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
+import common
 from common import (  # noqa: E402
     counter_id_to_symbol,
     get_anomaly,
     get_capital_flow_snapshot,
     get_top_movers,
+    get_underlying_price_info,
     is_empty,
+    price_source_note,
     print_error,
     print_json,
     run_cli,
@@ -42,16 +45,33 @@ from common import (  # noqa: E402
 
 
 def _get_quote(symbol: str) -> dict:
-    """获取实时报价。"""
-    data = run_cli("quote", symbol)
-    if is_empty(data) or not isinstance(data, list) or not data:
+    """获取最新报价(含盘前/盘后/夜盘延长时段)及对应涨跌幅。"""
+    quote = common.get_underlying_quote(symbol)
+    if not quote:
         return {}
-    q = data[0] if isinstance(data[0], dict) else {}
-    # ⚠️ 字段名以实测为准:涨跌幅是 change_percentage(小数形式,0.29=0.29%)
+    price, info = common.latest_underlying_price(quote)
+    if info is not None:
+        common._LAST_PRICE_INFO[symbol] = info
+    if info and info.get("source") != "regular":
+        base = to_float(info.get("prev_close")) or to_float(quote.get("regular_price"))
+        chg_pct = ((price / base) - 1) * 100 if (price is not None and base and base > 0) else to_float(quote.get("change_percentage"))
+        return {
+            "last": price,
+            "change_pct": round(chg_pct, 4) if chg_pct is not None else None,
+            "volume": info.get("volume"),
+            "price_source": info,
+            "regular_change_pct": to_float(quote.get("change_percentage")),
+        }
+    chg_pct = to_float(quote.get("change_percentage"))
+    if chg_pct is None and price is not None and quote.get("regular_prev_close"):
+        prev_c = to_float(quote.get("regular_prev_close"))
+        if prev_c and prev_c > 0:
+            chg_pct = round(((price / prev_c) - 1) * 100, 4)
     return {
-        "last": to_float(q.get("last")),
-        "change_pct": to_float(q.get("change_percentage")),
-        "volume": to_float(q.get("volume")),
+        "last": price,
+        "change_pct": chg_pct,
+        "volume": quote.get("volume"),
+        "price_source": info,
     }
 
 
@@ -117,6 +137,7 @@ def _score_dimension(symbol: str, market: str) -> dict:
             "weight": 0.2,
             "change_pct": chg,
             "price": q.get("last"),
+            "price_source": q.get("price_source"),
             "direction": ("数据不足" if chg is None else "上涨" if chg > 0 else "下跌" if chg < 0 else "持平"),
         }
     except Exception as e:
@@ -208,8 +229,13 @@ def calc_score(symbol: str, market: str = "US", output_json: bool = False) -> di
         if "error" in d:
             print(f"  [{label}] ✗ 数据获取失败({d['error'][:30]})")
             continue
+        val_text = d.get("direction", d.get("in_movers", ""))
+        if key == "change" and d.get("change_pct") is not None:
+            px = d.get("price")
+            px_part = f", 现价 {px}{price_source_note(symbol, d.get('price_source'))}" if px is not None else ""
+            val_text = f"{val_text} ({d['change_pct']:+.2f}%{px_part})"
         print(f"  [{label}] 得分 {score_text}/{int(d.get('weight',0)*100)} "
-              f" — {d.get('direction', d.get('in_movers', ''))}")
+              f" — {val_text}")
         if key == "anomaly" and d.get("types"):
             print(f"    信号类型: {', '.join(d['types'])}")
         if key == "top_movers" and d.get("reason"):

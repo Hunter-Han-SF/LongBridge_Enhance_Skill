@@ -37,10 +37,10 @@ for _p in (os.path.normpath(os.path.join(_HERE, "..")), _HERE,
 
 import common
 from common import (  # noqa: E402
-    calc_hv, get_atm_iv, get_capital_flow_snapshot, get_finance_calendar,
+    calc_hv, days_to_years, get_atm_iv, get_capital_flow_snapshot, get_finance_calendar,
     get_kline_adjusted, get_option_chain, get_option_expirations, get_option_volume_realtime,
     get_short_trades, get_underlying_price, get_underlying_price_info, nearest_tenor_expiry,
-    price_source_note, print_error, print_json,
+    price_source_note, print_error, print_json, rank_tenor_expiries, regular_session_price,
     to_float,
 )
 from calc_technical_score import score as tech_score  # noqa: E402
@@ -95,8 +95,12 @@ def _dim_capital(symbol: str, bulls: list, bears: list) -> tuple[float | None, s
         if net_large is not None and gross and abs(net_large) <= gross:
             ratio = net_large / gross
             s = 50 + 50 * max(-1, min(1, ratio / 0.10))
-            amount = (f"{net_large / 1e4:+.0f}万(当地货币)" if cap.get("unit_verified")
-                      else f"{net_large:+g}(源数值，货币单位未核实)")
+            if cap.get("unit_verified"):
+                amount = f"{net_large / 1e4:+.0f}万(当地货币)"
+            elif abs(net_large) >= 100:
+                amount = f"{net_large:+,.0f}(源数值，货币单位未核实)"
+            else:
+                amount = f"{net_large:+g}(源数值，货币单位未核实)"
             detail.append(f"大单净额 {amount}")
             if ratio:
                 (bulls if ratio > 0 else bears).append(
@@ -137,7 +141,7 @@ def _dim_capital(symbol: str, bulls: list, bears: list) -> tuple[float | None, s
         return None, f"数据失败({str(e)[:30]})"
 
 
-def _dim_options(symbol: str, bulls: list, bears: list) -> tuple[float | None, str]:
+def _dim_options(symbol: str, bulls: list, bears: list, price: float | None = None) -> tuple[float | None, str]:
     if not symbol.upper().endswith(".US"):
         return None, "非美股，期权维度不适用"
     try:
@@ -152,17 +156,25 @@ def _dim_options(symbol: str, bulls: list, bears: list) -> tuple[float | None, s
             elif pc < 0.7:
                 s += 10
                 bulls.append(f"期权: P/C 比率 {pc:.2f}(偏多)")
-        # IV vs HV —— 期限必须对齐: 下方 HV 用 30 个交易日收益(约 43.5 个自然日),
-        # IV 就取剩余期限最接近它的到期日。最近到期日可能只剩 1~2 天,拿它比 30 日 HV
-        # 会系统性误判贵贱(实测 AAPL: 1.28 天 IV 32.8% → 1.36 "偏贵";
-        # 24 天 IV 25.7% → 1.06 "合理")。
+        # IV vs HV —— 期限必须对齐,且若目标期限的新挂牌周链尚无 IV 则依次回退到有有效 IV 的最近期限链。
         exps = get_option_expirations(symbol)
         if exps:
-            chain = get_option_chain(symbol, nearest_tenor_expiry(exps, 30 * 365 / 252))
-            price = get_underlying_price(symbol)
-            iv = get_atm_iv(chain, price) if price else None
-            if iv:
-                klines = get_kline_adjusted(symbol, count=31)
+            spot = get_underlying_price(symbol) if price is None else price
+            atm_ref = (regular_session_price(symbol, spot) or spot) if spot else None
+            chosen_exp = iv = None
+            if atm_ref:
+                for cand in rank_tenor_expiries(exps, 30 * 365 / 252):
+                    chain = get_option_chain(symbol, cand)
+                    cand_iv = get_atm_iv(chain, atm_ref)
+                    if cand_iv and cand_iv > 0:
+                        chosen_exp, iv = cand, cand_iv
+                        break
+            if iv and chosen_exp:
+                try:
+                    hv_win = max(2, round(days_to_years(chosen_exp) * 252))
+                except ValueError:
+                    hv_win = 30
+                klines = get_kline_adjusted(symbol, count=hv_win + 1)
                 closes = [k["close"] for k in klines if k.get("close") is not None]
                 hv = calc_hv(closes)
                 if hv:
@@ -187,10 +199,12 @@ def _dim_analyst(symbol: str, bulls: list, bears: list) -> tuple[float | None, s
         bull = ((to_float(rat.get("buy"), 0) or 0) + (to_float(rat.get("over"), 0) or 0))
         bear = ((to_float(rat.get("sell"), 0) or 0) + (to_float(rat.get("under"), 0) or 0))
         s = 50 + (bull - bear) / total * 50
+        raw_label = str(rat.get("label") or "")
+        clean_label = raw_label.lstrip("🟢🔴⚪ ").strip() or raw_label
         if bull / total >= 0.6:
-            bulls.append(f"分析师: {rat.get('label')}({bull}/{int(total)} 家看多)")
+            bulls.append(f"分析师: {clean_label}({int(round(bull))}/{int(round(total))} 家看多)")
         if bear / total >= 0.3:
-            bears.append(f"分析师: {bear}/{int(total)} 家看空")
+            bears.append(f"分析师: {int(round(bear))}/{int(round(total))} 家看空")
         t = r.get("target_price") or {}
         up = t.get("upside_to_mid_pct")
         if up is not None:
@@ -200,7 +214,7 @@ def _dim_analyst(symbol: str, bulls: list, bears: list) -> tuple[float | None, s
             elif up < -10:
                 s = max(s - 10, 0)
                 bears.append(f"目标价: 现价已高于共识目标 {abs(up):.1f}%")
-        return max(min(s, 100), 0), f"{rat.get('label')},共识目标空间 {up:+.1f}%" if up is not None else str(rat.get("label"))
+        return max(min(s, 100), 0), f"{raw_label},共识目标空间 {up:+.1f}%" if up is not None else raw_label
     except Exception as e:
         return None, f"数据失败({str(e)[:30]})"
 
@@ -240,7 +254,7 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
         "技术面": _dim_technical(symbol, bulls, bears),
         "估值面": _dim_valuation(symbol, bulls, bears),
         "资金面": _dim_capital(symbol, bulls, bears),
-        "期权定位": _dim_options(symbol, bulls, bears),
+        "期权定位": _dim_options(symbol, bulls, bears, price=price),
         "分析师": _dim_analyst(symbol, bulls, bears),
     }
 
@@ -306,7 +320,7 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
     print("方向评分:")
     for name, d in dim_out.items():
         sc = f"{d['score']:.0f}/100" if d["score"] is not None else "N/A"
-        print(f"  [{name}](权重{d['weight']}%) {sc} — {d['detail']}")
+        print(f"  [{name}](权重{d['weight']}) {sc} — {d['detail']}")
     print(f"  事件风险：{event_note}")
     print(f"\n  多头因素({len(bulls)}):")
     for b in bulls or ["(无)"]:
