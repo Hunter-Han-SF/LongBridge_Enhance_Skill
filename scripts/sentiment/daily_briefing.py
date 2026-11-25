@@ -21,7 +21,14 @@ import argparse
 import os
 import sys
 
-sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (
+    os.path.normpath(os.path.join(_HERE, "..")),
+    os.path.normpath(os.path.join(_HERE, "..", "market")),
+    os.path.normpath(os.path.join(_HERE, "..", "calendar")),
+):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from common import (  # noqa: E402
     get_anomaly,
@@ -35,6 +42,7 @@ from common import (  # noqa: E402
     print_json,
     to_float,
 )
+from get_market_regime import assess_market_regime  # noqa: E402
 
 
 def _section(title: str) -> str:
@@ -46,7 +54,12 @@ def _temp_emoji(t: float | None) -> str:
     return market_temp_label(to_float(t))
 
 
-def generate_briefing(market: str = "US", include_pc: bool = True, output_json: bool = False) -> dict:
+def generate_briefing(
+    market: str = "US",
+    include_pc: bool = True,
+    include_regime: bool = True,
+    output_json: bool = False,
+) -> dict:
     now = market_now(market).isoformat(sep=" ", timespec="minutes")
     briefing = {"market": market, "generated_at": now, "sections": {}}
     lines = [f"📰 {market} 市场每日简报  ({now})"]
@@ -65,6 +78,41 @@ def generate_briefing(market: str = "US", include_pc: bool = True, output_json: 
     except Exception as e:
         lines.append(_section("🌡️ 市场温度"))
         lines.append(f"  获取失败: {str(e)[:40]}")
+
+    # ①-b 大盘环境与重磅宏观日历
+    if include_regime:
+        try:
+            reg = assess_market_regime(market=market)
+            briefing["sections"]["market_regime"] = reg
+            lines.append(_section("🧭 大盘环境与重磅宏观"))
+            lines.append(f"  状态: {reg.get('label', '')}  ({reg.get('summary', '')})")
+            vix = reg.get("vix") or {}
+            if vix.get("level") is not None:
+                vchg = f" {vix['change_pct']:+.2f}%" if vix.get("change_pct") is not None else ""
+                lines.append(f"  VIX:  {vix['level']:.2f}{vchg} [{vix.get('state', '')}]")
+            for sym, b in (reg.get("benchmarks") or {}).items():
+                if not isinstance(b, dict) or b.get("price") is None:
+                    continue
+                chg = f"{b['change_pct']:+.2f}%" if b.get("change_pct") is not None else ""
+                lines.append(
+                    f"  {sym}: {b['price']}({b.get('source_label', '')}) {chg}"
+                    + (f"  MA20={b['ma20']}" if b.get("ma20") else "")
+                    + (f"  MA50={b['ma50']}" if b.get("ma50") else "")
+                )
+            upcoming = (reg.get("tier1_24h") or []) + [
+                e for e in (reg.get("star3_upcoming") or []) if e not in (reg.get("tier1_24h") or [])
+            ]
+            for e in upcoming[:5]:
+                if not isinstance(e, dict):
+                    continue
+                badge = "🔥Tier-1" if e.get("tier") == "tier1" else "★★★"
+                lines.append(
+                    f"  {badge} {e.get('date', '')} {e.get('name', '')}"
+                    f" (预测 {e.get('estimate') or '--'} / 前值 {e.get('previous') or '--'})"
+                )
+        except Exception as e:
+            lines.append(_section("🧭 大盘环境与重磅宏观"))
+            lines.append(f"  获取失败: {str(e)[:40]}")
 
     # ② 热度榜 top5
     try:
@@ -144,10 +192,17 @@ if __name__ == "__main__":
     parser.add_argument("--market", default="US", help="市场: HK|US|CN|SG(默认 US)")
     parser.add_argument("--no-pc", action="store_true", dest="no_pc",
                         help="跳过 P/C 比率(加速,或非美股时用)")
+    parser.add_argument("--no-regime", action="store_true", dest="no_regime",
+                        help="跳过大盘环境与 3 星宏观催化评估(加速)")
     parser.add_argument("--json", action="store_true", dest="output_json", help="输出 JSON 格式")
     args = parser.parse_args()
     try:
-        generate_briefing(market=args.market, include_pc=not args.no_pc, output_json=args.output_json)
+        generate_briefing(
+            market=args.market,
+            include_pc=not args.no_pc,
+            include_regime=not args.no_regime,
+            output_json=args.output_json,
+        )
     except Exception as e:
         print_error("生成市场简报", str(e))
         sys.exit(1)

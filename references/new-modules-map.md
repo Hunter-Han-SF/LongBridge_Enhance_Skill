@@ -557,12 +557,8 @@ heat-rank(D10,**返回键名是 `lists` 复数**)。规则引擎为纯函数(合
 - **D10 小市值**(v0.5.2):static 的 total_shares × 现价,阈值 --smallcap-usd
   默认 20 亿美元(HK 按 7.8 折算);小市值是该规则必要条件,大市值+热度+大跌
   判 clear;市值查询失败退回「触发+提示自行确认」
-- **B8 板块半边**(v0.5.2):industry-rank 当日板块涨幅 ≥ --sector-chg-pct
-  (默认 3%)视为板块突破日。⚠️ 实测 CLI **无「个股→所属行业」映射命令**
-  (industry-peers 只吃 BK 码,quote/static/anomaly/industry-valuation 均无
-  行业字段),映射走两条路:--sector <行业名> 指名 / 该股为某行业 leading_ticker
-  时反查;都不中则人工。自动板块数据必须与个股突破属于同一市场日期，无法确认日期时不得复用今日板块信号
-- **人工项**:D6/D8/D9/D11 及 B8 无法自动取得的板块证据，可通过对应 CLI 参数确认;
+- **B8 板块半边**(v0.5.2/0.6.6):industry-rank(0.6.6 起默认 `--count 200` 拉全美股 140 个细分行业)当日板块涨幅 ≥ --sector-chg-pct(默认 3%)视为板块突破日。优先 `--sector <行业名>` 指定，其次经 `institution-rating` 的 `analyst.industry_name` 精确/模糊匹配行业，再其次按 `leading_ticker` 反查。
+- **D6 / D11 自动分诊**(0.6.6):D11 结合延长时段振幅、最新 `news` 标题与财报窗口三区自动分诊(平稳放行 `clear`、非财报大异动 `triggered`、中间区 `manual`);D6 在上一完整日 K 未显著收跌、跑赢所属行业或优于 ≥30% 抽样 `valuation` 同行时自动 `clear`。无法自动排雷的 D6/D8/D9/D11 及 B8 证据仍可通过对应 CLI 参数确认;
   D7 财报距离可被 --earnings-days 覆盖(日历查询失败时)
 - 离线自检:`python scripts/decision/check_entry_rules.py --demo`；加 `--json` 输出三个合成场景的严格JSON，无需登录
 

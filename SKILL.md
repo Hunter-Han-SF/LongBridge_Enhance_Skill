@@ -19,7 +19,7 @@ description: |
 license: MIT
 metadata:
   author: community
-  version: "0.6.5"
+  version: "0.6.6"
   risk_level: read_only
   requires_login: true
   default_install: true
@@ -69,7 +69,7 @@ earnings calendar,market temperature,expected move,risk reversal,order flow,
 
 ### 已知限制（历史接口观测与当前实现）
 
-0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.1 修复 calc-index theta 死值（自动 BS 补算 + `theta_source` 溯源）及 chain 同行权价重复行，实证与设计见 [theta 死字段修复记录](docs/fixes-2026-11-10-theta-dead-field.md)。0.6.2 修复五项实盘验证的高优先级问题：chain 重复行权价改在 `get_option_chain` 入口统一合并(此前仅 get_option_quote 自保，其余按行权价取首个匹配行的脚本会随机拿到零值/垃圾值)、入场规则支撑阻力聚类(高低点分开、簇宽受限、按区间取止损与目标)、财务健康科目名的币种后缀匹配、IV/HV 期限对齐、分析师共识取最新快照与共识目标价，见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项中优先级问题:盘中未收盘 K 线的成交量不再用于量比(技术指标、技术评分、入场规则)、期权到期损益的零成交腿不再按零成本、常规时段之外的现价取延长时段最新价并标注来源、半日市不再被 D12 当作休市日、美股空头成交占比不再套用港股阈值或参与仪表盘计分、盘口可见档位不足时不下结论,见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。0.6.4 修复低优先级审计项:GEX 改用合约 IV 的 BS gamma 优先(避免服务端 3 位小数把虚值腿舍入成 0)、组合 Greeks 传导 `theta_source` 拒绝 `dead_zero` 伪有利衰减、A/H 溢价日期改用港股时区、估值同行排名改取 `industry-valuation dist` 全行业数据、Put/Call 墙与剖面自适应间距、美股规则半日市 T 按 13:00 ET 收盘、温度档位统一为 70/50/30、异动榜涨跌幅百分比格式化,见 [0.6.4 修复记录](docs/fixes-2026-11-25-low-priority.md)。0.6.5 修复美股盘前实盘抽检（`AAPL.US`/`MSFT.US`/`BRK.B.US`）发现的四组问题:`get_trade_stats` 服务端 50 档截断防护与全样本买卖比、`get_option_volatility`/`analyze_buy_sell` 跳过尚无 IV 的新挂牌周链并统一前复权 HV、美股节假日与延长时段边界（`VWAP --session all`、异动打分延长时段涨跌幅、Expected Move/期限结构常规时段 ATM 对齐）、多点号代码与窄止损告警及选股器 `--count`,见 [0.6.5 实盘抽检修复记录](docs/fixes-2026-11-25-us-live-spotcheck.md)。
+0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.1 修复 calc-index theta 死值（自动 BS 补算 + `theta_source` 溯源）及 chain 同行权价重复行，实证与设计见 [theta 死字段修复记录](docs/fixes-2026-11-10-theta-dead-field.md)。0.6.2 修复五项实盘验证的高优先级问题：chain 重复行权价改在 `get_option_chain` 入口统一合并(此前仅 get_option_quote 自保，其余按行权价取首个匹配行的脚本会随机拿到零值/垃圾值)、入场规则支撑阻力聚类(高低点分开、簇宽受限、按区间取止损与目标)、财务健康科目名的币种后缀匹配、IV/HV 期限对齐、分析师共识取最新快照与共识目标价，见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项中优先级问题:盘中未收盘 K 线的成交量不再用于量比(技术指标、技术评分、入场规则)、期权到期损益的零成交腿不再按零成本、常规时段之外的现价取延长时段最新价并标注来源、半日市不再被 D12 当作休市日、美股空头成交占比不再套用港股阈值或参与仪表盘计分、盘口可见档位不足时不下结论,见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。0.6.4 修复低优先级审计项:GEX 改用合约 IV 的 BS gamma 优先(避免服务端 3 位小数把虚值腿舍入成 0)、组合 Greeks 传导 `theta_source` 拒绝 `dead_zero` 伪有利衰减、A/H 溢价日期改用港股时区、估值同行排名改取 `industry-valuation dist` 全行业数据、Put/Call 墙与剖面自适应间距、美股规则半日市 T 按 13:00 ET 收盘、温度档位统一为 70/50/30、异动榜涨跌幅百分比格式化,见 [0.6.4 修复记录](docs/fixes-2026-11-25-low-priority.md)。0.6.5 修复美股盘前实盘抽检（`AAPL.US`/`MSFT.US`/`BRK.B.US`）发现的四组问题:`get_trade_stats` 服务端 50 档截断防护与全样本买卖比、`get_option_volatility`/`analyze_buy_sell` 跳过尚无 IV 的新挂牌周链并统一前复权 HV、美股节假日与延长时段边界（`VWAP --session all`、异动打分延长时段涨跌幅、Expected Move/期限结构常规时段 ATM 对齐）、多点号代码与窄止损告警及选股器 `--count`,见 [0.6.5 实盘抽检修复记录](docs/fixes-2026-11-25-us-live-spotcheck.md)。0.6.6 新增大盘环境引擎 `get_market_regime.py`（`.VIX.US`+`SPY`/`QQQ`+3星Tier-1宏观）并接入买卖仪表盘/简报/入场军规，修复 `get_macro_calendar` 星级与日期，打通 `check_entry_rules` 的 `B8`/`D11`/`D6` 自动分诊及 `longbridge 0.32.0` 批量容错,见 [0.6.6 开发记录](docs/feat-2026-11-25-v066-regime-macro-autorules.md)。
 1. **`option quote` 单合约查询返回空** → 原生 Greeks/OI 改经 calc-index 按合约获取,Black-Scholes 作回退
 2. **`option chain` 无法查历史** → IV Rank/Percentile 靠 `get_iv_history.py` 本地累积,需多日运行
 3. **仅支持美股 OPRA** → 港股/A 股期权数据可能为空(港股衍生品用 `warrant` 涡轮)
@@ -305,6 +305,12 @@ python scripts/market/get_ah_premium.py 939.HK [--count 60] [--kline-type day] [
 ```
 - 当前溢价 vs 均值/极值/z-score + 收窄/走阔趋势(如 -25% = H股折价25%)
 
+#### 大盘环境评估(Market Regime + 3 星宏观催化)
+```bash
+python scripts/market/get_market_regime.py [--market US|HK|CN|SG] [--json]
+```
+- 美股聚合 `.VIX.US` + `SPY.US`/`QQQ.US`（含盘前/盘后/夜盘跳空与 MA20/50/200）+ 未来 24-48h 3星 Tier-1 核心宏观（FOMC/CPI/PCE/非农/GDP），输出 `risk_on` / `neutral` / `caution` / `risk_off` 四档环境状态
+
 ---
 
 ### 💰 主力资金流(模块③)
@@ -369,9 +375,9 @@ python scripts/calendar/get_ipo_detail.py 3223.HK [--json]                      
 
 #### 宏观数据发布日历
 ```bash
-python scripts/calendar/get_macro_calendar.py [--market US] [--count 50] [--json]
+python scripts/calendar/get_macro_calendar.py [--market US] [--star 3] [--tier1] [--count 50] [--json]
 ```
-- 利率/CPI/PMI/就业等发布时间表,含前值/预测/实际
+- 利率/CPI/PCE/非农/GDP 等发布时间表，含星级(1-3星)、Tier-1 核心催化标识与前值/预测/实际
 
 #### 休市日历
 ```bash
@@ -609,11 +615,11 @@ python scripts/quote/get_warrant.py --issuers                          # 发行�
 
 ### 🎯 跨模块旗舰
 
-#### 买卖决策仪表盘（五类方向输入 + 独立事件风险）
+#### 买卖决策仪表盘（五类方向输入 + 独立事件与大盘风险）
 ```bash
-python scripts/decision/analyze_buy_sell.py AAPL.US [--json]
+python scripts/decision/analyze_buy_sell.py AAPL.US [--no-regime] [--json]
 ```
-- 技术面必须可用，方向维度有效权重至少为 60 才给信号。方向权重为技术 30、估值 15、资金 20、美股期权 10、分析师 15。财报在 7 天内最多将偏多分扣 7 分至中性，单独列示且不计覆盖。
+- 技术面必须可用，方向维度有效权重至少为 60 才给信号。方向权重为技术 30、估值 15、资金 20、美股期权 10、分析师 15。财报在 7 天内（最多 7 分）与大盘环境逆风/3星核心宏观（`caution` 6 分 / `risk_off` 12 分，合计封顶 15 分）单独列示为事件风险扣分，只削弱偏多信号（最低降至 50），不参与方向覆盖；可用 `--no-regime` 跳过大盘检查。
   - `[权重]` 方向评分:
     - 技术(30)、估值(15)、资金(20)、美股期权(10)、分析师(15)
   - 输出:
@@ -624,7 +630,7 @@ python scripts/decision/analyze_buy_sell.py AAPL.US [--json]
 
 #### 入场纪律检查器(28条军规)
 ```bash
-python scripts/decision/check_entry_rules.py AAPL.US [--json]
+python scripts/decision/check_entry_rules.py AAPL.US [--strict-regime] [--no-regime] [--json]
 python scripts/decision/check_entry_rules.py 0700.HK --max-stop-pct 6 --lookback 60
 python scripts/decision/check_entry_rules.py TSLA.US --recent-stopout yes --familiar no \
     --sector-top-decline no --prepost-move no --sector-breakout yes
@@ -633,11 +639,11 @@ python scripts/decision/check_entry_rules.py --demo     # 离线自检,无需登
 - 把纪律清单变成可执行判定:**下跌12不买(D1-D12) + 上涨6不买(U1-U6) +
   候选买点检查10条(B0-B9,含盈亏比闸门 B0 最低 1:1)**
 - 每条规则给出状态和证据；汇总区分不买、必要条件待确认、纪律通过和观望。形态匹配不能绕过未确认闸门
-- 自动判定:收盘新低/新高、缩量、RSI(6)、斐波那契61.8%、趋势线/颈线、支撑压力
+- 自动判定与分诊:收盘新低/新高、缩量、RSI(6)、斐波那契61.8%、趋势线/颈线、支撑压力
   聚类(高点、低点分开聚成区间,强=同侧触及≥2次)、吞没/锤子/W底/旗形/均线回踩、顶底背离、财报距离、
   盘前30分钟(9:00-9:30,时区+休市日历)、热度榜命中、小市值(static 总股本×现价)、
-  板块当日涨幅(industry-rank,--sector 指名或领涨股反查)、止损距离 vs 承受力(--max-stop-pct,默认8%)
-- 需人工(可用参数消解): D6板块昨日跌幅排名 / D8刚止损 / D9熟悉度 / D11盘前盘后异动;
+  **B8 行业精确匹配**(经 `institution-rating` 关联全量 `industry-rank`)、**D11 盘前盘后消息异动分诊**（结合延长时段振幅+最新新闻+财报窗口）、**D6 昨日板块排雷**（平/涨、跑赢行业或优于同行自动放行）、止损距离 vs 承受力(--max-stop-pct,默认8%/--min-stop-pct)；默认展示大盘环境，`--strict-regime` 可在 `Risk-Off` 或 24h 内 Tier-1 宏观时直接阻断买点。
+- 需人工(可用参数消解): D8刚止损 / D9熟悉度，以及未能自动排雷或处争议区间的 D6 / D11 / B8 证据;
   B8 自动仅配对同一市场日期的个股突破与板块涨幅；证据不齐时可用 --sector-breakout 手动确认对应日期
 - 止损距离和盈亏比使用同一入场参考价。缺实时参考价、量能或最新日 K 有效价格，以及 B0 或必要人工项待确认时，候选形态不能判为纪律通过。可用 `--target-price` 指定 B0 目标。 形态识别和方向分为启发式，未经样本外收益验证
 - 支撑/压力是**区间**:止损取最近支撑区间的下沿,目标取最近压力区间的下沿(两边都取保守一侧);现价回落进支撑区间内仍算该区间为支撑,收盘跌破区间下沿才算「跌破」,收盘站上压力区间上沿才算「突破」。0.6.2 之前高低点混在一个聚类里且逐点链式合并,一年 K 线常被并成 2~5 个巨型价位
@@ -651,9 +657,9 @@ python scripts/market/calc_anomaly_score.py AAPL.US [--market US] [--json]
 
 #### 每日市场简报
 ```bash
-python scripts/sentiment/daily_briefing.py [--market US] [--no-pc] [--json]
+python scripts/sentiment/daily_briefing.py [--market US] [--no-pc] [--no-regime] [--json]
 ```
-- 一键聚合:温度 + 热度榜 top5 + 异动榜 top5 + 异动统计 + 大盘 P/C 比率
+- 一键聚合:温度 + 大盘环境(Market Regime/VIX/3星宏观) + 热度榜 top5 + 异动榜 top5 + 异动统计 + 大盘 P/C 比率
 
 ---
 
@@ -827,8 +833,9 @@ longbridge-pro/
     │   ├── calc_risk_reversal.py      # 补充:25Δ 风险逆转
     │   ├── calc_max_pain.py           # 补充:Max Pain(真实OI优先)
     │   └── get_warrant.py             # 补充:港股涡轮(list/quote/issuers)
-    ├── market/                # ② 异动追踪 + 指数成分 + AH溢价
+    ├── market/                # ② 异动追踪 + 大盘环境 + 指数成分 + AH溢价
     │   ├── get_anomaly.py / get_top_movers.py / calc_anomaly_score.py
+    │   ├── get_market_regime.py        # 大盘环境(VIX+宽基均线/盘前跳空+3星宏观)
     │   ├── get_constituent.py          # 指数/ETF 成分(板块轮动)
     │   └── get_ah_premium.py           # A/H 溢价(K线/分时+统计)
     ├── flow/                  # ③ 主力资金流

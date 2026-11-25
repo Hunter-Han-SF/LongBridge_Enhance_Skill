@@ -37,20 +37,24 @@ from datetime import datetime
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 for _p in (os.path.normpath(os.path.join(_HERE, "..")), _HERE,
-           os.path.normpath(os.path.join(_HERE, "..", "technical"))):
+           os.path.normpath(os.path.join(_HERE, "..", "technical")),
+           os.path.normpath(os.path.join(_HERE, "..", "market")),
+           os.path.normpath(os.path.join(_HERE, "..", "calendar"))):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 import common
 from common import (  # noqa: E402
-    counter_id_to_symbol, get_finance_calendar, get_heat_rank, get_heat_rank_keys, get_industry_rank,
-    get_kline_adjusted, get_underlying_price, get_underlying_price_info, is_empty,
-    kline_last_bar_in_progress, normalize_records, parse_underlying, print_error, print_json,
-    regular_session_price, run_cli, to_float,
+    counter_id_to_symbol, get_batch_quotes, get_finance_calendar, get_heat_rank,
+    get_heat_rank_keys, get_industry_rank, get_institution_rating, get_kline_adjusted,
+    get_symbol_news, get_underlying_price, get_underlying_price_info, get_valuation,
+    is_empty, kline_last_bar_in_progress, normalize_records, parse_underlying,
+    print_error, print_json, regular_session_price, run_cli, to_float,
 )
 from indicators import atr as _atr  # noqa: E402
 from calc_relative_strength import trading_date  # noqa: E402
 from indicators import sma_series  # noqa: E402
+from get_market_regime import assess_market_regime  # noqa: E402
 
 PIVOT_K = 3          # pivot 确认窗口:左右各 3 根
 NEAR_RES_PCT = 0.04  # D2「离强压力很近」: 上方压力距现价 ≤4%
@@ -444,10 +448,12 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
     R["D5"] = _r(stop_status, stop_ev)
     R["U4"] = _r(stop_status, stop_ev)
 
-    # D6: 昨日板块内跌幅排名(人工,可答)
+    # D6: 昨日板块内跌幅排名(显式回答优先 → 自动行业/同行分诊 → 人工)
     ans = opts.get("sector_top_decline")
+    d6_auto = opts.get("d6_auto")
     R["D6"] = (_r("triggered", "确认昨日板块内跌幅居前10%") if ans == "yes"
                else _r("clear", "确认昨日板块内跌幅未居前10%") if ans == "no"
+               else _r(*d6_auto) if (isinstance(d6_auto, tuple) and len(d6_auto) == 2)
                else _r("manual", "昨日该股在所属板块内跌幅是否排前10%?(30只成分≈前3)"
                        " 用 --sector-top-decline yes/no 回答"))
 
@@ -508,10 +514,12 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
         R["D10"] = _r("clear", f"热度榜{'命中' if in_heat else '未命中'};"
                       f"近5日涨跌 {pct(d5)}")
 
-    # D11: 盘前盘后非财报消息面异动(人工,可答)
+    # D11: 盘前盘后非财报消息面异动(显式回答优先 → 延长时段振幅/新闻自动分诊 → 人工)
     ans = opts.get("prepost_move")
+    d11_auto = opts.get("d11_auto")
     R["D11"] = (_r("triggered", "确认盘前/盘后因非财报消息大涨大跌") if ans == "yes"
                 else _r("clear", "确认盘前/盘后无异动") if ans == "no"
+                else _r(*d11_auto) if (isinstance(d11_auto, tuple) and len(d11_auto) == 2)
                 else _r("manual", "盘前/盘后是否有非财报消息面的大涨大跌?"
                         " 用 --prepost-move yes/no 回答"))
 
@@ -600,6 +608,8 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
     reasons = [f"{k} {RULE_NAMES[k]}({R[k]['evidence'][:40]})" for k in triggered]
     if gate_fail:
         reasons.append(f"B0 {R['B0']['evidence']}")
+    if opts.get("regime_block"):
+        reasons.append(f"大盘过滤({str(opts['regime_block'])[:60]})")
     if reasons:
         verdict, v_reasons = "❌ 不买", reasons
     elif matched and required:
@@ -1021,42 +1031,172 @@ def _is_small_cap(symbol: str, threshold_usd: float,
         return None
 
 
-def _auto_sector_breakout(symbol: str, market: str, sector: str | None,
-                          chg_pct: float) -> tuple[str | None, str]:
-    """B8 板块半边自动化: industry-rank 当日板块涨幅榜。
+def _lookup_stock_industry_perf(symbol: str, market: str, sector: str | None = None) -> dict:
+    """定位个股所属细分行业并读取 industry-rank 当日行业涨跌幅。
 
-    ⚠️ 实测 CLI 无「个股→所属行业」映射命令(industry-peers 只吃 BK 码,
-    quote/static/anomaly/compare 均无行业字段),因此走两条路径:
-      ① 用户 --sector <行业名> 指名匹配;
-      ② 该股恰为某行业 leading_ticker(领涨股)时反查。
-    板块涨幅 ≥ chg_pct 视为「板块突破日」(设计阈值,可 --sector-chg-pct 调整)。
-    返回 (yes/no/None, 说明)。
+    解析优先级: ① 显式 --sector 指定; ② institution-rating 的 analyst.industry_name
+    精确/模糊匹配 全量 industry-rank(140+ 细分行业); ③ leading_ticker 反查。
     """
     try:
         rows = get_industry_rank(market=market)
     except Exception:
-        return None, "行业排行数据不可用"
+        return {"matched": None, "industry_name": None, "chg": None, "error": "行业排行数据不可用"}
+
     cands = []
     for row in rows or []:
-        cands.extend(row.get("lists") or [])
+        cands.extend((row or {}).get("lists") or [])
+
+    ind_name = ""
+    hit = None
     if sector:
         key = sector.strip().lower()
-        hit = next((i for i in cands
-                    if key in str(i.get("name", "")).lower()), None)
-        if not hit:
-            return None, f"当日涨幅榜未见行业「{sector}」"
+        hit = next((i for i in cands if key in str((i or {}).get("name") or "").lower()), None)
     else:
-        ticker, _ = parse_underlying(symbol)
-        hit = next((i for i in cands
-                    if str(i.get("leading_ticker", "")).upper() == ticker), None)
-        if not hit:
-            return None, "无法定位该股所属行业(可用 --sector <行业名> 指定)"
-    chg = to_float(hit.get("chg"))
+        try:
+            ir = get_institution_rating(symbol)
+            ind_name = str(((ir or {}).get("analyst") or {}).get("industry_name") or "").strip()
+        except Exception:
+            ind_name = ""
+        if ind_name:
+            ind_low = ind_name.lower()
+            hit = next((i for i in cands if str((i or {}).get("name") or "").strip().lower() == ind_low), None)
+            if hit is None:
+                hit = next(
+                    (i for i in cands
+                     for nm in [str((i or {}).get("name") or "").strip().lower()]
+                     if nm and (ind_low in nm or nm in ind_low)),
+                    None,
+                )
+        if hit is None:
+            ticker, _ = parse_underlying(symbol)
+            hit = next((i for i in cands
+                        if str((i or {}).get("leading_ticker") or "").upper() == ticker), None)
+
+    chg = to_float(hit.get("chg")) if isinstance(hit, dict) else None
+    resolved_name = (hit.get("name") if isinstance(hit, dict) else None) or ind_name or None
+    return {"matched": hit, "industry_name": resolved_name, "chg": chg, "error": None}
+
+
+def _auto_sector_breakout(symbol: str, market: str, sector: str | None,
+                          chg_pct: float, industry_info: dict | None = None) -> tuple[str | None, str]:
+    """B8 板块半边自动化: 结合 institution-rating 行业归属与 industry-rank 当日板块涨幅榜。"""
+    info = industry_info if industry_info is not None else _lookup_stock_industry_perf(symbol, market, sector)
+    if info.get("error"):
+        return None, info["error"]
+    hit = info.get("matched")
+    if not hit:
+        if sector:
+            return None, f"当日涨幅榜未见行业「{sector}」"
+        if info.get("industry_name"):
+            return None, f"当日涨幅榜未见所属行业「{info['industry_name']}」(可用 --sector <行业名> 指定)"
+        return None, "无法定位该股所属行业(可用 --sector <行业名> 指定)"
+    chg = info.get("chg")
     if chg is None:
         return None, f"行业「{hit.get('name')}」无当日涨幅数据"
     ok = chg >= chg_pct
     return ("yes" if ok else "no",
             f"行业「{hit.get('name')}」今日 {chg * 100:.1f}%,阈值 {chg_pct * 100:.0f}%")
+
+
+def _auto_d11(symbol: str, price_info: dict | None, atr_pct: float,
+              earnings_days: int | None) -> tuple[str, str] | None:
+    """D11 自动分诊: 结合延长时段相对常规收盘的振幅 + 最新新闻标题 + 财报窗口。"""
+    if not isinstance(price_info, dict) or not price_info:
+        return None
+    src = price_info.get("source")
+    if src == "regular":
+        return "clear", "当前处常规交易时段,无待消化盘前/盘后跳空"
+    ext_px = to_float(price_info.get("price"))
+    reg_px = to_float(price_info.get("regular_price"))
+    if not (ext_px and reg_px and reg_px > 0):
+        return None
+    ext_chg = (ext_px - reg_px) / reg_px
+    label = price_info.get("source_label") or "延长时段"
+    eff_atr = atr_pct if (atr_pct and atr_pct > 0) else 0.02
+    quiet_thr = min(0.015, max(0.008, 0.6 * eff_atr))
+    shock_thr = max(0.03, 1.2 * eff_atr)
+
+    if abs(ext_chg) <= quiet_thr:
+        return "clear", f"{label}波动平稳({pct(ext_chg)},平稳阈值 ±{pct(quiet_thr)})"
+
+    headline = ""
+    try:
+        news = get_symbol_news(symbol, count=2)
+        for item in news or []:
+            if isinstance(item, dict) and str(item.get("title") or "").strip():
+                headline = str(item["title"]).strip()
+                break
+    except Exception:
+        headline = ""
+
+    news_note = f";最新新闻「{headline[:34]}」" if headline else ""
+    earn_kw = ("earnings", "quarter", "q1 ", "q2 ", "q3 ", "q4 ", "财报", "业绩", "季报", "年报")
+    near_earn = (earnings_days is not None and earnings_days <= 1) or any(
+        k in headline.lower() for k in earn_kw
+    )
+    if abs(ext_chg) >= shock_thr and not near_earn:
+        return ("triggered",
+                f"{label}非财报窗口大幅异动 {pct(ext_chg)}(阈值 ±{pct(shock_thr)}){news_note}"
+                ";若确属财报影响可用 --prepost-move no")
+    tag = "(临近财报)" if near_earn else ""
+    return ("manual",
+            f"{label}波动 {pct(ext_chg)}{tag}{news_note}"
+            ";请确认是否属非财报消息面异动(用 --prepost-move yes/no)")
+
+
+def _auto_d6(symbol: str, f: dict, intraday_bar: bool,
+             industry_info: dict | None = None) -> tuple[str, str] | None:
+    """D6 自动排雷: 上一完整交易日未显著收跌、或跑赢所属行业/多数同行时自动放行。"""
+    c = f.get("c") or []
+    if intraday_bar:
+        if len(c) < 3 or not c[-3]:
+            return None
+        day_ret = (c[-2] - c[-3]) / c[-3]
+    else:
+        if len(c) < 2 or not c[-2]:
+            return None
+        day_ret = (c[-1] - c[-2]) / c[-2]
+
+    if day_ret >= -0.003:
+        return "clear", f"上一完整交易日涨跌 {pct(day_ret)},未出现下跌领跌"
+
+    if not intraday_bar and industry_info and industry_info.get("chg") is not None:
+        ind_chg = industry_info["chg"]
+        ind_name = industry_info.get("industry_name") or "所属行业"
+        if day_ret >= ind_chg:
+            return "clear", f"上一交易日 {pct(day_ret)},跑赢或持平「{ind_name}」({pct(ind_chg)}),非板块领跌"
+
+    if not intraday_bar:
+        try:
+            val = get_valuation(symbol)
+            peer_list = (((val or {}).get("peers") or {}).get("pe") or {}).get("list") or []
+            target_sym = symbol.upper()
+            peer_syms: list[str] = []
+            for p in peer_list:
+                if not isinstance(p, dict):
+                    continue
+                psym = str(p.get("symbol") or counter_id_to_symbol(p.get("counter_id")) or "").strip()
+                if psym and psym.upper() != target_sym:
+                    peer_syms.append(psym)
+            if len(peer_syms) >= 4:
+                p_quotes = get_batch_quotes(peer_syms[:12])
+                peer_rets = [
+                    chg / 100.0
+                    for q in p_quotes.values()
+                    for chg in [to_float((q or {}).get("change_percentage"))]
+                    if chg is not None
+                ]
+                if len(peer_rets) >= 4:
+                    worse = sum(1 for r in peer_rets if r < day_ret - 1e-6)
+                    if worse / len(peer_rets) >= 0.30:
+                        return ("clear",
+                                f"上一交易日 {pct(day_ret)},表现优于 {worse}/{len(peer_rets)} 只抽样同行,非板块跌幅前10%")
+                    return ("manual",
+                            f"上一交易日 {pct(day_ret)},在 {len(peer_rets)} 只抽样同行中偏弱"
+                            ";请确认是否居全板块跌幅前10%(用 --sector-top-decline yes/no)")
+        except Exception:
+            pass
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1090,6 +1230,9 @@ def render(symbol: str, result: dict, price, generated: str) -> None:
     print(f"  {symbol} 入场纪律检查(28条军规)  {source} {price}  {generated}")
     if result.get("price_note"):
         print(f"  ℹ️ {result['price_note']}")
+    reg = result.get("market_regime")
+    if isinstance(reg, dict) and reg.get("regime") and reg.get("regime") != "unknown":
+        print(f"  🧭 大盘环境: {reg.get('label', '')} — {reg.get('summary', '')}")
     if result.get("intraday_bar"):
         print("  ⚠️ 当日 K 线未收盘: 价格为盘中值,成交量未定 —— 量能类条件按未知处理,"
               "形态类判定为盘中暂定,收盘后复核")
@@ -1171,21 +1314,42 @@ def analyze(symbol: str, args) -> dict:
     opts["now"] = now
     if opts["earnings_days"] is None:
         opts["earnings_days"] = _days_to_earnings(symbol, opts["now"])
-    # B8 板块半边: 用户显式回答优先;否则尝试 industry-rank 自动判定
+    industry_info = (
+        _lookup_stock_industry_perf(symbol, market, args.sector)
+        if (not args.sector_breakout or not args.sector_top_decline)
+        else None
+    )
+    # B8 板块半边: 用户显式回答优先;否则结合 institution-rating 与 industry-rank 自动判定
     if not args.sector_breakout:
         ans, note = _auto_sector_breakout(symbol, market, args.sector,
-                                          args.sector_chg_pct / 100.0)
+                                          args.sector_chg_pct / 100.0,
+                                          industry_info=industry_info)
         opts["sector_breakout"] = ans
         opts["sector_auto"] = True
         opts["sector_date"] = common.market_date(market)
         if note:
             opts["sector_detail"] = note
+    if not args.sector_top_decline:
+        opts["d6_auto"] = _auto_d6(symbol, f, intraday, industry_info=industry_info)
+    if not args.prepost_move and live:
+        opts["d11_auto"] = _auto_d11(symbol, price_info, f["atr_pct"], opts["earnings_days"])
+
+    regime_info = None
+    if not getattr(args, "no_regime", True):
+        try:
+            regime_info = assess_market_regime(market, now=now)
+        except Exception:
+            regime_info = None
+        if getattr(args, "strict_regime", False) and isinstance(regime_info, dict):
+            if regime_info.get("regime") == "risk_off" or regime_info.get("tier1_24h"):
+                opts["regime_block"] = f"{regime_info.get('label', '')}: {regime_info.get('summary', '')}"
 
     result = check_rules(f, opts)
     result.update({"symbol": symbol, "price": price,
                    "price_source": "quote" if live else "last_daily_close",
                    "price_note": _price_note(price_info, result["levels"]["support"]),
                    "underlying_price_info": price_info,
+                   "market_regime": regime_info,
                    "intraday_bar": intraday,
                    "last_daily_close": f["last"],
                    "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -1279,6 +1443,10 @@ if __name__ == "__main__":
                         help="手动指定距下次财报天数(跳过日历查询)")
     parser.add_argument("--no-heat", action="store_true",
                         help="跳过热度榜与市值查询(D10转人工)")
+    parser.add_argument("--no-regime", action="store_true", default=False,
+                        help="跳过大盘环境与 3 星宏观催化评估(加速)")
+    parser.add_argument("--strict-regime", action="store_true", default=False,
+                        help="严控模式: 当大盘处于 Risk-Off 或 24h 内有 Tier-1 宏观时直接阻断买入")
     parser.add_argument("--now", help="覆盖当前市场当地时间,格式 'YYYY-MM-DD HH:MM'")
     parser.add_argument("--demo", action="store_true", help="离线合成数据自检")
     args = parser.parse_args()

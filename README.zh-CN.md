@@ -1,11 +1,11 @@
-# LongBridge Enhance Skill (longbridge-pro) · 0.6.5
+# LongBridge Enhance Skill (longbridge-pro) · 0.6.6
 
 [English](README.md) | **[中文](README.zh-CN.md)**
 
 > 基于 [Longbridge OpenAPI](https://open.longbridge.com) 的社区多维度分析增强工具。
 > 十大模块:① 期权分析(原生 Greeks、IV/HV、波动率微笑、P/C 比率、损益、Put/Call Wall、GEX、IV Crush、
 > Expected Move、风险逆转、IV 期限结构、Max Pain、OI 分布、Gamma Profile + 港股涡轮)
-> ② 异动追踪(+指数成分/板块轮动/AH溢价) ③ 主力资金流(+经纪商队列) ④ 事件日历(财报/分红/拆股/IPO/宏观/休市/新股档案)
+> ② 异动追踪(+大盘环境 Market Regime/指数成分/板块轮动/AH溢价) ③ 主力资金流(+经纪商队列) ④ 事件日历(财报/分红/拆股/IPO/宏观/休市/新股档案)
 > ⑤ 市场情绪(+宏观指标历史) ⑥ 技术面(MA/MACD/RSI/KDJ/BOLL/ATR/OBV + 综合评分 + 相对强度/Beta + 服务端quant)
 > ⑦ 基本面(估值分位/分析师共识/财务健康/股息质量/多股对比/业务分部/行业排行/财务共识/公司行动/经营回顾/公司档案
 > + 内部人交易/13F机构持仓/基金持仓/机构股东)
@@ -185,7 +185,8 @@ python scripts/intraday/get_trade_stats.py 700.HK          # 量价分布(POC/VA
 
 # === 一键每日简报 / 买卖仪表盘 / 入场纪律 ===
 python scripts/sentiment/daily_briefing.py --market US
-python scripts/decision/analyze_buy_sell.py AAPL.US        # 方向维度与独立事件风险
+python scripts/market/get_market_regime.py --market US      # 大盘环境 + 3星宏观催化
+python scripts/decision/analyze_buy_sell.py AAPL.US        # 方向维度与独立事件/大盘风险
 python scripts/decision/check_entry_rules.py AAPL.US       # 28条军规入场检查
 ```
 
@@ -195,7 +196,7 @@ python scripts/decision/check_entry_rules.py AAPL.US       # 28条军规入场�
 python -m unittest discover -s tests -v
 ```
 
-完整命令参考见 [`SKILL.md`](SKILL.md)；全部27项映射、兼容性变化和验证记录见 [0.6.0 审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.2 修复五项经实盘验证的高优先级问题(chain 重复行权价、入场规则支撑阻力聚类、财务健康科目匹配、IV/HV 期限对齐、分析师共识),见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项经实盘验证的中优先级问题(盘中量比用了未收盘的当日 K 线、零成交腿被当成免费期权、盘前盘后现价为昨收且无标注、半日市被 D12 误放行、美股沽空占比套用港股阈值、美股盘口只有一档却给出结论),见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。0.6.4 修复低优先级审计项(GEX 改用合约 IV 的 BS gamma 优先、组合 Greeks 传导 `theta_source`、A/H 溢价日期改用港股时区、估值同行改用 `industry-valuation dist` 全行业排名、Put/Call 墙位置与剖面自适应去重、规则半日市 T、统一 70/50/30 温度档位、异动榜涨跌幅百分比格式化),见 [0.6.4 修复记录](docs/fixes-2026-11-25-low-priority.md)。0.6.5 修复美股盘前实盘抽检(`AAPL.US`/`MSFT.US`/`BRK.B.US`)发现的四组问题(`trade-stats` 50 档截断防护、空 IV 新周链回退、美股节假日与延长时段边界、`VWAP --session all`、异动延长时段涨跌幅、多点号代码/窄止损告警/选股器 `--count`),见 [0.6.5 修复记录](docs/fixes-2026-11-25-us-live-spotcheck.md)。
+完整命令参考见 [`SKILL.md`](SKILL.md)；全部27项映射、兼容性变化和验证记录见 [0.6.0 审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.2 修复五项经实盘验证的高优先级问题(chain 重复行权价、入场规则支撑阻力聚类、财务健康科目匹配、IV/HV 期限对齐、分析师共识),见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项经实盘验证的中优先级问题(盘中量比用了未收盘的当日 K 线、零成交腿被当成免费期权、盘前盘后现价为昨收且无标注、半日市被 D12 误放行、美股沽空占比套用港股阈值、美股盘口只有一档却给出结论),见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。0.6.4 修复低优先级审计项(GEX 改用合约 IV 的 BS gamma 优先、组合 Greeks 传导 `theta_source`、A/H 溢价日期改用港股时区、估值同行改用 `industry-valuation dist` 全行业排名、Put/Call 墙位置与剖面自适应去重、规则半日市 T、统一 70/50/30 温度档位、异动榜涨跌幅百分比格式化),见 [0.6.4 修复记录](docs/fixes-2026-11-25-low-priority.md)。0.6.5 修复美股盘前实盘抽检(`AAPL.US`/`MSFT.US`/`BRK.B.US`)发现的四组问题(`trade-stats` 50 档截断防护、空 IV 新周链回退、美股节假日与延长时段边界、`VWAP --session all`、异动延长时段涨跌幅、多点号代码/窄止损告警/选股器 `--count`),见 [0.6.5 修复记录](docs/fixes-2026-11-25-us-live-spotcheck.md)。0.6.6 新增大盘环境引擎 `get_market_regime.py`（VIX+宽基均线/盘前跳空+3星Tier-1宏观）并接入仪表盘/简报/入场军规，修复宏观日历星级与日期，打通 `B8`/`D11`/`D6` 自动分诊及 CLI `0.32.0` 批量容错，见 [0.6.6 开发记录](docs/feat-2026-11-25-v066-regime-macro-autorules.md)。
 
 ## 已知限制
 

@@ -116,6 +116,7 @@ def run_cli(
     fmt: str = "json",
     check_auth: bool = True,
     retries: int = 2,
+    allow_partial: bool = False,
 ) -> Any:
     """调用 longbridge CLI,返回解析后的 Python 对象。
 
@@ -124,6 +125,9 @@ def run_cli(
         fmt: 输出格式,"json"(默认,返回解析后的对象)或 "raw"(返回原始 stdout 字符串)
         check_auth: 是否在 token 失效时提示重新登录
         retries: 遇到瞬时错误时的重试次数
+        allow_partial: CLI >= 0.31.1 批量查询(quote / calc-index)混入未知代码时
+            会以非 0 退出码退出,同时在 stdout 输出其余有效标的的非空 JSON 数组;
+            设为 True 时保留这部分有效结果而不是整体抛错。
 
     Returns:
         json 模式返回 dict/list/None;raw 模式返回字符串
@@ -169,6 +173,17 @@ def run_cli(
             if "rate" in (stdout + stderr).lower() or "429" in (stdout + stderr):
                 time.sleep(1.0 * (attempt + 1))
                 continue
+            if allow_partial and fmt == "json" and stdout.strip():
+                cand = stdout.strip()
+                for idx, ch in enumerate(cand):
+                    if ch == "[":
+                        try:
+                            parsed = json.loads(cand[idx:])
+                        except json.JSONDecodeError:
+                            break
+                        if isinstance(parsed, list) and len(parsed) > 0:
+                            return parsed
+                        break
             raise LongbridgeCliError(last_err)
 
         if fmt == "raw":
@@ -722,6 +737,36 @@ _ET_OPEN, _ET_CLOSE, _ET_HALF_DAY_CLOSE = dt_time(9, 30), dt_time(16, 0), dt_tim
 _CLOCK_SKEW = timedelta(minutes=5)
 
 
+def _parse_quote_record(quote: dict, fallback_symbol: str = "") -> dict | None:
+    """将单条 CLI quote 对象规范化为摘要结构。"""
+    if not isinstance(quote, dict) or not quote:
+        return None
+    sym = str(fallback_symbol or quote.get("symbol") or "").strip()
+    if not sym:
+        return None
+    extended = []
+    for key, label in _EXTENDED_SESSIONS:
+        block = quote.get(key)
+        if not isinstance(block, dict):
+            continue
+        price = to_float(block.get("last"))
+        moment = _parse_utc(block.get("timestamp"))
+        if price is not None and price > 0 and moment is not None:
+            extended.append({"source": key, "source_label": label, "price": price, "time": moment,
+                             "prev_close": to_float(block.get("prev_close")),
+                             "volume": to_float(block.get("volume"))})
+    extended.sort(key=lambda item: item["time"])
+    return {
+        "symbol": sym,
+        "market": sym.upper().rsplit(".", 1)[-1] if "." in sym else "US",
+        "regular_price": to_float(quote.get("last")),
+        "regular_prev_close": to_float(quote.get("prev_close")),
+        "change_percentage": to_float(quote.get("change_percentage")),
+        "volume": to_float(quote.get("volume")),
+        "extended": extended,
+    }
+
+
 def get_underlying_quote(symbol: str) -> dict | None:
     """正股报价摘要(一次 quote 调用)。
 
@@ -738,27 +783,44 @@ def get_underlying_quote(symbol: str) -> dict | None:
     if is_empty(data) or not isinstance(data, list) or not data:
         return None
     quote = data[0] if isinstance(data[0], dict) else {}
-    extended = []
-    for key, label in _EXTENDED_SESSIONS:
-        block = quote.get(key)
-        if not isinstance(block, dict):
+    return _parse_quote_record(quote, fallback_symbol=symbol)
+
+
+def get_batch_quotes(symbols: list[str], batch_size: int = 20) -> dict[str, dict]:
+    """批量查询多只标的报价(单次 CLI 可传多个标的,对混入无效代码具备容错能力)。
+
+    Returns:
+        {SYMBOL_UPPER: quote_dict}
+    """
+    unique: list[str] = []
+    seen: set[str] = set()
+    for raw in symbols or []:
+        s = str(raw or "").strip()
+        if not s:
             continue
-        price = to_float(block.get("last"))
-        moment = _parse_utc(block.get("timestamp"))
-        if price is not None and price > 0 and moment is not None:
-            extended.append({"source": key, "source_label": label, "price": price, "time": moment,
-                             "prev_close": to_float(block.get("prev_close")),
-                             "volume": to_float(block.get("volume"))})
-    extended.sort(key=lambda item: item["time"])
-    return {
-        "symbol": symbol,
-        "market": symbol.upper().rsplit(".", 1)[-1] if "." in symbol else "US",
-        "regular_price": to_float(quote.get("last")),
-        "regular_prev_close": to_float(quote.get("prev_close")),
-        "change_percentage": to_float(quote.get("change_percentage")),
-        "volume": to_float(quote.get("volume")),
-        "extended": extended,
-    }
+        key = s.upper()
+        if key not in seen:
+            seen.add(key)
+            unique.append(s)
+    if not unique:
+        return {}
+    out: dict[str, dict] = {}
+    for i in range(0, len(unique), batch_size):
+        chunk = unique[i:i + batch_size]
+        try:
+            data = run_cli("quote", *chunk, allow_partial=len(chunk) > 1)
+        except LongbridgeCliError as e:
+            if "auth login" in str(e):
+                raise
+            # 整批均不可用时仅在单批外兜底跳过;单标的或首批即因鉴权外失败则返回已收集结果
+            continue
+        if is_empty(data) or not isinstance(data, list):
+            continue
+        for row in data:
+            rec = _parse_quote_record(row)
+            if rec:
+                out[rec["symbol"].upper()] = rec
+    return out
 
 
 def _us_close_time(d: date) -> dt_time:
@@ -766,15 +828,14 @@ def _us_close_time(d: date) -> dt_time:
 
 
 def _regular_session_state(market: str, now: datetime, extended: list[dict]) -> tuple[bool, datetime | None]:
-    """→ (常规时段是否进行中, 最近一次常规收盘的时刻)。now 为市场当地时间。
+    """→ (常规时段是否进行中, 最近一次常规收盘的时刻)。now 自动换算为市场当地时间。
 
     只有美股的 quote 带延长时段块,其他市场按常规时段处理(返回 (False, None))。
     排除规则节假日与半日市提前收盘,避免节假日误判盘中或把 last_close 推进到休市日。
     """
     if market != "US":
         return False, None
-    if now.tzinfo is None:
-        now = market_now(market, now=now)
+    now = market_now(market, now=now)
     today = now.date()
     today_close = _us_close_time(today)
     in_session = (now.weekday() < 5 and not us_market_holiday(today)
@@ -809,9 +870,7 @@ def latest_underlying_price(quote: dict | None, now: datetime | None = None) -> 
         return None, None
     regular = quote.get("regular_price")
     market = quote.get("market") or "US"
-    current = now if now is not None else market_now(market)
-    if current.tzinfo is None:
-        current = market_now(market, now=current)
+    current = market_now(market, now=now) if market in {"US", "HK", "CN", "SH", "SZ", "SG"} else (now or market_now("US"))
     extended = quote.get("extended") or []
     in_session, last_close = _regular_session_state(market, current, extended)
     chosen = None
@@ -1477,6 +1536,7 @@ def get_finance_calendar(
     start: str | None = None,
     end: str | None = None,
     count: int = 100,
+    star: int | list[int] | None = None,
 ) -> list[dict]:
     """获取事件日历(财报/分红/分拆/IPO/宏观)。
 
@@ -1487,6 +1547,7 @@ def get_finance_calendar(
         filter: 'watchlist' 或 'positions'(与 symbol 互斥,过滤到自选/持仓)
         start/end: YYYY-MM-DD
         count: 返回条数
+        star: 宏观日历重要性过滤(1/2/3 或列表,传 None 不过滤)
 
     Returns:
         [{date, count, infos:[{counter_id, counter_name, date, date_type,
@@ -1506,6 +1567,11 @@ def get_finance_calendar(
         args += ["--start", start]
     if end:
         args += ["--end", end]
+    if isinstance(star, int) and not isinstance(star, bool):
+        args += ["--star", str(star)]
+    elif isinstance(star, (list, tuple, set)):
+        for s in star:
+            args += ["--star", str(s)]
     args += ["--count", str(count)]
     data = run_cli(*args)
     if is_empty(data) or not isinstance(data, dict):
@@ -1892,7 +1958,7 @@ def get_option_contract_metrics(
             todo.append(c)
     for i in range(0, len(todo), batch_size):
         chunk = todo[i:i + batch_size]
-        data = run_cli("calc-index", *chunk, "--fields", fields)
+        data = run_cli("calc-index", *chunk, "--fields", fields, allow_partial=len(chunk) > 1)
         rows = data if isinstance(data, list) else []
         for r in normalize_records(rows):
             sym = r.get("symbol")
@@ -2267,11 +2333,12 @@ def get_business_segments(symbol: str) -> list[dict]:
     return normalize_records(data.get("business", []))
 
 
-def get_industry_rank(market: str = "US") -> list[dict]:
+def get_industry_rank(market: str = "US", count: int | None = 200) -> list[dict]:
     """行业板块排行(按涨幅),每个分类下是行业列表。
 
     Args:
         market: US | HK | CN | SG
+        count: 返回行业数上限(默认 200,避免 CLI 默认仅返回 20 条漏掉主流细分行业)
 
     Returns:
         [{name(分类名), chg, lists: [{counter_id('BK/US/IN00362'), name(行业名),
@@ -2279,13 +2346,24 @@ def get_industry_rank(market: str = "US") -> list[dict]:
           prev_close, value_name, value_data, minutes, minutes_count}]}]
         ⚠️ 行业 BK counter_id 在 lists[].counter_id,不在顶层。
     """
-    data = run_cli("industry-rank", "--market", market)
+    args = ["industry-rank", "--market", market]
+    if count is not None:
+        args += ["--count", str(count)]
+    data = run_cli(*args)
     if is_empty(data) or not isinstance(data, dict):
         return []
     rows = normalize_records(data.get("items", []))
     for r in rows:
         r["lists"] = normalize_records(r.get("lists", []))
     return rows
+
+
+def get_symbol_news(symbol: str, count: int = 5) -> list[dict]:
+    """获取个股最新新闻列表(只读)。[{id, title, url, published_at, ...}]"""
+    data = run_cli("news", symbol, "--count", str(count))
+    if is_empty(data) or not isinstance(data, list):
+        return []
+    return normalize_records(data)
 
 
 def get_industry_peers(counter_id: str) -> dict:

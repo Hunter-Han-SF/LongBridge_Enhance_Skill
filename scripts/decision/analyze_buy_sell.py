@@ -31,7 +31,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 for _p in (os.path.normpath(os.path.join(_HERE, "..")), _HERE,
            os.path.normpath(os.path.join(_HERE, "..", "technical")),
            os.path.normpath(os.path.join(_HERE, "..", "fundamental")),
-           os.path.normpath(os.path.join(_HERE, "..", "quote"))):
+           os.path.normpath(os.path.join(_HERE, "..", "quote")),
+           os.path.normpath(os.path.join(_HERE, "..", "market")),
+           os.path.normpath(os.path.join(_HERE, "..", "calendar"))):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -46,10 +48,12 @@ from common import (  # noqa: E402
 from calc_technical_score import score as tech_score  # noqa: E402
 from get_valuation_percentile import analyze as val_analyze  # noqa: E402
 from get_analyst_consensus import analyze as analyst_analyze  # noqa: E402
+from get_market_regime import assess_market_regime  # noqa: E402
 
 WEIGHTS = {"技术面": 30, "估值面": 15, "资金面": 20, "期权定位": 10, "分析师": 15}
 MIN_COVERAGE_WEIGHT = 60
 EVENT_PENALTY = 7
+MAX_EVENT_PENALTY = 15
 
 
 def _dim_technical(symbol: str, bulls: list, bears: list) -> tuple[float | None, str]:
@@ -219,9 +223,19 @@ def _dim_analyst(symbol: str, bulls: list, bears: list) -> tuple[float | None, s
         return None, f"数据失败({str(e)[:30]})"
 
 
-def _dim_event(symbol: str, bulls: list, bears: list) -> tuple[float | None, str]:
+def _dim_event(
+    symbol: str,
+    bulls: list,
+    bears: list,
+    *,
+    include_regime: bool = False,
+    regime_out: dict | None = None,
+) -> tuple[float | None, str]:
+    market = symbol.rsplit(".", 1)[-1].upper() if "." in symbol else "US"
+    earn_pen: float | None = None
+    earn_note: str = ""
+    earn_err: str | None = None
     try:
-        market = symbol.rsplit(".", 1)[-1] if "." in symbol else "US"
         buckets = get_finance_calendar(category="report", market=market, symbol=symbol, count=20)
         today = common.market_date(market)
         # 取「最近一次」未来财报(日历返回乱序时不能只拿第一个命中的)
@@ -238,14 +252,46 @@ def _dim_event(symbol: str, bulls: list, bears: list) -> tuple[float | None, str
         if best_days is not None:
             if best_days <= 7:
                 bears.append(f"事件: {best_days} 天后发财报(波动风险)")
-                return EVENT_PENALTY, f"{best_days} 天后财报"
-            return 0.0, f"下次财报还有 {best_days} 天"
-        return None, "日历中无可核实的下次财报"
+                earn_pen, earn_note = float(EVENT_PENALTY), f"{best_days} 天后财报"
+            else:
+                earn_pen, earn_note = 0.0, f"下次财报还有 {best_days} 天"
+        else:
+            earn_note = "日历中无可核实的下次财报"
     except Exception as e:
-        return None, f"数据失败({str(e)[:30]})"
+        earn_err = f"数据失败({str(e)[:30]})"
+        earn_note = earn_err
+
+    if not include_regime:
+        if earn_err is not None:
+            return None, earn_err
+        return earn_pen, earn_note
+
+    reg_pen = 0.0
+    reg_note = ""
+    try:
+        reg = assess_market_regime(market)
+        if isinstance(reg, dict) and reg.get("regime") and reg.get("regime") != "unknown":
+            if regime_out is not None:
+                regime_out.update(reg)
+            reg_pen = to_float(reg.get("max_bull_penalty"), 0.0) or 0.0
+            summary = reg.get("summary") or ""
+            label = reg.get("label") or reg.get("regime")
+            if reg["regime"] in ("risk_off", "caution"):
+                bears.append(f"大盘/宏观: {label}" + (f" — {summary}" if summary else ""))
+            elif reg["regime"] == "risk_on":
+                bulls.append(f"大盘环境: {label}" + (f"({summary})" if summary else ""))
+            reg_note = f"{label}" + (f"({summary})" if summary else "")
+    except Exception:
+        pass
+
+    if earn_pen is None and not reg_note:
+        return None, earn_note
+    total_pen = min(float(MAX_EVENT_PENALTY), (earn_pen or 0.0) + reg_pen)
+    note = f"{earn_note}; 大盘 {reg_note}" if reg_note else earn_note
+    return total_pen, note
 
 
-def analyze(symbol: str, output_json: bool = False) -> dict:
+def analyze(symbol: str, output_json: bool = False, include_regime: bool = True) -> dict:
     price = get_underlying_price(symbol)
     bulls: list[str] = []
     bears: list[str] = []
@@ -268,10 +314,13 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
         acc += score_v * WEIGHTS[name]
         total_w += WEIGHTS[name]
         dim_out[name] = {"score": round(score_v, 1), "weight": WEIGHTS[name], "detail": note}
-    event_penalty, event_note = _dim_event(symbol, bulls, bears)
+    regime_box: dict = {}
+    event_penalty, event_note = _dim_event(
+        symbol, bulls, bears, include_regime=include_regime, regime_out=regime_box
+    )
     coverage_ok = total_w >= MIN_COVERAGE_WEIGHT and dims["技术面"][0] is not None
     directional_score = acc / total_w if coverage_ok else None
-    # 风险只能削弱看多信号，财报日期本身不形成看空或看多方向。
+    # 风险只能削弱看多信号，财报日期与大盘逆风不将原本看空得分进一步压低或伪造多头。
     composite = (round(directional_score - min(event_penalty or 0, max(directional_score - 50, 0)), 1)
                  if directional_score is not None else None)
     applicable_weight = sum(WEIGHTS.values()) - (0 if symbol.upper().endswith(".US") else WEIGHTS["期权定位"])
@@ -302,6 +351,7 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
         "minimum_coverage_weight": MIN_COVERAGE_WEIGHT,
         "required_dimensions": ["技术面"],
         "event_risk": {"max_penalty": event_penalty, "detail": event_note},
+        "market_regime": regime_box or None,
         "signal": signal,
         "bull_factors": bulls,
         "bear_factors": bears,
@@ -322,6 +372,8 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
         sc = f"{d['score']:.0f}/100" if d["score"] is not None else "N/A"
         print(f"  [{name}](权重{d['weight']}) {sc} — {d['detail']}")
     print(f"  事件风险：{event_note}")
+    if regime_box:
+        print(f"  大盘环境：{regime_box.get('label', '')} — {regime_box.get('summary', '')}")
     print(f"\n  多头因素({len(bulls)}):")
     for b in bulls or ["(无)"]:
         print(f"    🟢 {b}")
@@ -335,10 +387,12 @@ def analyze(symbol: str, output_json: bool = False) -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="买卖决策仪表盘(六维聚合)")
     parser.add_argument("symbol", help="标的代码,如 AAPL.US / 0700.HK")
+    parser.add_argument("--no-regime", action="store_true", dest="no_regime",
+                        help="跳过大盘环境与 3 星宏观催化评估(加速)")
     parser.add_argument("--json", action="store_true", dest="output_json", help="输出 JSON 格式")
     args = parser.parse_args()
     try:
-        analyze(args.symbol, output_json=args.output_json)
+        analyze(args.symbol, output_json=args.output_json, include_regime=not args.no_regime)
     except Exception as e:
         print_error("买卖仪表盘", str(e))
         sys.exit(1)
