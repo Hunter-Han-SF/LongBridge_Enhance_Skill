@@ -19,7 +19,7 @@ description: |
 license: MIT
 metadata:
   author: community
-  version: "0.6.4"
+  version: "0.6.5"
   risk_level: read_only
   requires_login: true
   default_install: true
@@ -69,7 +69,7 @@ earnings calendar,market temperature,expected move,risk reversal,order flow,
 
 ### 已知限制（历史接口观测与当前实现）
 
-0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.1 修复 calc-index theta 死值（自动 BS 补算 + `theta_source` 溯源）及 chain 同行权价重复行，实证与设计见 [theta 死字段修复记录](docs/fixes-2026-11-10-theta-dead-field.md)。0.6.2 修复五项实盘验证的高优先级问题：chain 重复行权价改在 `get_option_chain` 入口统一合并(此前仅 get_option_quote 自保，其余按行权价取首个匹配行的脚本会随机拿到零值/垃圾值)、入场规则支撑阻力聚类(高低点分开、簇宽受限、按区间取止损与目标)、财务健康科目名的币种后缀匹配、IV/HV 期限对齐、分析师共识取最新快照与共识目标价，见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项中优先级问题:盘中未收盘 K 线的成交量不再用于量比(技术指标、技术评分、入场规则)、期权到期损益的零成交腿不再按零成本、常规时段之外的现价取延长时段最新价并标注来源、半日市不再被 D12 当作休市日、美股空头成交占比不再套用港股阈值或参与仪表盘计分、盘口可见档位不足时不下结论,见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。0.6.4 修复低优先级审计项:GEX 改用合约 IV 的 BS gamma 优先(避免服务端 3 位小数把虚值腿舍入成 0)、组合 Greeks 传导 `theta_source` 拒绝 `dead_zero` 伪有利衰减、A/H 溢价日期改用港股时区、估值同行排名改取 `industry-valuation dist` 全行业数据、Put/Call 墙与剖面自适应间距、美股规则半日市 T 按 13:00 ET 收盘、温度档位统一为 70/50/30、异动榜涨跌幅百分比格式化,见 [0.6.4 修复记录](docs/fixes-2026-11-25-low-priority.md)。
+0.6.0 已按离线回归验证本地计算；历史 CLI 样本不证明当前服务端契约。全部修复及升级注意事项见 [审计修复记录](docs/audit-fixes-2026-11-03.md)。0.6.1 修复 calc-index theta 死值（自动 BS 补算 + `theta_source` 溯源）及 chain 同行权价重复行，实证与设计见 [theta 死字段修复记录](docs/fixes-2026-11-10-theta-dead-field.md)。0.6.2 修复五项实盘验证的高优先级问题：chain 重复行权价改在 `get_option_chain` 入口统一合并(此前仅 get_option_quote 自保，其余按行权价取首个匹配行的脚本会随机拿到零值/垃圾值)、入场规则支撑阻力聚类(高低点分开、簇宽受限、按区间取止损与目标)、财务健康科目名的币种后缀匹配、IV/HV 期限对齐、分析师共识取最新快照与共识目标价，见 [0.6.2 修复记录](docs/fixes-2026-11-24-high-priority.md)。0.6.3 修复六项中优先级问题:盘中未收盘 K 线的成交量不再用于量比(技术指标、技术评分、入场规则)、期权到期损益的零成交腿不再按零成本、常规时段之外的现价取延长时段最新价并标注来源、半日市不再被 D12 当作休市日、美股空头成交占比不再套用港股阈值或参与仪表盘计分、盘口可见档位不足时不下结论,见 [0.6.3 修复记录](docs/fixes-2026-11-25-medium-priority.md)。0.6.4 修复低优先级审计项:GEX 改用合约 IV 的 BS gamma 优先(避免服务端 3 位小数把虚值腿舍入成 0)、组合 Greeks 传导 `theta_source` 拒绝 `dead_zero` 伪有利衰减、A/H 溢价日期改用港股时区、估值同行排名改取 `industry-valuation dist` 全行业数据、Put/Call 墙与剖面自适应间距、美股规则半日市 T 按 13:00 ET 收盘、温度档位统一为 70/50/30、异动榜涨跌幅百分比格式化,见 [0.6.4 修复记录](docs/fixes-2026-11-25-low-priority.md)。0.6.5 修复美股盘前实盘抽检（`AAPL.US`/`MSFT.US`/`BRK.B.US`）发现的四组问题:`get_trade_stats` 服务端 50 档截断防护与全样本买卖比、`get_option_volatility`/`analyze_buy_sell` 跳过尚无 IV 的新挂牌周链并统一前复权 HV、美股节假日与延长时段边界（`VWAP --session all`、异动打分延长时段涨跌幅、Expected Move/期限结构常规时段 ATM 对齐）、多点号代码与窄止损告警及选股器 `--count`,见 [0.6.5 实盘抽检修复记录](docs/fixes-2026-11-25-us-live-spotcheck.md)。
 1. **`option quote` 单合约查询返回空** → 原生 Greeks/OI 改经 calc-index 按合约获取,Black-Scholes 作回退
 2. **`option chain` 无法查历史** → IV Rank/Percentile 靠 `get_iv_history.py` 本地累积,需多日运行
 3. **仅支持美股 OPRA** → 港股/A 股期权数据可能为空(港股衍生品用 `warrant` 涡轮)
@@ -545,9 +545,9 @@ python scripts/fundamental/get_shareholders.py AAPL.US [--count 15] [--json]
 
 #### VWAP 分析
 ```bash
-python scripts/intraday/get_vwap_analysis.py AAPL.US [--date 20260819] [--json]
+python scripts/intraday/get_vwap_analysis.py AAPL.US [--date 20260819] [--session intraday|all] [--json]
 ```
-- 现价 vs VWAP 偏离、有效配对样本上方占比和覆盖率；覆盖低于80%或不足两点不判断强弱。30分钟趋势需精确时间匹配，日内区间来自分时采样
+- 现价 vs VWAP 偏离、有效配对样本上方占比和覆盖率；覆盖低于80%或不足两点不判断强弱。30分钟趋势需精确时间匹配，日内区间来自分时采样；盘前/未开盘默认返回上一交易日常规时段并提示，查看延长时段实时分时加 `--session all`
 
 #### 盘口买卖压力
 ```bash
@@ -565,8 +565,8 @@ python scripts/intraday/get_trade_flow.py AAPL.US [--count 300] [--big 1000] [--
 ```bash
 python scripts/intraday/get_trade_stats.py 700.HK [--json]
 ```
-- POC（成交量最大的价位）、Value Area 70% 区间(VAH/VAL)
-- 展示现价相对价值区间的位置与成交分布
+- POC（成交量最大的价位）、Value Area 70% 区间(VAH/VAL)、近5日全样本主动买/卖量比
+- 服务端 `trades` 最多返回 50 个高价位档，覆盖不足总成交量 80%（美股常见 <1%）时不输出全区间 POC/VA 与强弱结论
 
 ---
 
@@ -614,7 +614,10 @@ python scripts/quote/get_warrant.py --issuers                          # 发行�
 python scripts/decision/analyze_buy_sell.py AAPL.US [--json]
 ```
 - 技术面必须可用，方向维度有效权重至少为 60 才给信号。方向权重为技术 30、估值 15、资金 20、美股期权 10、分析师 15。财报在 7 天内最多将偏多分扣 7 分至中性，单独列示且不计覆盖。
-- 输出方向维度、覆盖权重、独立事件风险、多空对照与综合信号(看多/偏多/中性/偏空/看空)
+  - `[权重]` 方向评分:
+    - 技术(30)、估值(15)、资金(20)、美股期权(10)、分析师(15)
+  - 输出:
+    - 方向维度得分、覆盖权重、独立事件风险、多空对照与综合信号(看多/偏多/中性/偏空/看空)
 - 资金面的沽空部分只对港股计分(卖空成交占比 ≥30% 扣 10、≤10% 加 5);美股空头成交占比含做市对冲、不代表看空情绪,只展示并标明「不计分」
 - 现价为最新时段的价格:盘前/盘后/夜盘运行时取延长时段最新价,并标注来源和常规时段收盘价(JSON `underlying_price_source`)
 - 信号补充:内部人交易/13F变动/基金持仓可作额外独立参考(get_insider_trades 等)

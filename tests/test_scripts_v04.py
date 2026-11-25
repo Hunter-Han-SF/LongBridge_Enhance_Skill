@@ -391,11 +391,31 @@ class TestTradeStatsScript(unittest.TestCase):
     def test_fetch_with_fixture(self, _m):
         r = _run(get_trade_stats.fetch_trade_stats, symbol="700.HK", output_json=True)
         p = r["profile"]
-        # 夹具 3 档:456.106(2100), 452.6(5600), 449.2(400) → 总 8100
+        # 夹具 3 档合计 8100 仅占 statistics.total_amount(9068418) 的 0.09%:必须触发截断防护
+        self.assertFalse(p["profile_complete"])
+        self.assertIsNone(p["poc"])
+        self.assertIsNone(p["vah"])
+        self.assertIsNone(p["val"])
+        self.assertEqual(p["sample_poc"], 452.6)
+        self.assertEqual(p["sample_vah"], 456.106)
+        self.assertEqual(p["sample_val"], 452.6)
+        self.assertEqual(p["buy_sell_imbalance"], 0.82)  # 3540400/4307300 (全样本)
+        self.assertEqual(p["sample_buy_sell_imbalance"], 1.5)
+        self.assertIn("不输出全区间 POC", r["position_note"])
+
+    def test_fetch_complete_coverage(self):
+        complete_stats = {
+            "statistics": dict(TRADE_STATS["statistics"], total_amount="8100"),
+            "trades": TRADE_STATS["trades"],
+        }
+        with mock.patch.object(get_trade_stats, "get_trade_stats", return_value=complete_stats):
+            r = _run(get_trade_stats.fetch_trade_stats, symbol="700.HK", output_json=True)
+        p = r["profile"]
+        self.assertTrue(p["profile_complete"])
         self.assertEqual(p["poc"], 452.6)
         self.assertEqual(p["vah"], 456.106)
-        self.assertEqual(p["val"], 452.6)  # 5600+2100=7700 ≥ 5670,无需再向下
-        self.assertEqual(p["buy_sell_imbalance"], 1.5)  # 3600/2400
+        self.assertEqual(p["val"], 452.6)  # 5600+2100=7700 >= 5670,无需再向下
+        self.assertEqual(p["buy_sell_imbalance"], 0.82)
         self.assertIn("弱势", r["position_note"])  # 均价 447.88 < VAL
 
 

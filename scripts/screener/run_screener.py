@@ -88,8 +88,10 @@ def _strategies_mode(output_json: bool) -> dict:
     return result
 
 
-def _run_mode(strategy_id: int, output_json: bool) -> dict:
+def _run_mode(strategy_id: int, output_json: bool, count: int | None = None) -> dict:
     items = run_screener_strategy(strategy_id)
+    if count is not None:
+        items = items[:count]
     strategies = get_screener_strategies()
     name = next((s.get("name") for s in strategies if to_float(s.get("id")) == strategy_id), "")
     if is_empty(items):
@@ -103,11 +105,12 @@ def _run_mode(strategy_id: int, output_json: bool) -> dict:
     return result
 
 
-def _filter_mode(conditions: list[str], market: str, output_json: bool) -> dict:
+def _filter_mode(conditions: list[str], market: str, output_json: bool, count: int | None = None) -> dict:
     for cond in conditions:
         if len(cond.split(":")) < 2 or not cond.split(":")[0]:
             raise ValueError(f"条件格式错误: {cond!r}(应为 KEY:MIN:MAX,如 pettm:10:50 或 roe:5:)")
-    items = screener_filter(conditions, market=market)
+    items = (screener_filter(conditions, market=market) if count is None
+             else screener_filter(conditions, market=market, count=count))
     if is_empty(items):
         raise ValueError(f"无符合条件的股票(条件: {' '.join(conditions)}, 市场 {market})。"
                          f"可用 --indicators 查 key 与取值范围。")
@@ -146,14 +149,17 @@ def fetch_screener(
     conditions: list[str] | None = None,
     market: str = "HK",
     indicators: bool = False,
+    count: int | None = None,
     output_json: bool = False,
 ) -> dict:
+    if count is not None and count <= 0:
+        raise ValueError("count 必须为正整数")
     if indicators:
         return _indicators_mode(output_json)
     if run is not None:
-        return _run_mode(run, output_json)
+        return _run_mode(run, output_json, count=count)
     if conditions:
-        return _filter_mode(conditions, market, output_json)
+        return _filter_mode(conditions, market, output_json, count=count)
     return _strategies_mode(output_json)
 
 
@@ -164,12 +170,14 @@ if __name__ == "__main__":
                         help="筛选条件 KEY:MIN:MAX,可多次传递,如 --filter pettm:10:50 --filter roe:5:")
     parser.add_argument("--market", default="HK", choices=["HK", "US", "CN", "SG"],
                         help="filter 模式的市场(默认 HK)")
+    parser.add_argument("--count", type=int, default=None,
+                        help="返回条数上限(filter 模式传给 CLI,run 模式截断)")
     parser.add_argument("--indicators", action="store_true", help="列出全部可用筛选指标")
     parser.add_argument("--json", action="store_true", dest="output_json", help="输出 JSON 格式")
     args = parser.parse_args()
     try:
         fetch_screener(run=args.run, conditions=args.conditions, market=args.market,
-                       indicators=args.indicators, output_json=args.output_json)
+                       indicators=args.indicators, count=args.count, output_json=args.output_json)
     except Exception as e:
         print_error("选股筛选", str(e))
         sys.exit(1)

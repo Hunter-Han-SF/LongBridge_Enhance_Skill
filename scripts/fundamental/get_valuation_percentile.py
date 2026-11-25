@@ -27,6 +27,7 @@ from common import (  # noqa: E402
     counter_id_to_symbol,
     get_industry_valuation_dist,
     get_valuation,
+    parse_underlying,
     print_display_table,
     print_error,
     print_json,
@@ -87,13 +88,17 @@ def analyze(symbol: str, output_json: bool = False, quiet: bool = False) -> dict
     # 2. 同行预览(valuation.peers 仅少量样例) + 完整行业排名(industry-valuation dist)
     main = metrics_out[0]
     peers = (data.get("peers") or {}).get(main["metric"].lower()) or {}
+    target_ticker, _ = parse_underlying(symbol)
     peer_rows = []
     for p in (peers.get("list") or []):
+        cid = str(p.get("counter_id", ""))
+        peer_sym = counter_id_to_symbol(cid) or cid
+        peer_ticker = parse_underlying(peer_sym)[0] if "." in peer_sym else cid.upper().split("/")[-1]
         peer_rows.append({
-            "symbol": counter_id_to_symbol(p.get("counter_id", "")) or p.get("counter_id", ""),
+            "symbol": peer_sym,
             "name": p.get("name", ""),
             "value": to_float(p.get("value")),
-            "is_target": p.get("counter_id", "").upper().endswith(symbol.split(".")[0].upper()),
+            "is_target": peer_ticker == target_ticker,
         })
 
     try:
@@ -167,7 +172,7 @@ def analyze(symbol: str, output_json: bool = False, quiet: bool = False) -> dict
     if industry_rank:
         pctl_txt = f"分位 {industry_rank['ranking']*100:.1f}%," if industry_rank["ranking"] is not None else ""
         med_txt = f"行业中位 {industry_rank['median']:.2f}" if industry_rank["median"] is not None else "行业中位 N/A"
-        print(f"  {symbol.split('.')[0]} {main['metric']} 行业内由低到高第 {target_rank}/{total_peers}({pctl_txt}{med_txt})")
+        print(f"  {target_ticker} {main['metric']} 行业内由低到高第 {target_rank}/{total_peers}({pctl_txt}{med_txt})")
     elif peer_rows:
         print(f"  完整行业排名不可得;预览 {len(peer_rows)} 家不作排名")
     return result

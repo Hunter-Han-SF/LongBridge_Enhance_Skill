@@ -746,39 +746,55 @@ def get_underlying_quote(symbol: str) -> dict | None:
         price = to_float(block.get("last"))
         moment = _parse_utc(block.get("timestamp"))
         if price is not None and price > 0 and moment is not None:
-            extended.append({"source": key, "source_label": label, "price": price, "time": moment})
+            extended.append({"source": key, "source_label": label, "price": price, "time": moment,
+                             "prev_close": to_float(block.get("prev_close")),
+                             "volume": to_float(block.get("volume"))})
     extended.sort(key=lambda item: item["time"])
     return {
         "symbol": symbol,
         "market": symbol.upper().rsplit(".", 1)[-1] if "." in symbol else "US",
         "regular_price": to_float(quote.get("last")),
         "regular_prev_close": to_float(quote.get("prev_close")),
+        "change_percentage": to_float(quote.get("change_percentage")),
+        "volume": to_float(quote.get("volume")),
         "extended": extended,
     }
+
+
+def _us_close_time(d: date) -> dt_time:
+    return _ET_HALF_DAY_CLOSE if us_early_close(d) else _ET_CLOSE
 
 
 def _regular_session_state(market: str, now: datetime, extended: list[dict]) -> tuple[bool, datetime | None]:
     """→ (常规时段是否进行中, 最近一次常规收盘的时刻)。now 为市场当地时间。
 
     只有美股的 quote 带延长时段块,其他市场按常规时段处理(返回 (False, None))。
-    收盘时刻按周一至周五推算、不查休市日历:休市日没有更新的延长时段报价,
-    「晚于收盘」这一条件自然不成立,不会误用旧报价。
+    排除规则节假日与半日市提前收盘,避免节假日误判盘中或把 last_close 推进到休市日。
     """
     if market != "US":
         return False, None
     if now.tzinfo is None:
         now = market_now(market, now=now)
-    in_session = now.weekday() < 5 and _ET_OPEN <= now.time() < _ET_CLOSE
+    today = now.date()
+    today_close = _us_close_time(today)
+    in_session = (now.weekday() < 5 and not us_market_holiday(today)
+                  and _ET_OPEN <= now.time() < today_close)
     now_utc = now.astimezone(timezone.utc)
     for item in extended:
         stamp = item["time"].astimezone(now.tzinfo)
         # 半日市 13:00 收盘后当天就会出现盘后报价 → 常规时段已结束
-        if (item["source"] == "post_market" and stamp.date() == now.date()
+        if (item["source"] == "post_market" and stamp.date() == today
                 and stamp.time() >= _ET_HALF_DAY_CLOSE and item["time"] <= now_utc + _CLOCK_SKEW):
             in_session = False
-    close = now.replace(hour=_ET_CLOSE.hour, minute=_ET_CLOSE.minute, second=0, microsecond=0)
-    while close > now or close.weekday() >= 5:
-        close -= timedelta(days=1)
+    d = today
+    while True:
+        close_t = _us_close_time(d)
+        probe = datetime(d.year, d.month, d.day, 20, tzinfo=timezone.utc)
+        close = datetime(d.year, d.month, d.day, close_t.hour, close_t.minute,
+                         tzinfo=_market_tz("US", probe))
+        if close <= now and d.weekday() < 5 and not us_market_holiday(d):
+            break
+        d -= timedelta(days=1)
     return in_session, close
 
 
@@ -809,6 +825,8 @@ def latest_underlying_price(quote: dict | None, now: datetime | None = None) -> 
             "price": chosen["price"], "source": chosen["source"],
             "source_label": chosen["source_label"], "time": chosen["time"],
             "regular_price": regular,
+            "prev_close": chosen.get("prev_close"),
+            "volume": chosen.get("volume"),
         }
     if regular is None:
         return None, None
@@ -863,11 +881,14 @@ def regular_session_price(symbol: str, latest: float | None = None) -> float | N
     判定的入场规则):盘前/盘后/夜盘运行时 get_underlying_price 返回的是延长时段
     最新价,拿它去配上一个常规时段的 IV 或日 K 会错位。
     latest 传 get_underlying_price(symbol) 的返回值。常规时段内两者相同,不产生
-    额外调用;只有 latest 取自延长时段时才再取一次常规时段价格。
+    额外调用;延长时段时优先复用 _LAST_PRICE_INFO 已缓存的 regular_price,缺失时才再取一次。
     """
     info = _LAST_PRICE_INFO.get(symbol)
     if not info or info.get("source") == "regular":
         return latest
+    reg = to_float(info.get("regular_price"))
+    if reg is not None and reg > 0:
+        return reg
     quote = get_underlying_quote(symbol)
     regular = quote.get("regular_price") if quote else None
     return regular if regular is not None else latest
@@ -1035,6 +1056,64 @@ def market_date(symbol_or_market: str = "US", now: datetime | None = None):
     return market_now(symbol_or_market, now=now).date()
 
 
+def _us_easter(year: int) -> date:
+    """Anonymous Gregorian algorithm for Easter Sunday."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d_, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d_ - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month, day = divmod(h + l - 7 * m + 114, 31)
+    return date(year, month, day + 1)
+
+
+def _us_observed(year: int, month: int, day: int) -> date:
+    d = date(year, month, day)
+    if d.weekday() == 5:
+        return d - timedelta(days=1)
+    if d.weekday() == 6:
+        return d + timedelta(days=1)
+    return d
+
+
+def us_market_holiday(d: date) -> bool:
+    """按 NYSE/Nasdaq 常规日历规则判定是否为美股全日休市日。
+
+    覆盖: 元旦(含顺延周一;周六元旦不向前补休)、马丁路德金日(1998+)、总统日、
+    耶稣受难日(Good Friday)、阵亡将士纪念日、六月节(2022+)、独立日、劳动节、
+    感恩节、圣诞节。交易所临时哀悼/紧急休市仍以日历为准。
+    """
+    y = d.year
+    holidays: set[date] = set()
+    # 元旦: 周六不往前挪到上年 12-31 (NYSE Rule 7.2)
+    nyd = date(y, 1, 1)
+    if nyd.weekday() == 6:
+        holidays.add(date(y, 1, 2))
+    elif nyd.weekday() < 5:
+        holidays.add(nyd)
+    if y >= 1998:
+        jan1 = date(y, 1, 1)
+        holidays.add(date(y, 1, 1 + (0 - jan1.weekday()) % 7 + 14))  # 1 月第 3 个周一 MLK
+    feb1 = date(y, 2, 1)
+    holidays.add(date(y, 2, 1 + (0 - feb1.weekday()) % 7 + 14))      # 2 月第 3 个周一 Presidents'
+    holidays.add(_us_easter(y) - timedelta(days=2))                  # Good Friday
+    may31 = date(y, 5, 31)
+    holidays.add(may31 - timedelta(days=(may31.weekday() - 0) % 7))  # 5 月最后一个周一 Memorial
+    if y >= 2022:
+        holidays.add(_us_observed(y, 6, 19))                         # Juneteenth
+    holidays.add(_us_observed(y, 7, 4))                              # Independence Day
+    sep1 = date(y, 9, 1)
+    holidays.add(date(y, 9, 1 + (0 - sep1.weekday()) % 7))           # 9 月第 1 个周一 Labor
+    nov1 = date(y, 11, 1)
+    holidays.add(date(y, 11, 22 + (3 - nov1.weekday()) % 7))         # 11 月第 4 个周四 Thanksgiving
+    holidays.add(_us_observed(y, 12, 25))                            # Christmas
+    return d in holidays
+
+
 def us_early_close(d: date) -> bool:
     """按 NYSE/Cboe 规则推算美股是否 13:00 ET 提前收盘(半日市)。
 
@@ -1072,23 +1151,30 @@ def days_to_years(expiry: str, today: str | None = None, *, now: datetime | None
     return max(remaining, 0) / (365 * 86400)
 
 
+def rank_tenor_expiries(expirations: list[str], calendar_days: float) -> list[str]:
+    """按剩余自然日距 calendar_days 由近到远排列到期日(无法解析的排到最后)。"""
+    candidates = [e for e in (expirations or []) if isinstance(e, str)]
+    if not candidates:
+        return []
+    ranked: list[tuple[float, int, str]] = []
+    bad: list[str] = []
+    for idx, expiry in enumerate(candidates):
+        try:
+            ranked.append((abs(days_to_years(expiry) * 365 - calendar_days), idx, expiry))
+        except ValueError:
+            bad.append(expiry)
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in ranked] + bad
+
+
 def nearest_tenor_expiry(expirations: list[str], calendar_days: float) -> str | None:
     """返回剩余自然日最接近 calendar_days 的到期日(期限对齐用)。
 
     IV 与 HV 只有在覆盖相近时间窗口时才可比:最近到期日可能只剩 1~2 天,
     拿它的 IV 去比 30 日 HV 会系统性误判贵贱。全部到期日都已到期时取第一个。
     """
-    candidates = [e for e in (expirations or []) if isinstance(e, str)]
-    if not candidates:
-        return None
-
-    def distance(expiry: str) -> tuple[float, int]:
-        try:
-            return abs(days_to_years(expiry) * 365 - calendar_days), candidates.index(expiry)
-        except ValueError:
-            return float("inf"), candidates.index(expiry)
-
-    return min(candidates, key=distance)
+    ranked = rank_tenor_expiries(expirations, calendar_days)
+    return ranked[0] if ranked else None
 
 
 # ===========================================================================
@@ -1948,17 +2034,21 @@ def run_screener_strategy(strategy_id: int) -> list[dict]:
     return normalize_records(data.get("items", []))
 
 
-def screener_filter(conditions: list[str], market: str = "HK") -> list[dict]:
+def screener_filter(conditions: list[str], market: str = "HK", count: int | None = None) -> list[dict]:
     """自定义指标条件选股。
 
     Args:
         conditions: ['pettm:10:50', 'roe:5:'](KEY:MIN:MAX,MIN/MAX 可省略一侧)
         market: HK | US | CN | SG
+        count: 返回条数上限(可选)
 
     可用 key 见 get_screener_indicators()(marketcap/pettm/pbmrq/roe/roa/
     netmargin/salesgrowthyoy/divyld/epsttm/leverage 等)。
     """
-    data = run_cli("screener", "filter", *conditions, "--market", market)
+    args = ["screener", "filter", *conditions, "--market", market]
+    if count is not None:
+        args += ["--count", str(count)]
+    data = run_cli(*args)
     if is_empty(data) or not isinstance(data, dict):
         return []
     return normalize_records(data.get("items", []))

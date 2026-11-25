@@ -43,9 +43,9 @@ for _p in (os.path.normpath(os.path.join(_HERE, "..")), _HERE,
 
 import common
 from common import (  # noqa: E402
-    get_finance_calendar, get_heat_rank, get_heat_rank_keys, get_industry_rank,
+    counter_id_to_symbol, get_finance_calendar, get_heat_rank, get_heat_rank_keys, get_industry_rank,
     get_kline_adjusted, get_underlying_price, get_underlying_price_info, is_empty,
-    kline_last_bar_in_progress, normalize_records, print_error, print_json,
+    kline_last_bar_in_progress, normalize_records, parse_underlying, print_error, print_json,
     regular_session_price, run_cli, to_float,
 )
 from indicators import atr as _atr  # noqa: E402
@@ -416,6 +416,9 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
 
     # D5(与 U4 同引擎): 止损可判定性 / 距离是否在承受力内
     price = opts.get("entry_price", last)
+    min_stop = float(opts.get("min_stop_pct", 0.0) or 0.0)
+    if not math.isfinite(min_stop) or not 0 <= min_stop <= 100 or min_stop > max_stop:
+        raise ValueError("min-stop-pct 必须在 0 到 max-stop-pct 之间")
     stop, target = f["stop"], opts.get("target_price")
     if target is None:
         target = f["target"]
@@ -429,7 +432,15 @@ def check_rules(f: dict, opts: dict | None = None) -> dict:
     else:
         d = stop_dist * 100
         stop_ev = f"建议止损 {stop:.2f}(距入场参考价 {d:.1f}%),承受力上限 {max_stop:g}%"
-        stop_status = "triggered" if d > max_stop else "clear"
+        if d > max_stop:
+            stop_status = "triggered"
+        elif min_stop > 0 and d < min_stop:
+            stop_status = "triggered"
+            stop_ev += f",低于最小止损下限 {min_stop:g}%"
+        else:
+            stop_status = "clear"
+            if f["atr_pct"] > 0 and stop_dist < 0.5 * f["atr_pct"]:
+                stop_ev += f"(⚠️ 小于 0.5×ATR {pct(0.5 * f['atr_pct'])},易受日内噪音扫损)"
     R["D5"] = _r(stop_status, stop_ev)
     R["U4"] = _r(stop_status, stop_ev)
 
@@ -948,9 +959,10 @@ def _in_heat_rank(symbol: str) -> bool | None:
                              count=20)
         # get_heat_rank 返回 {bmp, updated_at, lists:[...]}(键名是复数 lists)
         items = data.get("lists") or data.get("list") or data.get("items") or []
+        target_ticker, _ = parse_underlying(symbol)
         for it in items:
-            s = str(it.get("symbol") or it.get("counter_id") or "")
-            if s and s.upper().split(".")[0] == symbol.upper().split(".")[0]:
+            s = str(it.get("symbol") or counter_id_to_symbol(it.get("counter_id")) or it.get("counter_id") or "")
+            if s and parse_underlying(s)[0] == target_ticker:
                 return True
         return False
     except Exception:
@@ -1034,7 +1046,7 @@ def _auto_sector_breakout(symbol: str, market: str, sector: str | None,
         if not hit:
             return None, f"当日涨幅榜未见行业「{sector}」"
     else:
-        ticker = symbol.split(".")[0].upper()
+        ticker, _ = parse_underlying(symbol)
         hit = next((i for i in cands
                     if str(i.get("leading_ticker", "")).upper() == ticker), None)
         if not hit:
@@ -1055,15 +1067,19 @@ _ICON = {"triggered": "❌", "clear": "✅", "manual": "❓", "matched": "🎯",
          "none": "—", "pass": "✅", "fail": "❌", "na": "—"}
 
 
-def _price_note(info: dict | None) -> str | None:
-    """延长时段有更新的报价时,提示该报价未被日 K 规则采用。"""
+def _price_note(info: dict | None, stop: float | None = None) -> str | None:
+    """延长时段有更新的报价时,提示该报价未被日 K 规则采用;若已跌破建议止损则醒目告警。"""
     if not info or info.get("source") == "regular":
         return None
     clock = ""
     if info.get("time") is not None:
         clock = " 美东 " + info["time"].astimezone(common._market_tz("US", info["time"])).strftime("%H:%M")
-    return (f"参考价为最近常规时段价格;延长时段最新价 {info.get('price')}"
+    ext_px = to_float(info.get("price"))
+    note = (f"参考价为最近常规时段价格;延长时段最新价 {info.get('price')}"
             f"({info.get('source_label')}价{clock})未用于日 K 规则")
+    if stop is not None and ext_px is not None and ext_px <= stop:
+        note += f"; ⚠️ 延长时段价已跌破建议止损 {stop:.2f},开盘须重新评估支撑"
+    return note
 
 
 def render(symbol: str, result: dict, price, generated: str) -> None:
@@ -1108,6 +1124,9 @@ def analyze(symbol: str, args) -> dict:
         raise ValueError("lookback 必须为正数，max-stop-pct 必须在 0 到 100 之间")
     if args.earnings_days is not None and args.earnings_days < 0:
         raise ValueError("earnings-days 不能为负数")
+    min_stop_pct = float(getattr(args, "min_stop_pct", 0.0) or 0.0)
+    if not math.isfinite(min_stop_pct) or not 0 <= min_stop_pct <= args.max_stop_pct:
+        raise ValueError("min-stop-pct 必须在 0 到 max-stop-pct 之间")
     target = getattr(args, "target_price", None)
     if target is not None and (not math.isfinite(target) or target <= 0):
         raise ValueError("target-price 必须为有限正数")
@@ -1138,6 +1157,7 @@ def analyze(symbol: str, args) -> dict:
         "entry_price": price, "target_price": target, "quote_available": live,
         "latest_bar_valid": latest_bar_valid, "intraday_bar": intraday,
         "lookback": args.lookback, "max_stop_pct": args.max_stop_pct,
+        "min_stop_pct": min_stop_pct,
         "sector_top_decline": args.sector_top_decline,
         "recent_stopout": args.recent_stopout,
         "familiar": args.familiar, "prepost_move": args.prepost_move,
@@ -1164,7 +1184,7 @@ def analyze(symbol: str, args) -> dict:
     result = check_rules(f, opts)
     result.update({"symbol": symbol, "price": price,
                    "price_source": "quote" if live else "last_daily_close",
-                   "price_note": _price_note(price_info),
+                   "price_note": _price_note(price_info, result["levels"]["support"]),
                    "underlying_price_info": price_info,
                    "intraday_bar": intraday,
                    "last_daily_close": f["last"],
@@ -1238,6 +1258,8 @@ if __name__ == "__main__":
                         help="「近期」新低/新高回看天数(默认60)")
     parser.add_argument("--max-stop-pct", type=float, default=8.0,
                         help="止损距离承受力上限%%(默认8,超出判不买)")
+    parser.add_argument("--min-stop-pct", type=float, default=0.0,
+                        help="最小止损距离下限%%(默认0不启用;过窄止损易被日内噪音扫出)")
     parser.add_argument("--target-price", type=float, help="手动指定盈亏比闸门目标价")
     parser.add_argument("--sector-top-decline", choices=["yes", "no"],
                         help="D6: 昨日板块内跌幅是否前10%%")

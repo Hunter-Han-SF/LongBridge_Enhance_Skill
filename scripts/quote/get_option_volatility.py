@@ -28,13 +28,14 @@ from common import (  # noqa: E402
     calc_hv,
     days_to_years,
     get_atm_iv,
-    get_kline,
+    get_kline_adjusted,
     get_option_chain,
     get_option_expirations,
     get_underlying_price,
     get_underlying_price_info,
     price_source_note,
-    nearest_tenor_expiry,
+    rank_tenor_expiries,
+    regular_session_price,
     print_error,
     print_json,
 )
@@ -64,13 +65,35 @@ def analyze(
     if hv_days is not None and hv_days < 2:
         raise ValueError("hv-days 至少为 2(需要两个收盘价才能算收益)")
 
-    # 1. 确定到期日与 HV 窗口
+    # 1. 取正股现价(选 ATM 时用常规时段价以与 chain IV 对齐)
+    price = get_underlying_price(symbol)
+    if price is None:
+        raise ValueError(f"无法获取 {symbol} 现价")
+    atm_ref = regular_session_price(symbol, price) or price
+
+    # 2. 确定到期日并从 chain 取 ATM IV(若最近期限新链尚无 IV 则依次回退到有有效 IV 的最近期限链)
+    iv = None
     if expiry is None:
         expirations = get_option_expirations(symbol)
         if not expirations:
             raise ValueError(f"{symbol} 无可用到期日(可能不支持期权或非美股)")
-        window = DEFAULT_HV_DAYS if hv_days is None else hv_days
-        expiry = nearest_tenor_expiry(expirations, window * CALENDAR_DAYS_PER_YEAR / TRADING_DAYS_PER_YEAR)
+        target_win = DEFAULT_HV_DAYS if hv_days is None else hv_days
+        ranked = rank_tenor_expiries(expirations, target_win * CALENDAR_DAYS_PER_YEAR / TRADING_DAYS_PER_YEAR)
+        for cand in ranked:
+            chain = get_option_chain(symbol, cand)
+            cand_iv = get_atm_iv(chain, atm_ref, option_type)
+            if cand_iv is not None and cand_iv > 0:
+                expiry = cand
+                iv = cand_iv
+                break
+        if iv is None:
+            raise ValueError(f"{symbol} 可用到期日的 chain 中均找不到有效 ATM IV")
+    else:
+        chain = get_option_chain(symbol, expiry)
+        iv = get_atm_iv(chain, atm_ref, option_type)
+        if iv is None or iv <= 0:
+            raise ValueError(f"{expiry} 的 chain 中找不到 ATM IV(可能刚挂牌尚无成交)")
+
     iv_days = days_to_years(expiry) * 365
     if hv_days is None:
         window = max(2, round(iv_days * TRADING_DAYS_PER_YEAR / CALENDAR_DAYS_PER_YEAR))
@@ -78,23 +101,12 @@ def analyze(
         window = hv_days
     hv_calendar_days = window * CALENDAR_DAYS_PER_YEAR / TRADING_DAYS_PER_YEAR
 
-    # 2. 取正股现价
-    price = get_underlying_price(symbol)
-    if price is None:
-        raise ValueError(f"无法获取 {symbol} 现价")
-
-    # 3. 从 chain 取 ATM IV(小数形式)
-    chain = get_option_chain(symbol, expiry)
-    iv = get_atm_iv(chain, price, option_type)
-    if iv is None:
-        raise ValueError(f"{expiry} 的 chain 中找不到 ATM IV")
-
-    # 4. 用 K 线算 HV(年化);窗口与所选到期日的期限对齐
-    klines = get_kline(symbol, count=window + 1)
+    # 3. 用前复权 K 线算 HV(年化);窗口与所选到期日的期限对齐
+    klines = get_kline_adjusted(symbol, count=window + 1)
     closes = [k["close"] for k in klines if k.get("close") is not None]
     hv = calc_hv(closes)
 
-    # 5. IV/HV 对比
+    # 4. IV/HV 对比
     iv_hv_ratio = (iv / hv) if (iv and hv and hv > 0) else None
     # 期限相差超过 HV 窗口的四分之一时,比率不再可比(事件溢价落在其中一个窗口内时偏差最大)
     tenor_warning = (None if abs(iv_days - hv_calendar_days) <= 0.25 * hv_calendar_days else
@@ -106,6 +118,7 @@ def analyze(
         "expiry": expiry,
         "iv_days": round(iv_days, 1),
         "underlying_price": price,
+        "atm_reference_price": atm_ref,
         "underlying_price_source": get_underlying_price_info(symbol),
         "option_type": option_type,
         "implied_volatility": iv,           # 小数,如 0.234
@@ -116,7 +129,7 @@ def analyze(
         "iv_hv_ratio": round(iv_hv_ratio, 3) if iv_hv_ratio else None,
         "tenor_warning": tenor_warning,
         "valuation": None,                  # HV 算不出时保持 None(下方判断跳过)
-        "note": "HV 为本地计算值(对数收益年化),非服务端返回。IV 取期限最接近 HV 窗口的到期日。",
+        "note": "HV 为基于前复权 K 线的本地计算值(对数收益年化),非服务端返回。IV 取有有效报价且期限最接近 HV 窗口的到期日。",
     }
 
     # 贵贱判断

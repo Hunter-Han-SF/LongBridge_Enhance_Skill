@@ -27,6 +27,7 @@ from common import (  # noqa: E402
     get_underlying_price,
     get_underlying_price_info,
     price_source_note,
+    regular_session_price,
     is_empty,
     print_display_table,
     print_error,
@@ -46,21 +47,23 @@ def _straddle_cost(chain: list[dict], strike: float) -> float | None:
     return None
 
 
-def _one_expiry(symbol: str, price: float, expiry: str) -> dict | None:
+def _one_expiry(symbol: str, price: float, expiry: str,
+                chain_ref_price: float | None = None) -> dict | None:
     chain = get_option_chain(symbol, expiry)
     if is_empty(chain):
         return None
-    atm = find_atm_strike(chain, price)
+    ref = chain_ref_price or price
+    atm = find_atm_strike(chain, ref)
     if atm is None:
         return None
     straddle = _straddle_cost(chain, atm)
-    if not straddle:
+    if not straddle or straddle <= 0:
         return None
     T = days_to_years(expiry)
     if T <= 0:
         return None
-    iv = get_atm_iv(chain, price)
-    em_pct = straddle / price * 100
+    iv = get_atm_iv(chain, ref)
+    em_pct = straddle / ref * 100
     # 理论对照:ATM straddle ≈ 0.8·S·σ·√T(近似),此处直接用 IV×√T
     em_iv_pct = (iv * math.sqrt(T) * 100) if (iv and T > 0) else None
     lo, hi = price * (1 - em_pct / 100), price * (1 + em_pct / 100)
@@ -83,20 +86,23 @@ def analyze(symbol: str, date: str | None = None, show_all: bool = False,
     price = get_underlying_price(symbol)
     if not price:
         raise ValueError(f"无法获取 {symbol} 现价")
+    chain_ref_price = regular_session_price(symbol, price) or price
 
     if show_all or date is None:
         expirations = get_option_expirations(symbol)
         if not expirations:
             raise ValueError(f"{symbol} 无可用到期日(非美股或无期权)")
-        targets = expirations[:8] if show_all else [date] if date else [expirations[0]]
+        targets = expirations[:8] if show_all else expirations
     else:
         targets = [date]
 
     rows = []
     for exp in targets:
-        r = _one_expiry(symbol, price, exp)
+        r = _one_expiry(symbol, price, exp, chain_ref_price=chain_ref_price)
         if r:
             rows.append(r)
+            if not show_all and date is None:
+                break
 
     if not rows:
         raise ValueError("无有效 ATM straddle 数据(chain 缺少 ATM 报价)")
@@ -104,10 +110,11 @@ def analyze(symbol: str, date: str | None = None, show_all: bool = False,
     result = {
         "symbol": symbol,
         "underlying_price": price,
+        "chain_reference_price": chain_ref_price,
         "underlying_price_source": get_underlying_price_info(symbol),
         "expected_moves": rows,
         "main": rows[0],
-        "note": "跨式成本幅度以现价为中心展示。跨式盈亏平衡价按行权价计算，IV 标准差尺度单独列示。",
+        "note": "跨式成本幅度以现价为中心展示。ATM 与跨式权利金按常规时段收盘价从链上选取以对齐链报价时点；跨式盈亏平衡价按行权价计算，IV 标准差尺度单独列示。",
     }
 
     if output_json:
@@ -123,6 +130,8 @@ def analyze(symbol: str, date: str | None = None, show_all: bool = False,
         columns=["到期日", "剩余天数", "ATM", "Straddle", "跨式成本幅度", "跨式成本区间"])
     m = result["main"]
     print()
+    if abs(chain_ref_price - price) > 1e-6:
+        print(f"  ⚠️ 期权链报价与 IV 来自上一常规时段(收盘 {chain_ref_price:g}),ATM({m['atm_strike']}) 与跨式权利金按常规时段收盘价选取")
     print(f"  主参考(最近到期 {m['expiry']}): 跨式成本幅度 ±{m['expected_move_pct']}%"
           f"({m['range_low']} ~ {m['range_high']})")
     print(f"  跨式到期盈亏平衡价: {m['straddle_break_even_low']} ~ {m['straddle_break_even_high']}")

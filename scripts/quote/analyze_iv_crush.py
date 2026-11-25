@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath
 from common import (  # noqa: E402
     get_finance_calendar,
     market_date,
+    parse_underlying,
     print_error,
     print_json,
 )
@@ -51,8 +52,7 @@ def find_next_earnings(symbol: str, lookforward_days: int = 120) -> dict | None:
        默认返回最近一次财报(通常是刚发布的),传 --start 反而查不到。
        因此这里不传 start,拿 API 默认锚点,再由 published 字段判断状态。
     """
-    ticker = symbol.split(".")[0]
-    market = symbol.split(".")[-1] if "." in symbol else "US"
+    ticker, market = parse_underlying(symbol)
 
     buckets = get_finance_calendar(
         category="report", market=market, symbol=symbol, count=50,

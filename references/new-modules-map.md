@@ -74,7 +74,7 @@ institution_up/down/total}`。分歧度 = (highest-lowest)/mean。
 ### `intraday` — 分钟线(自带 VWAP)
 
 `[{time, price, avg_price(=VWAP), volume, turnover}]`,升序。`--date YYYYMMDD` 查历史,
-`--session intraday|all` 过滤盘前盘后。
+`--session intraday|all` 过滤盘前盘后。`get_vwap_analysis.py` 支持 `--session intraday|all`；常规时段未开盘时默认接口返回上一交易日常规时段分钟线，脚本以 `is_prior_session` 与日期标注提示并指引 `--session all`。
 
 ### `depth` — L2 盘口
 
@@ -499,6 +499,7 @@ finance-calendar 六类别同构(`{date, list:[{date, count, infos[]}]}`):
   sell_amount, neutral_amount}]}`(近5日)
   - Volume Profile 口径:vol(K) = buy+sell+neutral;POC=最大量价位;
     Value Area 从 POC 向更厚一侧贪心扩展至 70%
+  - ⚠️ 服务端 `trades` 最多返回 50 个高价位档，美股按 `$0.01` 分档通常仅覆盖 5 日总成交 `<1%`（0.6.5 起覆盖低于 80% 时置空 `poc`/`vah`/`val` 并不下结论，主动买/卖量比优先采用 `statistics` 全样本）
 - `ah-premium 939.HK [--kline-type]` / `ah-premium intraday` → `{klines: [{ahpremium_rate,
   aprice, hprice, currency_rate, timestamp}]}`
   - **ahpremium_rate<0 = H股折价**(如 -0.266 = H 比 A 便宜 26.6%)

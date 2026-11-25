@@ -463,19 +463,19 @@ class TestIvHvTenorAlignment(unittest.TestCase):
 
     def _analyze(self, **kwargs):
         orig = (get_option_volatility.get_underlying_price, get_option_volatility.get_option_expirations,
-                get_option_volatility.get_option_chain, get_option_volatility.get_kline,
+                get_option_volatility.get_option_chain, get_option_volatility.get_kline_adjusted,
                 get_option_volatility.days_to_years, common.days_to_years)
         get_option_volatility.get_underlying_price = lambda s: 349.08
         get_option_volatility.get_option_expirations = lambda s: list(_DAYS)
         get_option_volatility.get_option_chain = lambda u, e: _chain_for(e)
-        get_option_volatility.get_kline = lambda s, count: _closes(count)
+        get_option_volatility.get_kline_adjusted = lambda s, count: _closes(count)
         get_option_volatility.days_to_years = _fake_days
         common.days_to_years = _fake_days
         try:
             return _run(get_option_volatility.analyze, "AAPL.US", output_json=True, **kwargs)
         finally:
             (get_option_volatility.get_underlying_price, get_option_volatility.get_option_expirations,
-             get_option_volatility.get_option_chain, get_option_volatility.get_kline,
+             get_option_volatility.get_option_chain, get_option_volatility.get_kline_adjusted,
              get_option_volatility.days_to_years, common.days_to_years) = orig
 
     def test_default_picks_tenor_matched_expiry(self):

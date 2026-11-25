@@ -32,6 +32,9 @@ from common import (  # noqa: E402
 )
 
 
+MIN_PROFILE_COVERAGE = 0.80
+
+
 def analyze_profile(trades: list[dict], value_area_pct: float = 0.70) -> dict:
     """计算 POC 与 Value Area。
 
@@ -80,6 +83,8 @@ def analyze_profile(trades: list[dict], value_area_pct: float = 0.70) -> dict:
         "val": levels[i]["price"],
         "value_area_pct": value_area_pct,
         "levels": len(levels),
+        "sampled_volume": total_vol,
+        "price_range": [levels[0]["price"], levels[-1]["price"]],
         "buy_sell_imbalance": round(total_buy / total_sell, 2) if total_sell else None,
         "levels_detail": levels,
     }
@@ -98,22 +103,61 @@ def fetch_trade_stats(symbol: str, output_json: bool = False) -> dict:
 
     avgprice = to_float(stats.get("avgprice"))
     preclose = to_float(stats.get("preclose"))
+    sampled_vol = profile["sampled_volume"]
+    price_range = profile["price_range"]
+    total_amount = to_float(stats.get("total_amount"))
+    stats_buy = to_float(stats.get("buy"))
+    stats_sell = to_float(stats.get("sell"))
+
+    coverage_ratio = (sampled_vol / total_amount) if (total_amount is not None and total_amount > 0) else None
+    profile_complete = coverage_ratio is None or coverage_ratio >= MIN_PROFILE_COVERAGE
+    has_full_bs = stats_buy is not None and stats_sell is not None and stats_sell > 0
+    full_imbalance = round(stats_buy / stats_sell, 2) if has_full_bs else profile.get("buy_sell_imbalance")
+    imbalance_basis = "statistics_5d" if has_full_bs else "sampled_levels"
+
     poc, vah, val = profile["poc"], profile["vah"], profile["val"]
 
     def _position(p: float) -> str:
         if not avgprice:
             return ""
         if p > vah:
-            return "价格在 VA 上方(强势,VAH 为支撑)"
+            return "近5日均价在 VA 上方(强势,VAH 为支撑)"
         if p < val:
-            return "价格在 VA 下方(弱势,VAL 为阻力)"
-        return "价格在 VA 内(成交集中区间,POC 为样本成交峰值)"
+            return "近5日均价在 VA 下方(弱势,VAL 为阻力)"
+        return "近5日均价在 VA 内(成交集中区间,POC 为样本成交峰值)"
+
+    profile_out = {k: v for k, v in profile.items() if k != "levels_detail"}
+    profile_out.update({
+        "profile_complete": profile_complete,
+        "total_volume": total_amount,
+        "coverage_ratio": round(coverage_ratio, 6) if coverage_ratio is not None else None,
+        "coverage_pct": round(coverage_ratio * 100, 2) if coverage_ratio is not None else None,
+        "min_coverage_pct": MIN_PROFILE_COVERAGE * 100,
+        "sample_buy_sell_imbalance": profile.get("buy_sell_imbalance"),
+        "buy_sell_imbalance": full_imbalance,
+        "imbalance_basis": imbalance_basis,
+    })
+
+    if not profile_complete:
+        profile_out["sample_poc"] = poc
+        profile_out["sample_vah"] = vah
+        profile_out["sample_val"] = val
+        profile_out["poc"] = None
+        profile_out["vah"] = None
+        profile_out["val"] = None
+        position_note = (
+            f"价位明细仅覆盖近5日总成交量的 {coverage_ratio * 100:.2f}%"
+            f"(不足 {MIN_PROFILE_COVERAGE * 100:.0f}%,服务端仅返回 {profile['levels']} 个高价位档),"
+            "不输出全区间 POC / Value Area 与强弱结论"
+        )
+    else:
+        position_note = _position(avgprice) if avgprice else ""
 
     result = {
         "symbol": symbol,
         "statistics": stats,
-        "profile": {k: v for k, v in profile.items() if k != "levels_detail"},
-        "position_note": _position(avgprice) if avgprice else "",
+        "profile": profile_out,
+        "position_note": position_note,
         "levels_detail": profile["levels_detail"],
     }
 
@@ -121,17 +165,26 @@ def fetch_trade_stats(symbol: str, output_json: bool = False) -> dict:
         print_json(result)
         return result
 
-    print(f"{symbol} 量价分布 Volume Profile(近5日,共 {profile['levels']} 个价位)")
-    print(f"  POC(最大成交价位): {poc} ← 最强支撑/阻力")
-    print(f"  Value Area(70%): {val} ~ {vah}")
+    cov_txt = f",覆盖总成交量 {coverage_ratio * 100:.2f}%" if coverage_ratio is not None else ""
+    print(f"{symbol} 量价分布 Volume Profile(近5日,共 {profile['levels']} 个价位{cov_txt})")
+    if not profile_complete:
+        print(f"  ⚠️ 价位明细被服务端截断: 返回档位 {price_range[0]} ~ {price_range[1]} 仅含 {sampled_vol:,.0f} 股"
+              f"(占近5日总成交 {total_amount:,.0f} 股的 {coverage_ratio * 100:.2f}%),无法代表全区间筹码分布")
+        print(f"  已隐藏全区间 POC / Value Area 结论(要求覆盖 ≥{MIN_PROFILE_COVERAGE * 100:.0f}%)")
+    else:
+        print(f"  POC(最大成交价位): {poc} ← 最强支撑/阻力")
+        print(f"  Value Area(70%): {val} ~ {vah}")
     if avgprice:
-        print(f"  均价 {avgprice},{_position(avgprice)}")
+        print(f"  近5日均价 {avgprice}" + (f",{position_note}" if profile_complete and position_note else ""))
     if preclose:
         side = "上方" if (avgprice or 0) > preclose else "下方"
-        print(f"  昨收 {preclose},均价在其{side}")
-    imb = profile.get("buy_sell_imbalance")
-    if imb:
-        print(f"  主动买/卖量比: {imb}({'买方占优' if imb > 1.1 else '卖方占优' if imb < 0.9 else '均衡'})")
+        print(f"  昨收 {preclose},近5日均价在其{side}")
+    if full_imbalance is not None:
+        mood = "买方占优" if full_imbalance > 1.1 else "卖方占优" if full_imbalance < 0.9 else "均衡"
+        if imbalance_basis == "statistics_5d":
+            print(f"  近5日全样本主动买/卖量比: {full_imbalance}({mood},买 {stats_buy:,.0f} / 卖 {stats_sell:,.0f})")
+        else:
+            print(f"  主动买/卖量比: {full_imbalance}({mood})")
     print()
     detail = sorted(profile["levels_detail"], key=lambda x: x["volume"], reverse=True)[:12]
     detail.sort(key=lambda x: x["price"], reverse=True)
@@ -140,11 +193,12 @@ def fetch_trade_stats(symbol: str, output_json: bool = False) -> dict:
         "成交量": f"{d['volume']:,.0f}",
         "主动买": f"{d['buy']:,.0f}",
         "主动卖": f"{d['sell']:,.0f}",
-        "标记": "POC" if d["price"] == poc else ("VAH" if d["price"] == vah
-                                                else "VAL" if d["price"] == val else ""),
+        "标记": ("POC" if d["price"] == poc else ("VAH" if d["price"] == vah
+                 else "VAL" if d["price"] == val else "")) if profile_complete else "",
     } for d in detail]
-    print_display_table(rows, columns=["价位", "成交量", "主动买", "主动卖", "标记"])
-    print("\n(按成交量取前 12 个价位展示,完整分布用 --json)")
+    cols = ["价位", "成交量", "主动买", "主动卖", "标记"] if profile_complete else ["价位", "成交量", "主动买", "主动卖"]
+    print_display_table(rows, columns=cols)
+    print(f"\n(按成交量取前 12 个{'截断样本' if not profile_complete else ''}价位展示,完整分布用 --json)")
     return result
 
 

@@ -92,8 +92,8 @@ chain 的 IV 字段是小数（0.214 = 21.4%），calc-index 的样本为百分�
 ### 7. 0.6.2 实盘修正
 chain 同一行权价可能返回多行(零值行或陈旧垃圾行 + 真实行,行序每次不同),`get_option_chain()` 在入口按 call/put 两侧分别合并,每个行权价只返回一行。IV/HV 比率改为期限对齐,不再默认取最近到期日。说明与实证见 [0.6.2 修复记录](../docs/fixes-2026-11-24-high-priority.md)。
 
-### 8. 0.6.3 实盘修正
-常规时段之外 quote 的 `last` 是上一个常规时段的收盘价,盘前/盘后/夜盘的最新价在 `pre_market` / `post_market` / `overnight` 块里。`get_underlying_price()` 取最新时段的价格并记录来源(`get_underlying_price_info` / `price_source_note`);需要与期权链 IV、日 K 处在同一时点的场合用 `regular_session_price`。以「现价」为基准的期权量(ATM、距现价百分比、GEX@现价、行权概率、跨式幅度占比)在盘前/盘后/夜盘因此按延长时段最新价计算,而 chain 的 IV 仍是上一个常规时段的。期权到期损益的零成交腿不再按零成本。说明与实证见 [0.6.3 修复记录](../docs/fixes-2026-11-25-medium-priority.md)。
+### 8. 0.6.3 / 0.6.5 实盘修正
+常规时段之外 quote 的 `last` 是上一个常规时段的收盘价,盘前/盘后/夜盘的最新价在 `pre_market` / `post_market` / `overnight` 块里。`get_underlying_price()` 取最新时段的价格并记录来源(`get_underlying_price_info` / `price_source_note`,0.6.5 起 `_regular_session_state` 同步排除美股节假日与半日市提前收盘);需要与期权链 IV、日 K 处在同一时点的场合用 `regular_session_price`(0.6.5 起涵盖 `get_option_volatility`、`calc_expected_move`、`get_iv_term_structure` 的链上 ATM 选档，且自动跳过尚无 IV 的新挂牌周链)。以「现价」为基准的期权量(如距现价百分比、GEX@现价、行权概率)在盘前/盘后/夜盘按延长时段最新价计算。期权到期损益的零成交腿不再按零成本。说明与实证见 [0.6.3 修复记录](../docs/fixes-2026-11-25-medium-priority.md) 与 [0.6.5 修复记录](../docs/fixes-2026-11-25-us-live-spotcheck.md)。
 
 ---
 
