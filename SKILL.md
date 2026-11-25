@@ -260,10 +260,10 @@ python scripts/quote/calc_gex.py AAPL.US --date 2026-09-18 [--rate 0.045] [--jso
 
 #### Gamma Profile(跨到期日聚合剖面,旗舰)
 ```bash
-python scripts/quote/calc_gamma_profile.py NVDA.US [--window 60] [--range 0.20] [--json]
+python scripts/quote/calc_gamma_profile.py NVDA.US [--window 60] [--range 0.20] [--max-strikes N] [--json]
 ```
 - 聚合未来 N 天所有到期日的 GEX 剖面(sticky-strike IV + BS gamma 重算)
-- **Gamma Flip(插值)**:剖面过零线性插值,自动扩域(翻转点最深可至 -40%)
+- **Gamma Flip(插值)**:剖面过零线性插值,自动扩域(翻转点最深可至 -40%);扩域或大范围扫描时同步外扩行权价采样窗与每链档位上限(±20%→±25%/60 档, ±40%→±50%/120 档,可用 `--max-strikes` 覆盖),超高密度链(如 SPY)被截断导致边缘覆盖不足时输出警告
 - **细粒度支撑/阻力**:call/put OI 高斯核密度峰 + 抛物线插值(输出非整数价位,如 220.52)
 - 成本:每个到期日约 12 次 calc-index 调用,60 天窗口约 12 秒(带进程缓存)
 - GEX 采用 Call 正、Put 负的仓位方向假设。OI 和成交量均不能观测真实做市商净仓位，过零点为模型结果
@@ -314,7 +314,7 @@ python scripts/market/get_ah_premium.py 939.HK [--count 60] [--kline-type day] [
 python scripts/flow/get_capital_flow.py AAPL.US [--flow] [--json]
 ```
 - 默认展示大/中/小单流入流出及净额。默认保留源数值，货币单位和分钟流语义未核实。仅在确认数据口径后设置 `LBR_CAPITAL_SCALE`（有限正数换算倍数）及 `LBR_CAPITAL_FLOW_MODE`（`cumulative` 或 `incremental`，默认 `unknown`）。
-- `--flow`：当日分钟观测。只有配置已核实的流语义才导出单段流量
+- `--flow`：当日分钟观测(时间统一标注 `HH:MM UTC`,无时区来源注明未标明时区)。只有配置已核实的流语义才导出单段流量
 
 #### 港股经纪商持仓(⚠️仅港股)
 ```bash

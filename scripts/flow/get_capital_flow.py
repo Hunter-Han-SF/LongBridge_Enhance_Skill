@@ -66,14 +66,28 @@ def _direction_label(net_large: float | None) -> str:
 
 
 def _ts_to_hm(ts) -> str:
-    """ISO 时间戳 → HH:MM。"""
-    if not ts:
+    """时间戳 → HH:MM UTC(无时区信息时注明未标明时区,避免与当地时间混淆)。"""
+    if ts is None or ts == "" or isinstance(ts, bool):
         return ""
+    numeric = to_float(ts)
+    if numeric is not None:
+        try:
+            seconds = numeric / 1000 if abs(numeric) >= 1e11 else numeric
+            return datetime.fromtimestamp(seconds, tz=timezone.utc).strftime("%H:%M UTC")
+        except (OverflowError, OSError, ValueError):
+            return str(ts)
+    text = str(ts).strip()
+    if not text:
+        return ""
+    iso = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
     try:
-        # 形如 2026-08-07T13:30:00Z
-        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).strftime("%H:%M")
+        # 形如 2026-08-07T13:30:00Z 或 2026-11-24T09:30:00-05:00
+        dt = datetime.fromisoformat(iso)
     except (ValueError, TypeError):
-        return str(ts)
+        return text
+    if dt.tzinfo is None:
+        return f"{dt:%H:%M}（来源时区未标明）"
+    return dt.astimezone(timezone.utc).strftime("%H:%M UTC")
 
 
 def fetch_capital_flow(

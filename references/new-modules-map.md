@@ -301,7 +301,7 @@ Gamma Profile 方法论(calc_gamma_profile.py,2026-08-20):
 - **跨到期日聚合**:窗口内(默认60天)所有到期日的 (strike, IV, OI, T) 腿求和;
   sticky-strike 近似(IV 固定当前值),gamma 随假设价位用 BS 重算
 - **Flip 插值**:±range 网格算 GEX(S),符号变化处线性插值,取离现价最近者;
-  无过零时自动扩域(×1.5、上限0.40);单链翻转点同样升级(calc_gex.py 的
+  无过零时自动扩域(×1.5、上限0.40),扩域同步外扩行权价采样窗(±range×1.25,至少+5%)与每链档位上限(±20%→60 档、±30%→90 档、±40%→120 档,可用 `--max-strikes` 覆盖),截断导致扫描边缘覆盖不足时告警;单链翻转点同样升级(calc_gex.py 的
   `_find_flip_profile`),旧启发式已弃用
 - **细粒度 S/R**:call/put OI 高斯核密度(带宽=行权价间距)局部极大值 + 抛物线
   插值 → 非整数价位;注意与第三方的"隐含波动分位 S/R"定义不同(我们=OI 密度墙)
@@ -354,7 +354,7 @@ net_gex(K) = call_gex + put_gex
 9. **auth 误判规避**:`_looks_like_auth_error()` 用带上下文的短语匹配,避免数据值里的 "401"(如 `turnover:"30617440165"`)、合法字段 `"status":"Normal"` 等被误判为 token 失效;且**仅在 CLI 报错(非零退出码)或输出整体不是 JSON 时才检测**,成功返回的数据内容(如新闻标题含 "access denied")不会触发
 10. **"invalid" 包含子串 "valid"**:所有基于子串的 valid/invalid 判断(auth status、Token Status)必须**先判失效信号**再判 valid,否则失效 token 会被误判为有效
 11. **期权到期日列表含过期日期**:chain 返回的到期日列表头部会带最近已到期的合约,`get_option_expirations()` 已按标的市场日期过滤过期日期，并按标准美股纽约16:00规则排除当天已结束的合约(默认取 `expirations[0]` 的脚本依赖此行为)
-12. **时间戳按 UTC 解析**:anomaly/short-trades/option volume daily 的 Unix 时间戳均按 UTC 转换,输出已标注(UTC 后缀或 `date_utc`/`alert_time UTC`),与市场当地时间可能不同
+12. **时间戳按 UTC 解析**:anomaly/capital --flow/trades/short-trades/option volume daily 的时间戳均按 UTC 转换,输出已标注(UTC 后缀或 `date_utc`/`alert_time UTC`;无时区来源注明未标明时区),与市场当地时间可能不同
 
 ## 计算正确性验证
 
